@@ -129,6 +129,20 @@ _start:
     lea rdi, [rel buffer + Ethernet_Header_size]
     call print_ipv69_fields
 
+    ; datagrama 253: portas + dados
+    movzx eax, byte [rel buffer + Ethernet_Header_size + IPv69_Header.next_header]
+    cmp al, IPV69_NEXT_DGRAM
+    jne .no_dgram
+    movzx eax, word [rel buffer + Ethernet_Header_size + IPv69_Header.payload_len]
+    bswap eax
+    shr eax, 16
+    test eax, eax
+    jz .no_dgram
+    lea rdi, [rel buffer + Ethernet_Header_size + IPV69_HEADER_LEN]
+    mov esi, eax
+    call print_dgram253
+.no_dgram:
+
     ; linha em branco separando os frames
     mov rax, SYS_WRITE
     mov rdi, STDOUT
