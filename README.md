@@ -134,7 +134,7 @@ Isso permite validar o parser e o formato do pacote antes de implementar todos o
 
 ### 5. Parser IPv69 (Assembly)
 
-O detector evoluiu para um parser com validação (`src/parse.asm`), usado pelo receiver:
+O detector evoluiu para um parser com validação (`src/IPv69/parse.asm`), usado pelo receiver:
 
 - `parse_ipv69_frame(rdi = ptr frame, rsi = len)` → `rax = 0` se válido, ou código de erro;
 - `print_ipv69_fields(rdi = ptr header)` → imprime todos os campos em hex;
@@ -153,7 +153,7 @@ Códigos de erro: `1` frame curto, `2` EtherType errado, `4` versão errada, `5`
 
 ### 6. Transmissor IPv69 (Assembly)
 
-`src/send.asm` monta um frame Ethernet II completo e transmite via `AF_PACKET`/`SOCK_RAW`:
+`tests/send.asm` monta um frame Ethernet II completo e transmite via `AF_PACKET`/`SOCK_RAW`:
 
 - MAC de origem lida da interface via `SIOCGIFHWADDR`, destino broadcast;
 - header montado a partir de um template (macros `BE16`/`BE32`/`BE64`);
@@ -430,7 +430,7 @@ A visão de longo prazo do projeto é chegar a uma arquitetura semelhante a:
 - [x] Criar macros `BE16`, `BE32` e `BE64`
 - [x] Finalizar especificação do header (v0.1)
 - [ ] Definir extension headers
-- [x] Definir regras de parsing (validação básica em `parse.asm`)
+- [x] Definir regras de parsing (validação básica em `src/IPv69/parse.asm`)
 
 ### Fase 2 — Packet I/O
 - [x] Criar detector em Assembly
