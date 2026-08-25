@@ -6,7 +6,7 @@ O IPv69 é um protocolo meme que realmente vai ser usado pra altas paradas, ferr
 
 A ideia do projeto não é apenas criar um novo formato de pacote, mas eventualmente construir uma stack de rede completa baseada no IPv69, capaz de ser implementada em software, sistemas embarcados e, futuramente, até em hardware dedicado.
 
-O projeto está sendo desenvolvido inicialmente em Assembly x86-64, permitindo trabalhar diretamente com memória, bytes, sockets e interfaces de rede sem depender de abstrações de alto nível.
+O projeto começou em Assembly x86-64 (histórico completo no git) e evoluiu para C com libc estática — o foco continua sendo trabalhar diretamente com memória, bytes, sockets e interfaces de rede, sem abstrações de alto nível além da libc. A implementação em C é portável para as fases futuras (embedded, ESP32).
 
 ## Objetivos
 
@@ -48,15 +48,9 @@ Características definidas até agora:
 
 A estrutura ainda é experimental e pode mudar conforme a implementação evoluir.
 
-### 2. Macros Assembly para Big-Endian
+### 2. Helpers Big-Endian
 
-Foram criadas macros em NASM para facilitar a construção dos campos do protocolo em big-endian:
-
-- `BE16`
-- `BE32`
-- `BE64`
-
-Isso permite construir o pacote corretamente mesmo estando em uma arquitetura x86-64, que utiliza little-endian.
+Os campos do protocolo são big-endian na rede. Em `src/IPv69/header.h` existem helpers `rd_be16/32/64` e `wr_be16/32/64` que leem/escrevem campos na ordem de rede independente da arquitetura (no Assembly original, o mesmo papel era das macros NASM `BE16`/`BE32`/`BE64`, preservadas no histórico do git).
 
 Exemplo conceitual:
 
@@ -74,7 +68,7 @@ Portanto, a implementação precisa realizar explicitamente a conversão entre a
 
 ### 3. Detector / Receiver IPv69
 
-O primeiro componente funcional do projeto é um detector de pacotes IPv69 desenvolvido em Assembly x86-64.
+O primeiro componente funcional do projeto é um detector de pacotes IPv69 em C (`tests/ipv69.c`).
 
 Ele utiliza:
 
@@ -93,7 +87,7 @@ A estrutura atual é aproximadamente:
        AF_PACKET socket
               │
               ▼
-       Assembly receiver
+       C receiver
               │
               ▼
         Ethernet header
@@ -115,7 +109,7 @@ O objetivo dessa etapa é conseguir identificar e posteriormente interpretar pac
 
 ### 4. Testes com Python
 
-Para não precisar desenvolver transmissor e receptor simultaneamente em Assembly, foi utilizado um programa em Python como ferramenta de teste.
+Para não precisar desenvolver transmissor e receptor simultaneamente do zero, foi utilizado um programa em Python como ferramenta de teste.
 
 A ideia é:
 
@@ -127,14 +121,14 @@ Python
 Rede / interface
   │
   ▼
-Receiver Assembly
+Receiver C
 ```
 
-Isso permite validar o parser e o formato do pacote antes de implementar todos os componentes em Assembly.
+Isso permite validar o parser e o formato do pacote antes de implementar todos os componentes do protocolo.
 
-### 5. Parser IPv69 (Assembly)
+### 5. Parser IPv69 (C)
 
-O detector evoluiu para um parser com validação (`src/IPv69/parse.asm`), usado pelo receiver:
+O detector evoluiu para um parser com validação (`src/IPv69/parse.c`), usado pelo receiver:
 
 - `parse_ipv69_frame(rdi = ptr frame, rsi = len)` → `rax = 0` se válido, ou código de erro;
 - `print_ipv69_fields(rdi = ptr header)` → imprime todos os campos em hex;
@@ -151,14 +145,13 @@ Regras de validação atuais:
 
 Códigos de erro: `1` frame curto, `2` EtherType errado, `4` versão errada, `5` payload_len inconsistente, `6` next_header desconhecido.
 
-### 6. Transmissor IPv69 (Assembly)
+### 6. Transmissor IPv69 (C)
 
-`tests/send.asm` monta um frame Ethernet II completo e transmite via `AF_PACKET`/`SOCK_RAW`:
+`tests/send.c` monta um frame Ethernet II completo e transmite via `AF_PACKET`/`SOCK_RAW`:
 
 - MAC de origem lida da interface via `SIOCGIFHWADDR`, destino broadcast;
-- header montado a partir de um template (macros `BE16`/`BE32`/`BE64`);
-- `payload_len` e endereço destino preenchidos em runtime;
-- monta o datagrama 253 (portas fixas `1/1` + payload);
+- header montado em um `struct ipv69_header` com helpers `wr_be*`;
+- portas do datagrama 253 via linha de comando (`src_port`/`dst_port`, padrão 1/1);
 - padding até o mínimo de 60 bytes do frame Ethernet.
 
 ### 7. Build e uso
@@ -430,10 +423,10 @@ A visão de longo prazo do projeto é chegar a uma arquitetura semelhante a:
 - [x] Criar macros `BE16`, `BE32` e `BE64`
 - [x] Finalizar especificação do header (v0.1)
 - [ ] Definir extension headers
-- [x] Definir regras de parsing (validação básica em `src/IPv69/parse.asm`)
+- [x] Definir regras de parsing (validação básica em `src/IPv69/parse.c`)
 
 ### Fase 2 — Packet I/O
-- [x] Criar detector em Assembly
+- [x] Criar detector
 - [x] Capturar frames via `AF_PACKET`
 - [x] Identificar EtherType `0x6969`
 - [x] Fazer parsing completo do header
@@ -489,4 +482,4 @@ transporte
 aplicação
 ```
 
-A implementação inicial em Assembly serve para tornar explícito todo o processo de construção, transmissão, recepção e interpretação dos pacotes, antes de adicionar abstrações de mais alto nível.
+A implementação começou em Assembly justamente para tornar explícito todo o processo de construção, transmissão, recepção e interpretação dos pacotes — e esse conhecimento está preservado no histórico do git enquanto o código atual evolui em C.

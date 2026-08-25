@@ -1,7 +1,6 @@
-# IPv69 - build
-NASM    := nasm
-LD      := ld
-ASFLAGS := -f elf64 -Isrc/IPv69
+# IPv69 - build (C + libc estatica)
+CC      := gcc
+CFLAGS  := -Wall -Wextra -O2 -static -Isrc/IPv69
 BUILD   := build
 
 BINS := ipv69 ipv69_send
@@ -11,17 +10,10 @@ all: $(BINS)
 $(BUILD):
 	mkdir -p $(BUILD)
 
-$(BUILD)/%.o: tests/%.asm | $(BUILD)
-	$(NASM) $(ASFLAGS) -o $@ $<
+ipv69: tests/ipv69.c src/IPv69/parse.c src/IPv69/header.h src/IPv69/parse.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/$@ tests/ipv69.c src/IPv69/parse.c
 
-$(BUILD)/ipv69.o: tests/ipv69.asm src/IPv69/header.asm src/IPv69/bigendian.asm src/IPv69/parse.asm
-$(BUILD)/send.o: tests/send.asm src/IPv69/header.asm src/IPv69/bigendian.asm
-
-ipv69: $(BUILD)/ipv69.o
-	$(LD) -o build/$@ $^
-
-ipv69_send: $(BUILD)/send.o
-	$(LD) -o build/$@ $^
-
+ipv69_send: tests/send.c src/IPv69/header.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/$@ tests/send.c
 
 .PHONY: all
