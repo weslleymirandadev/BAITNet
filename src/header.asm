@@ -1,6 +1,9 @@
 ; ============================================================================
 ; IPv69 - header layout (draft)
 ;
+%ifndef IPV69_HEADER_ASM
+%define IPV69_HEADER_ASM
+;
 ; Design decisions (vs IPv4):
 ;   - Fixed 32-byte header: no IHL, no options field. Options become a
 ;     chain of extension headers (IPv6-style), pointed by .next_header.
@@ -89,3 +92,5 @@ struc IPv69_Header
     .dest        resq 1  ; offset 24
 endstruc
 ; IPv69_Header_size = 32
+
+%endif
