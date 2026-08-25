@@ -138,6 +138,7 @@ O detector evoluiu para um parser com validação (`src/parse.asm`), usado pelo 
 
 - `parse_ipv69_frame(rdi = ptr frame, rsi = len)` → `rax = 0` se válido, ou código de erro;
 - `print_ipv69_fields(rdi = ptr header)` → imprime todos os campos em hex;
+- `print_dgram253(rdi = ptr payload, rsi = len)` → imprime `src_port`, `dst_port` e o payload como texto (bytes não imprimíveis viram `.`);
 - leitura de campos multi-byte com `bswap` (rede big-endian → nativo little-endian).
 
 Regras de validação atuais:
@@ -157,6 +158,7 @@ Códigos de erro: `1` frame curto, `2` EtherType errado, `4` versão errada, `5`
 - MAC de origem lida da interface via `SIOCGIFHWADDR`, destino broadcast;
 - header montado a partir de um template (macros `BE16`/`BE32`/`BE64`);
 - `payload_len` e endereço destino preenchidos em runtime;
+- monta o datagrama 253 (portas fixas `1/1` + payload);
 - padding até o mínimo de 60 bytes do frame Ethernet.
 
 ### 7. Build e uso
@@ -247,19 +249,18 @@ A v0.1 está fechada (tabela acima), mas ainda falta definir:
 
 ### 2. Evoluir o parser
 
-O parser básico já valida tamanho, versão, payload_len e next_header. Falta:
+O parser básico já valida tamanho, versão, payload_len e next_header, e o datagrama 253 (portas + payload) já é desempacotado e impresso. Falta:
 
 - parsing de cadeia de extension headers;
-- validação do datagrama 253 (src_port/dst_port/dados);
 - limites de buffer e contadores mais estritos (debug de malformados);
-- desempacotamento do payload (camada 4).
+- entrega do payload para uma aplicação (hoje só é impresso).
 
 ### 3. Gerador de pacotes
 
 O gerador básico existe (`ipv69_send`). Falta:
 
 - opções de linha de comando (source, flow_id, sequence, hop_limit, flags);
-- montagem de datagrama 253 com portas;
+- portas do datagrama via linha de comando (hoje fixas `1/1`);
 - geração de extension headers;
 - geração programática a partir de uma API (não só CLI).
 
