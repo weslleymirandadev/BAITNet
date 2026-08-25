@@ -153,7 +153,8 @@ _start:
     mov ecx, IPV69_HEADER_LEN
     rep movsb
 
-    mov ax, r14w
+    ; payload_len = 4 (portas) + dados
+    lea eax, [r14 + 4]
     xchg al, ah
     mov [frame + IPv69_OFF + IPv69_Header.payload_len], ax
 
@@ -168,13 +169,19 @@ _start:
     dec rcx
     jnz .be64
 
-    lea rdi, [rel frame + IPv69_OFF + IPV69_HEADER_LEN]
+    ; datagrama 253: src_port=1, dst_port=1, depois os dados
+    mov byte [frame + IPv69_OFF + IPV69_HEADER_LEN], 0
+    mov byte [frame + IPv69_OFF + IPV69_HEADER_LEN + 1], 1
+    mov byte [frame + IPv69_OFF + IPV69_HEADER_LEN + 2], 0
+    mov byte [frame + IPv69_OFF + IPV69_HEADER_LEN + 3], 1
+
+    lea rdi, [rel frame + IPv69_OFF + IPV69_HEADER_LEN + 4]
     mov rsi, r13
     mov rcx, r14
     rep movsb
 
     ; padding ate 60 bytes (minimo do frame ethernet)
-    lea rax, [rel frame + IPv69_OFF + IPV69_HEADER_LEN]
+    lea rax, [rel frame + IPv69_OFF + IPV69_HEADER_LEN + 4]
     add rax, r14
     lea rbx, [rel frame + 60]
     cmp rax, rbx
