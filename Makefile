@@ -18,10 +18,10 @@ $(BUILD)/ipv69.o: tests/ipv69.asm src/IPv69/header.asm src/IPv69/bigendian.asm s
 $(BUILD)/send.o: tests/send.asm src/IPv69/header.asm src/IPv69/bigendian.asm
 
 ipv69: $(BUILD)/ipv69.o
-	$(LD) -o $@ $^
+	$(LD) -o build/$@ $^
 
 ipv69_send: $(BUILD)/send.o
-	$(LD) -o $@ $^
+	$(LD) -o build/$@ $^
 
 
 .PHONY: all
