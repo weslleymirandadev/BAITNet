@@ -42,6 +42,12 @@ section .data
     lbl_src_len  equ $ - lbl_src
     lbl_dst   db "dest"
     lbl_dst_len  equ $ - lbl_dst
+    lbl_src_port db "src_port"
+    lbl_src_port_len equ $ - lbl_src_port
+    lbl_dst_port db "dst_port"
+    lbl_dst_port_len equ $ - lbl_dst_port
+    lbl_payload db "payload = "
+    lbl_payload_len equ $ - lbl_payload
 
     ; [ptr label, len, offset no header, nbytes, pad]
     field_table:
@@ -220,4 +226,77 @@ print_ipv69_fields:
 .pdone:
     pop r12
     pop rbx
+    ret
+
+; rdi = ptr payload (apos o header), rsi = payload_len
+; imprime src_port, dst_port e o payload como texto (nao imprimivel -> '.')
+print_dgram253:
+    cmp rsi, 4
+    jb .done
+    push rbx
+    push r12
+    push r13
+    push r14
+    mov r12, rdi
+    mov r13, rsi
+
+    movzx edx, word [r12]
+    bswap edx
+    shr edx, 16
+    mov ecx, 2
+    lea rdi, [rel lbl_src_port]
+    mov esi, lbl_src_port_len
+    call print_hex_field
+
+    movzx edx, word [r12 + 2]
+    bswap edx
+    shr edx, 16
+    mov ecx, 2
+    lea rdi, [rel lbl_dst_port]
+    mov esi, lbl_dst_port_len
+    call print_hex_field
+
+    ; payload formatado na stack: imprimivel vira char, resto '.'
+    mov rbx, r13
+    add rbx, 15
+    and rbx, -16
+    sub rsp, rbx
+    mov r14, rsp
+    xor ecx, ecx
+.ploop:
+    cmp ecx, r13d
+    jae .pdone
+    movzx eax, byte [r12 + rcx]
+    cmp al, 0x20
+    jb .dot
+    cmp al, 0x7E
+    ja .dot
+    jmp .have
+.dot:
+    mov al, '.'
+.have:
+    mov [r14 + rcx], al
+    inc ecx
+    jmp .ploop
+.pdone:
+    mov byte [r14 + r13], 0xA
+
+    mov rax, SYS_WRITE
+    mov rdi, STDOUT
+    lea rsi, [rel lbl_payload]
+    mov rdx, lbl_payload_len
+    syscall
+
+    mov rax, SYS_WRITE
+    mov rdi, STDOUT
+    mov rsi, r14
+    lea rdx, [r13 + 1]
+    syscall
+
+    add rsp, rbx
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+.done:
     ret
