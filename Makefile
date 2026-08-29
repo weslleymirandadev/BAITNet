@@ -1,26 +1,24 @@
-# IPv69 - build (C + libc estatica)
+# IPv69 - build (C, static libc)
 CC      := gcc
 CFLAGS  := -Wall -Wextra -O2 -static -Iinclude
 BUILD   := build
 
-BINS := ipv69 ipv69_send af69_ping
-
-all: $(BINS)
+all: af69_test
 
 $(BUILD):
 	mkdir -p $(BUILD)
 
-ipv69: tests/ipv69.c src/IPv69/parse.c src/IPv69/iface.c include/IPv69/header.h include/IPv69/parse.h include/IPv69/iface.h | $(BUILD)
-	$(CC) $(CFLAGS) -o $(BUILD)/$@ tests/ipv69.c src/IPv69/parse.c src/IPv69/iface.c
+# drop the sudo requirement: give CAP_NET_RAW to the binaries (once per build)
+caps: af69_test
+	sudo setcap cap_net_raw+ep $(BUILD)/af69_test
 
-ipv69_send: tests/send.c src/IPv69/iface.c include/IPv69/header.h include/IPv69/iface.h | $(BUILD)
-	$(CC) $(CFLAGS) -o $(BUILD)/$@ tests/send.c src/IPv69/iface.c
+# AF_69: kernel module + userspace test
+AF69_KDIR ?= $(HOME)/wsl-kernel
 
-af69_ping: tests/af69_ping.c include/IPv69/af69.h | $(BUILD)
-	$(CC) $(CFLAGS) -o $(BUILD)/$@ tests/af69_ping.c
+af69:
+	$(MAKE) -C kernel/af69 KDIR=$(AF69_KDIR)
 
-# remove a necessidade de sudo: da CAP_NET_RAW aos binarios (uma vez por build)
-caps: $(BINS)
-	sudo setcap cap_net_raw+ep $(BUILD)/ipv69 $(BUILD)/ipv69_send
+af69_test: tests/af69_test.c src/IPv69/parse.c include/IPv69/af69.h include/IPv69/parse.h include/IPv69/header.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/$@ tests/af69_test.c src/IPv69/parse.c
 
-.PHONY: all caps
+.PHONY: all caps af69 af69_test
