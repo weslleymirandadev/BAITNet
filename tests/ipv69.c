@@ -7,14 +7,21 @@
 #include <linux/if_packet.h>
 #include <linux/if_ether.h>
 #include <arpa/inet.h>
-#include "header.h"
-#include "parse.h"
+#include "IPv69/header.h"
+#include "IPv69/parse.h"
+#include "IPv69/iface.h"
 
 int main(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: sudo ./ipv69 <interface>\n");
+    setvbuf(stdout, NULL, _IONBF, 0);   /* log em tempo real */
+
+    char ifname[IFNAMSIZ];
+    if (argc > 1)
+        snprintf(ifname, sizeof(ifname), "%s", argv[1]);
+    else if (ipv69_default_iface(ifname, sizeof(ifname)) < 0) {
+        fprintf(stderr, "no interface found\n");
         return 1;
     }
+    printf("listening on %s\n", ifname);
 
     int fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
     if (fd < 0) {
@@ -24,7 +31,7 @@ int main(int argc, char **argv) {
 
     struct ifreq ifr;
     memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, argv[1], IFNAMSIZ - 1);
+    snprintf(ifr.ifr_name, IFNAMSIZ, "%s", ifname);
     if (ioctl(fd, SIOCGIFINDEX, &ifr) < 0) {
         perror("SIOCGIFINDEX");
         return 1;
@@ -66,6 +73,10 @@ int main(int argc, char **argv) {
             size_t plen = rd_be16(&h->payload_len);
             if (plen)
                 print_dgram253(buf + sizeof(struct ethernet_header) + IPV69_HEADER_LEN, plen);
+        } else {
+            size_t plen = rd_be16(&h->payload_len);
+            if (plen)
+                print_payload(buf + sizeof(struct ethernet_header) + IPV69_HEADER_LEN, plen);
         }
         putchar('\n');
     }

@@ -16,4 +16,7 @@ void print_ipv69_fields(const struct ipv69_header *h);
 /* imprime src_port, dst_port e os dados do datagrama 253 como texto */
 void print_dgram253(const uint8_t *payload, size_t len);
 
+/* imprime payload generico: texto (bytes nao imprimiveis viram '.') + hex */
+void print_payload(const uint8_t *payload, size_t len);
+
 #endif

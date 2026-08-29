@@ -1,5 +1,5 @@
 #include <stdio.h>
-#include "parse.h"
+#include "IPv69/parse.h"
 
 #define ERR_SHORT     1
 #define ERR_ETHERTYPE 2
@@ -64,6 +64,19 @@ void print_ipv69_fields(const struct ipv69_header *h) {
             v = rd_be64(base + f->off);
         printf("%s = %0*lx\n", f->name, (int)(f->nbytes * 2), v);
     }
+}
+
+void print_payload(const uint8_t *payload, size_t len) {
+    printf("payload (%zu bytes) = ", len);
+    for (size_t i = 0; i < len; i++) {
+        uint8_t c = payload[i];
+        putchar((c >= 0x20 && c <= 0x7e) ? c : '.');
+    }
+    putchar('\n');
+    printf("hex = ");
+    for (size_t i = 0; i < len; i++)
+        printf("%02x", payload[i]);
+    putchar('\n');
 }
 
 void print_dgram253(const uint8_t *payload, size_t len) {
