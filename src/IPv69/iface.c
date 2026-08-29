@@ -11,10 +11,10 @@ int ipv69_default_iface(char *out, size_t outsz) {
     if (getifaddrs(&ifa0) < 0)
         return -1;
 
-    /* L2 puro: sem IPv4/IPv6 — nada de /proc/net/route, sem endereco IP.
-       Preferencia: primeira Ethernet (ARPHRD_ETHER) up com carrier
-       (IFF_RUNNING). Fallback: qualquer interface up nao-loopback com
-       endereco L2 (sll_halen > 0). */
+    /* Pure L2: no IPv4/IPv6 — no /proc/net/route, no IP address.
+       Preference: first Ethernet (ARPHRD_ETHER) up with carrier
+       (IFF_RUNNING). Fallback: any up non-loopback interface with an
+       L2 address (sll_halen > 0). */
     for (struct ifaddrs *a = ifa0; a; a = a->ifa_next) {
         if (!a->ifa_addr || a->ifa_addr->sa_family != AF_PACKET)
             continue;
