@@ -52,7 +52,7 @@ keeps 3 reserved bytes per address field for future 64-bit expansion.
 Build the test:
 
 ```sh
-make -C tests af69_test   # or: gcc -Iinclude -o build/af69_test tests/af69_test.c
+make af69_test   # or: gcc -Iinclude -o build/af69_test tests/af69_test.c
 ```
 
 Sender and receiver on the same interface see each other via the kernel's
