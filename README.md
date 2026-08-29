@@ -50,7 +50,7 @@ A estrutura ainda é experimental e pode mudar conforme a implementação evolui
 
 ### 2. Helpers Big-Endian
 
-Os campos do protocolo são big-endian na rede. Em `src/IPv69/header.h` existem helpers `rd_be16/32/64` e `wr_be16/32/64` que leem/escrevem campos na ordem de rede independente da arquitetura (no Assembly original, o mesmo papel era das macros NASM `BE16`/`BE32`/`BE64`, preservadas no histórico do git).
+Os campos do protocolo são big-endian na rede. Em `include/IPv69/header.h` existem helpers `rd_be16/32/64` e `wr_be16/32/64` que leem/escrevem campos na ordem de rede independente da arquitetura (no Assembly original, o mesmo papel era das macros NASM `BE16`/`BE32`/`BE64`, preservadas no histórico do git).
 
 Exemplo conceitual:
 
@@ -151,24 +151,36 @@ Códigos de erro: `1` frame curto, `2` EtherType errado, `4` versão errada, `5`
 
 - MAC de origem lida da interface via `SIOCGIFHWADDR`, destino broadcast;
 - header montado em um `struct ipv69_header` com helpers `wr_be*`;
+- interface opcional: omitida ou `-` → auto-detect (primeira interface Ethernet ativa, L2 puro — sem IPv4/6);
 - portas do datagrama 253 via linha de comando (`src_port`/`dst_port`, padrão 1/1);
+- `next_header` via linha de comando: 253 datagrama (padrão), 254 stream cru, 0 sem payload;
 - padding até o mínimo de 60 bytes do frame Ethernet.
 
 ### 7. Build e uso
 
 ```text
 make                     # compila ipv69, ipv69_send
+sudo make caps           # uma vez: CAP_NET_RAW nos binarios (sem sudo no uso)
 
-sudo ./ipv69 eth0        # receiver (root: raw socket)
-sudo ./ipv69_send eth0   # sender (root: raw socket)
+./ipv69                  # receiver: auto-detect da interface
+./ipv69 eth0             # receiver: interface explicita
+./ipv69_send             # sender: auto-detect, defaults
 ```
 
-O transmissor aceita argumentos opcionais:
+O transmissor aceita argumentos opcionais (interface `-` = auto-detect):
 
 ```text
-sudo ./ipv69_send <interface> [dest_hex] [payload]
-sudo ./ipv69_send eth0 2 "oi"        # dest = 0x2, payload "oi"
-sudo ./ipv69_send eth0 0xdeadbeef    # dest = 0xdeadbeef
+./ipv69_send - 2 1 1 "oi"          # dest = 0x2, portas 1/1, payload "oi"
+./ipv69_send - 2 1 1 "stream" 254  # stream cru (next_header 254)
+./ipv69_send - 2 1 1 "" 0          # sem payload (next_header 0)
+```
+
+Sem outra máquina (e sem root), sender e receiver na mesma interface se
+enxergam via loopback do próprio kernel — dá para testar o fluxo completo
+no WSL com um par veth num user namespace:
+
+```text
+unshare -Urn sh -c 'ip link add v0 type veth peer name v1; ip link set v0 up; ip link set v1 up; ip route add default dev v0; timeout 5 ./build/ipv69 & sleep 1; ./build/ipv69_send - 2 1 1 "oi"; sleep 2'
 ```
 
 ### 8. Comunicação host → host (validada)
@@ -179,7 +191,7 @@ Primeira comunicação IPv69 real entre duas máquinas na mesma rede:
 - host B: VM Kali no VirtualBox com adaptador bridged na Ethernet, interface `eth0` (cabo);
 - roteador doméstico fazendo bridge L2 entre Wi-Fi e porta LAN.
 
-O frame enviado pelo `ipv69_send` no celular foi recebido, validado e impresso pelo `ipv69` na VM — atravessando Wi-Fi, roteador e cabo. Detalhe: o WSL2 não participa (NAT não encaminha frames raw); o lado PC precisa de um Linux com acesso L2 à interface física.
+O frame enviado pelo `ipv69_send` no celular foi recebido, validado e impresso pelo `ipv69` na VM — atravessando Wi-Fi, roteador e cabo. Detalhe: o WSL2 não participa de tráfego externo (NAT não encaminha frames raw); o lado PC precisa de um Linux com acesso L2 à interface física. Para testes locais sem root (loopback da própria interface ou par veth), ver seção 7.
 
 ## Especificação do header IPv69 (v0.1)
 
@@ -218,6 +230,33 @@ Alinhado com IANA onde possível: 1 ICMP, 2 IGMP, 6 TCP, 17 UDP, 41 ENCAP, 89 OS
 | 0   | NOFRAG  | não fragmentar (endpoints fazem PMTUD)   |
 | 1   | JUMBO   | payload > 65535 (via extension header)   |
 
+### Address family AF_IPV69
+
+O IPv69 tem uma address family própria para acesso via socket nativo:
+
+| constante | valor | papel                                                        |
+|-----------|-------|--------------------------------------------------------------|
+| `AF_IPV69` | 21    | número da family (slot livre no Linux; FIXO por compatibilidade) |
+| `SOCK_DGRAM` | —  | datagramas (transporta o datagrama 253)                      |
+
+O suporte é entregue pelo módulo `src/IPv69/kernel/af_ipv69.ko` (`sock_register` + `dev_add_pack`). Máquinas sem loadable modules podem embutir o suporte no kernel com a MESMA constante — o número não muda. O valor do AF não afeta a comunicação na rede: o que identifica o protocolo no fio é o EtherType `0x6969`.
+
+Para compilar o módulo (precisa dos headers do kernel exato):
+
+```text
+make -C /lib/modules/$(uname -r)/build M=src/IPv69/kernel modules
+sudo insmod src/IPv69/kernel/af_ipv69.ko
+```
+
+Teste local (funciona até na `lo`, sem rede):
+
+```text
+./build/af69_ping recv lo        # terminal 1
+./build/af69_ping send lo "oi"   # terminal 2
+```
+
+Validado no WSL2 (kernel 6.6.87-microsoft): o socket AF_IPV69 envia e recebe datagramas 253 com o kernel montando/validando o frame — sem raw socket.
+
 ### Decisões de design
 
 - Sem IHL e sem campo de opções: header imutável de 32 bytes; opções viram cadeia de extension headers (estilo IPv6).
@@ -250,19 +289,17 @@ O parser básico já valida tamanho, versão, payload_len e next_header, e o dat
 
 ### 3. Gerador de pacotes
 
-O gerador básico existe (`ipv69_send`). Falta:
+O gerador básico existe (`ipv69_send`), com portas, payload e `next_header` via linha de comando e interface auto-detectada. Falta:
 
 - opções de linha de comando (source, flow_id, sequence, hop_limit, flags);
-- portas do datagrama via linha de comando (hoje fixas `1/1`);
 - geração de extension headers;
 - geração programática a partir de uma API (não só CLI).
 
 ### 4. Transmissão e recepção reais
 
-O caminho básico funciona via raw socket, mas ainda falta:
+O caminho básico funciona via raw socket (host → host validado e teste local via veth sem root), mas ainda falta:
 
-- teste de comunicação host → host (dois WSL/dois hosts na mesma rede);
-- recepção com entrega de payload (hoje o receiver só imprime o header);
+- recepção com entrega de payload (hoje o receiver só imprime);
 - integração futura com a infraestrutura de rede do sistema operacional.
 
 ### 5. Endereçamento
@@ -436,6 +473,7 @@ A visão de longo prazo do projeto é chegar a uma arquitetura semelhante a:
 - [x] Comunicação IPv69 host → host (Kali/QEMU no celular ↔ VM VirtualBox bridged)
 
 ### Fase 3 — Stack
+- [x] Transporte básico (datagrama 253, stream 254 cru, sem payload)
 - Addressing
 - Routing
 - Forwarding
@@ -466,7 +504,7 @@ A visão de longo prazo do projeto é chegar a uma arquitetura semelhante a:
 
 ## Estado atual
 
-IPv69 está atualmente na fase de experimentação do protocolo e implementação do packet detector.
+IPv69 está na fase de experimentação do protocolo: detector/receptor e transmissor rodam sem root (CAP_NET_RAW), com auto-detecção de interface e transporte além do datagrama 253 (stream 254 cru, sem payload).
 
 O objetivo imediato não é substituir a Internet existente, mas construir uma stack de rede experimental do zero, começando pelo nível mais baixo possível:
 
