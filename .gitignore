@@ -2,11 +2,11 @@ build/
 .vscode
 
 # modulo kernel: artefatos de build
-src/IPv69/kernel/*.ko
-src/IPv69/kernel/*.o
-src/IPv69/kernel/*.mod
-src/IPv69/kernel/*.mod.c
-src/IPv69/kernel/.*.cmd
-src/IPv69/kernel/Module.symvers
-src/IPv69/kernel/modules.order
-src/IPv69/kernel/.tmp_versions/
+*.ko
+*.o
+*.mod
+*.mod.c
+.*.cmd
+Module.symvers
+modules.order
+.tmp_versions/
