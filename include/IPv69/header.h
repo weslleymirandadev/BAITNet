@@ -11,6 +11,7 @@
 
 #define IPV69_NEXT_DGRAM     253
 #define IPV69_NEXT_STREAM    254
+#define IPV69_NEXT_CONTROL   255
 
 #define IPV69_FLAG_NOFRAG    (1 << 0)
 #define IPV69_FLAG_JUMBO     (1 << 1)
