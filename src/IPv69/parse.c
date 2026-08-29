@@ -26,7 +26,8 @@ int parse_ipv69_frame(const uint8_t *frame, size_t len) {
         return ERR_LEN;
 
     uint8_t nh = h->next_header;
-    if (nh != 0 && nh != IPV69_NEXT_DGRAM && nh != IPV69_NEXT_STREAM)
+    if (nh != 0 && nh != IPV69_NEXT_DGRAM && nh != IPV69_NEXT_STREAM &&
+        nh != IPV69_NEXT_CONTROL)
         return ERR_NEXTHDR;
 
     return 0;
