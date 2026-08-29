@@ -5,18 +5,22 @@
 #include <stdint.h>
 #include "header.h"
 
-/* retorna 0 se valido, ou codigo de erro:
-   1 frame curto, 2 ethertype errado, 4 versao errada,
-   5 payload_len inconsistente, 6 next_header desconhecido */
+/* returns 0 if valid, or an error code:
+   1 short frame, 2 wrong ethertype, 4 wrong version,
+   5 inconsistent payload_len, 6 unknown next_header */
 int parse_ipv69_frame(const uint8_t *frame, size_t len);
 
-/* imprime os campos do header em hex, um por linha */
+/* prints header fields in hex, one per line */
 void print_ipv69_fields(const struct ipv69_header *h);
 
-/* imprime src_port, dst_port e os dados do datagrama 253 como texto */
+/* prints src_port, dst_port and the datagram 253 data as text */
 void print_dgram253(const uint8_t *payload, size_t len);
 
-/* imprime payload generico: texto (bytes nao imprimiveis viram '.') + hex */
+/* prints a generic payload: text (non-printable bytes become '.') + hex */
 void print_payload(const uint8_t *payload, size_t len);
+
+/* parses "ff.ff.ff.ff.ff" (5 hex octets) or raw hex into a 40-bit address;
+   returns 0 on success, -1 on error */
+int parse_ipv69_addr(const char *s, uint64_t *out);
 
 #endif
