@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "IPv69/parse.h"
 
 #define ERR_SHORT     1
@@ -19,7 +21,7 @@ int parse_ipv69_frame(const uint8_t *frame, size_t len) {
     if ((h->ver_traffic >> 4) != IPV69_VERSION)
         return ERR_VERSION;
 
-    /* payload_len <= frame - 46 (padding de ethernet permitido) */
+    /* payload_len must fit in the frame (ethernet padding allowed) */
     if (rd_be16(&h->payload_len) > len - sizeof(struct ethernet_header) - IPV69_HEADER_LEN)
         return ERR_LEN;
 
@@ -45,8 +47,8 @@ static const struct field fields[] = {
     { "hop_limit",   offsetof(struct ipv69_header, hop_limit),   1 },
     { "flags",       offsetof(struct ipv69_header, flags),       1 },
     { "sequence",    offsetof(struct ipv69_header, sequence),    4 },
-    { "source",      offsetof(struct ipv69_header, source),      8 },
-    { "dest",        offsetof(struct ipv69_header, dest),        8 },
+    { "source",      offsetof(struct ipv69_header, source),      5 },
+    { "dest",        offsetof(struct ipv69_header, dest),        5 },
 };
 
 void print_ipv69_fields(const struct ipv69_header *h) {
@@ -54,6 +56,12 @@ void print_ipv69_fields(const struct ipv69_header *h) {
     for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
         const struct field *f = &fields[i];
         uint64_t v;
+        if (f->nbytes == 5) {
+            const uint8_t *b = base + f->off;
+            printf("%s = %02x.%02x.%02x.%02x.%02x\n",
+                   f->name, b[0], b[1], b[2], b[3], b[4]);
+            continue;
+        }
         if (f->nbytes == 1)
             v = base[f->off];
         else if (f->nbytes == 2)
@@ -64,6 +72,30 @@ void print_ipv69_fields(const struct ipv69_header *h) {
             v = rd_be64(base + f->off);
         printf("%s = %0*lx\n", f->name, (int)(f->nbytes * 2), v);
     }
+}
+
+/* "ff.ff.ff.ff.ff" (5 hex octets) or raw hex; returns 0 or -1 */
+int parse_ipv69_addr(const char *s, uint64_t *out) {
+    char *end;
+    if (strchr(s, '.')) {
+        uint64_t v = 0;
+        for (int i = 0; i < 5; i++) {
+            unsigned long o = strtoul(s, &end, 16);
+            if (end == s || o > 0xff)
+                return -1;
+            if ((i < 4 && *end != '.') || (i == 4 && *end != '\0'))
+                return -1;
+            v = (v << 8) | o;
+            s = end + 1;
+        }
+        *out = v;
+        return 0;
+    }
+    unsigned long long v = strtoull(s, &end, 16);
+    if (end == s || *end != '\0')
+        return -1;
+    *out = v;
+    return 0;
 }
 
 void print_payload(const uint8_t *payload, size_t len) {
