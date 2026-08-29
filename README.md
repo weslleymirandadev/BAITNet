@@ -39,13 +39,13 @@ libc. The C implementation is portable to future phases (embedded, ESP32).
 
 ### Phase 3 — Stack
 - [x] Basic transport (253 datagram, 254 raw stream, no payload)
-- Addressing
-- Routing
-- Forwarding
-- Hop Limit
-- ICMP-like / control messages
-- Transport protocol
-- API/socket
+- [x] Addressing (40-bit, `ff.ff.ff.ff.ff`)
+- [ ] Routing table (forwarding exists: relay on another up iface of the netns)
+- [x] Forwarding (3-netns relay validated)
+- [x] Hop Limit (decrement on forward, drop at 0 + TIME_EXCEEDED)
+- [x] ICMP-like / control messages (echo/ping, dest unreachable, time exceeded, ND)
+- [ ] Transport protocol (next_header 254 reserved: SCTP-derived, planned)
+- [x] API/socket (`AF_69`, bind/sendto/recvfrom demux by addr/port)
 
 ### Phase 4 — Operating system
 - [x] Native address family `AF_69` (module `kernel/af69/af69.ko`)
@@ -74,7 +74,9 @@ IPv69 is in the protocol experimentation phase: detector/receiver and
 transmitter run without root (CAP_NET_RAW), with interface auto-detection,
 40-bit addressing (`ff.ff.ff.ff.ff`) and transport beyond the 253 datagram
 (254 raw stream, no payload). The AF_69 kernel module gives native socket
-access to the protocol.
+access to the protocol, plus a v0.3 stack: demux by addr/port, neighbor
+discovery (40-bit → MAC), hop limit, forwarding between netns and a
+control plane (echo/ping, errors, ND).
 
 The immediate goal is not to replace the existing Internet, but to build an
 experimental network stack from scratch, starting at the lowest level
