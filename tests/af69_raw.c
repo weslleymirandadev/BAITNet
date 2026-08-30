@@ -215,10 +215,11 @@ int main(int argc, char **argv)
 
     if (argc < 3) {
         fprintf(stderr,
-                "Usage: %s recv <ifname> [src_port_hex]\n"
-                "       %s send <ifname> <dst> <src_port_hex> <dst_port_hex> [payload]\n"
-                "       %s ping <ifname> <dst> [payload]\n",
-                argv[0], argv[0], argv[0]);
+                "Usage: %s recv <ifname> [src_addr] [src_port_hex]\\n"
+                "       %s send <ifname> <dst> <src_port_hex> <dst_port_hex> [payload]\\n"
+                "       %s ping <ifname> <dst> [payload]\\n"
+                "       %s dhcp <ifname>\\n",
+                argv[0], argv[0], argv[0], argv[0]);
         return 1;
     }
 
@@ -229,10 +230,33 @@ int main(int argc, char **argv)
            src_mac[3], src_mac[4], src_mac[5]);
 
     if (!strcmp(argv[1], "recv")) {
-        (void)argv;
+        /* optional bind: recv <ifname> [src_addr] [src_port_hex] */
+        uint64_t my_addr = 0;
+        uint16_t my_port = 0;
+        if (argc > 3 && parse_ipv69_addr(argv[3], &my_addr) < 0) {
+            fprintf(stderr, "recv: src_addr invalido\n");
+            return 1;
+        }
+        if (argc > 4)
+            my_port = (uint16_t)strtoul(argv[4], NULL, 16);
+        if (my_addr)
+            printf("bound src=%016llx port=%04x (filtrando)\n",
+                   (unsigned long long)my_addr, my_port);
         for (;;) {
             ssize_t n = recv(fd, frame, sizeof(frame), 0);
             if (n < 0) { perror("recv"); return 1; }
+            if (n < 14 + IPV69_HEADER_LEN)
+                continue;
+            const struct ipv69_header *h =
+                (const struct ipv69_header *)(frame + 14);
+            if (my_addr) {
+                uint64_t dst = get_addr40(h->dest);
+                if (dst != my_addr && dst != 0xFFFFFFFFFFULL)
+                    continue;   /* not for us */
+                if (my_port && h->next_header == IPV69_NEXT_DGRAM &&
+                    rd_be16(&h->dst_port) != my_port)
+                    continue;
+            }
             dump_frame(frame, (size_t)n);
         }
     }
