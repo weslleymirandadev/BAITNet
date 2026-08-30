@@ -9,9 +9,9 @@
 #define IPV69_TRAFFIC_CLASS  9
 #define IPV69_HEADER_LEN     32
 
-#define IPV69_NEXT_DGRAM     253
-#define IPV69_NEXT_STREAM    254
-#define IPV69_NEXT_CONTROL   255
+#define IPV69_NEXT_CONTROL   0
+#define IPV69_NEXT_DGRAM     1
+#define IPV69_NEXT_STREAM    2       /* reserved (future SCTP-derived transport) */
 
 #define IPV69_FLAG_NOFRAG    (1 << 0)
 #define IPV69_FLAG_JUMBO     (1 << 1)
@@ -34,12 +34,13 @@ struct ipv69_header {
     uint8_t  hop_limit;     /* 7  */
     uint8_t  flags;         /* 8  */
     uint8_t  reserved;      /* 9  */
-    uint16_t reserved2;     /* 10 */
-    uint32_t sequence;      /* 12 */
-    uint8_t  source[5];     /* 16 */
-    uint8_t  source_res[3]; /* 21 */
-    uint8_t  dest[5];       /* 24 */
-    uint8_t  dest_res[3];   /* 29 */
+    uint16_t src_port;      /* 10 */
+    uint16_t dst_port;      /* 12 */
+    uint8_t  sequence[4];   /* 14 */
+    uint8_t  source[5];     /* 18 */
+    uint8_t  source_res[2]; /* 23 */
+    uint8_t  dest[5];       /* 25 */
+    uint8_t  dest_res[2];   /* 30 */
 };                          /* 32 */
 
 _Static_assert(sizeof(struct ethernet_header) == 14, "ethernet header must be 14 bytes");
