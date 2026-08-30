@@ -22,55 +22,68 @@ Only listed MACs may obtain a lease. The server silently ignores
 DISCOVER/REQUEST/RELEASE from other MACs.
 
 ```
-# server: only this phone can join
 sudo ./af69d eth0 --raw --allow 00:08:22:9c:03:fc
-
-# multiple MACs (repeat the flag)
-sudo ./af69d eth0 --raw --allow 00:08:22:9c:03:fc --allow aa:bb:cc:dd:ee:ff
-
-# no --allow = every MAC may join (default, as before)
 ```
 
 Limitation: MACs are spoofable at L2. This layer is convenience, not
 cryptographic security.
 
-## Layer 2 — shared secret (HMAC-SHA256 token)
+## Layer 2 — Ed25519 signatures (no shared secret)
 
-Both server and client know a secret. Every DHCP message carries an
-8-byte token = first 8 bytes of HMAC-SHA256(secret, client MAC),
-appended after the payload:
+Each device has its **own** Ed25519 keypair. The private key never leaves
+the device; the server only knows **public** keys (which are not secret —
+they can travel in the clear). There is no shared secret to leak, and a
+compromised/leaked key revokes only that one device.
 
-```
-DISCOVER [7][mac 6][token 8]
-OFFER    [8][mac 6][addr 5][lease 4][token 8]
-REQUEST  [9][mac 6][addr 5][token 8]
-ACK      [10][mac 6][addr 5][lease 4][token 8]
-RELEASE  [11][mac 6][addr 5][token 8]
-```
-
-- The **server** verifies the token on every DISCOVER/REQUEST/RELEASE and
-  drops messages with a bad/absent token (rogue clients can't join).
-- The **client** verifies the token on OFFER/ACK and aborts on mismatch
-  (rogue servers can't answer).
-- Message length changes: DISCOVER 7→15, OFFER/ACK 16→24, REQUEST/RELEASE
-  12→20. Older clients without `--secret` talk the short form; a server
-  with `--secret` rejects them, and vice versa.
+Generate keypairs:
 
 ```
-# server
-sudo ./af69d eth0 --raw --secret 6b65792d6970763639
-
-# client (phone / VM / any host)
-./af69_raw dhcp wlan0 --secret 6b65792d6970763639
-./af69_test dhcp eth0 --secret 6b65792d6970763639
+./ipv69-keygen 2
+<privkey_hex> <pubkey_hex>      # device A
+<privkey_hex> <pubkey_hex>      # server (or any device)
 ```
 
-Generate a secret: `head -c 16 /dev/urandom | xxd -p` (32 hex chars).
+Server — only devices whose public key is in the allowlist get a lease;
+the server signs OFFER/ACK with its own key:
 
-Limitations: the token is a shared secret — anyone who knows it can join
-and (if the secret leaks) impersonate. It is not per-client keys. HMAC
-truncated to 8 bytes is fine for LAN-grade auth; do not use for
-Internet-facing services.
+```
+sudo ./af69d eth0 --raw \
+     --peer <pubkey_A_hex> \
+     --key  <server_privkey_hex>
+```
+
+Client (device A) — signs DISCOVER/REQUEST/RELEASE; optionally validates
+the server's OFFER/ACK with `--server-pub` (rogue-server protection):
+
+```
+./af69_raw dhcp wlan0 --key <privkey_A_hex> --server-pub <server_pubkey_hex>
+./af69_test dhcp eth0 --key <privkey_A_hex> --server-pub <server_pubkey_hex>
+```
+
+Wire format (next_header 0, payload). The signature covers every byte
+before it:
+
+```
+DISCOVER [7][mac 6][pub 32][sig 64]
+OFFER    [8][mac 6][addr 5][lease 4][pub 32][sig 64]
+REQUEST  [9][mac 6][addr 5][pub 32][sig 64]
+ACK      [10][mac 6][addr 5][lease 4][pub 32][sig 64]
+RELEASE  [11][mac 6][addr 5][pub 32][sig 64]
+```
+
+Implementation: TweetNaCl `crypto_sign` (Ed25519, RFC 8032), validated
+against the RFC 8032 test vectors. No external dependencies — runs on the
+static arm64 phone build. Without `--peer`/`--key` the legacy short forms
+are used (DISCOVER 7, OFFER/ACK 16, REQUEST/RELEASE 12 bytes).
+
+Properties vs a shared secret:
+
+| | shared secret (old) | Ed25519 (current) |
+|---|---|---|
+| leak of one key | whole network compromised | only that device |
+| every peer needs the key | yes (distribution problem) | no — public keys only |
+| revoke a device | change the secret for everyone | remove one `--peer` |
+| rogue server detection | client validates HMAC | client validates signature |
 
 ## Layer 3 — lease binding in the kernel (dgram source auth)
 
@@ -112,14 +125,15 @@ Server on the VM (all three layers):
 ```
 sudo ./af69d eth0 --raw \
      --allow 00:08:22:9c:03:fc \
-     --secret 6b65792d6970763639
+     --peer <pubkey_hex> \
+     --key <server_privkey_hex>
 ```
 
 Phone client:
 
 ```
 export PATH=/usr/bin:/bin
-/root/af69_raw dhcp wlan0 --secret 6b65792d6970763639
+/root/af69_raw dhcp wlan0 --key <privkey_hex> --server-pub <server_pubkey_hex>
 /root/af69_raw send wlan0 00.00.00.00.10 1 16 "hi" 00.00.00.00.10
 ```
 
@@ -127,25 +141,34 @@ Expected server log:
 
 ```
 af69d: raw AF_PACKET (ifindex 2), pool 0000000000000010-00000000000000fe lease 3600s
-af69d: allow=1 mac(s), secret=sim (HMAC)
+af69d: allow=1 mac(s), peers=1 pubkey(s), server-key=sim
 af69d: DISCOVER 00:08:22:9c:03:fc -> OFFER 0000000000000010
 af69d: REQUEST 00:08:22:9c:03:fc -> ACK 0000000000000010
 ```
 
-Rejected client (bad secret or unlisted MAC) — server logs and ignores:
+Rejected client (unknown key or unlisted MAC) — server logs and ignores:
 
 ```
-af69d: 00:08:22:9c:03:fc token HMAC invalido -> ignorado
-af69d: aa:bb:cc:dd:ee:ff nao esta na allowlist -> ignorado
+af69d: pub f38f9008... nao esta na allowlist -> ignorado
+af69d: 0a:a6:50:c5:86:17 assinatura/pubkey invalida -> ignorado
+```
+
+Client rejecting a rogue server:
+
+```
+dhcp: OFFER assinatura invalida
 ```
 
 ## Files touched
 
-- `src/IPv69/hmac.c` / `include/IPv69/hmac.h` — standalone HMAC-SHA256
-  (RFC 4231 test vector verified), no external deps
-- `src/IPv69/af69d.c` — `--allow`, `--secret`, binding ioctl on ACK/RELEASE
-- `tests/af69_raw.c` / `tests/af69_test.c` — `--secret` on `dhcp`, optional
-  `src_addr` on `send`
+- `src/IPv69/tweetnacl.c` / `include/IPv69/tweetnacl.h` — TweetNaCl
+  (public domain), Ed25519/SHA-512; `crypto_sign_seed_to_pk` added
+- `src/IPv69/randombytes.c` — getrandom() backend for TweetNaCl
+- `src/IPv69/ipv69-keygen.c` — keypair generator (`ipv69-keygen`)
+- `src/IPv69/af69d.c` — `--peer` (pubkey allowlist), `--key` (server
+  signing), binding ioctl on ACK/RELEASE
+- `tests/af69_raw.c` / `tests/af69_test.c` — `--key`, `--server-pub` on
+  `dhcp`, optional `src_addr` on `send`
 - `kernel/af69/af69.c` — binding table + `ipv69_ioctl` (BIND_ADD/DEL) +
   dgram source validation in `ipv69_rcv`
 - `include/IPv69/af69.h` — `struct ipv69_bind_req`, ioctl numbers
