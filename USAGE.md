@@ -23,6 +23,16 @@ internet.
 | `ip69d` | Daemon de interface: segura um endereço DHCP e cria a TAP `ip69-0` | celular/VM |
 | `ip69` | Consulta o `ip69d` (como `ip addr` pro IPv69) | mesmo host do ip69d |
 
+Além dos binários, o projeto tem a **lib de cripto separada**:
+
+| Caminho | O que é |
+|---|---|
+| `lib/ed25519/include/ed25519.h` | API pública (keypair, sign, verify, keyfile) |
+| `lib/ed25519/src/` | Implementação (`ed25519.c` + `tweetnacl.c` + `randombytes.c`) |
+
+Ela não depende de nada do IPv69 — pode ser reutilizada em qualquer
+projeto (o seu "HTTPS próprio" futuro, por exemplo). Detalhes na seção 8.
+
 ## Endereços e portas
 
 - Endereços: 40-bit, formato `00.00.00.00.10` (5 octetos)
@@ -34,25 +44,65 @@ internet.
 
 ---
 
-## 1. Gerar chaves (uma vez por device)
+## 1. Chaves (quase automático)
 
-Cada device tem a SUA chave privada (nunca sai do device). O servidor só
-conhece **públicas** — não são segredo.
+Cada device tem a SUA chave. **A privada nunca sai do device**; o
+servidor só conhece **públicas** (não são segredo).
 
+### Auto-key (recomendado)
+
+Todos os clientes (`af69_raw`, `af69_test`, `ip69d`) geram a chave
+sozinhos na primeira execução e guardam o seed em `~/.ipv69/key`
+(0600). Rode uma vez e copie a PUBKEY que ele imprime:
+
+```bash
+export HOME=/root          # importante no chroot do celular!
+/root/bin/af69_raw dhcp wlan0    # 1a vez: gera a chave e imprime:
+#   chave gerada em /root/.ipv69/key
+#   registre esta PUBKEY no servidor:
+#   616833cf40e2708d42db3626c1a8e7f7434dc5bfcd2f004c5b6d4ec541379822
 ```
+
+Da segunda vez em diante ele carrega `~/.ipv69/key` e usa a mesma
+identidade — semelhante ao modelo SSH (`~/.ssh/id_ed25519`).
+
+### Manual (opcional)
+
+```bash
 ./ipv69-keygen 2
 <privkey_hex> <pubkey_hex>      # linha 1: device A (ex: celular)
 <privkey_hex> <pubkey_hex>      # linha 2: device B (ex: servidor/VM)
 ```
 
-Guarde a privada do celular NO CELULAR e a privada do servidor NA VM.
+Depois é só passar `--key <privkey_hex>` (e `--server-pub <pubkey_hex>`
+nos clientes) — o auto-key é dispensado quando `--key` é dado.
 
 ---
 
 ## 2. Subir o servidor DHCP (VM)
 
+### Com arquivo de peers (recomendado — reload automático)
+
 ```bash
-# na VM, com o módulo af69.ko carregado (sudo):
+# 1) crie o arquivo com as PUBKEYs permitidas (1 por linha):
+echo '616833cf40e2708d42db3626c1a8e7f7434dc5bfcd2f004c5b6d4ec541379822' > /home/kali/peers.txt
+
+# 2) suba o servidor apontando para ele:
+sudo ./af69d eth0 --raw --peer-file /home/kali/peers.txt \
+     --key <privkey_do_servidor_hex>
+```
+
+**Adicionar um device novo = editar o arquivo.** O servidor percebe a
+mudança sozinho (checa o mtime do arquivo a cada ~1s) e passa a aceitar
+a nova pubkey — sem reiniciar, sem sinal:
+
+```bash
+echo 'outra_pubkey_hex' >> /home/kali/peers.txt   # vale na hora
+```
+
+### Com chave única na linha de comando
+
+```bash
 sudo ./af69d eth0 --raw \
      --allow 00:08:22:9c:03:fc \        # (opcional) MACs permitidos
      --peer  <pubkey_do_celular_hex> \  # só quem tem essa pub entra
@@ -87,11 +137,10 @@ No chroot do Nethunter (Kali arm64):
 
 ```bash
 export PATH=/usr/bin:/bin
+export HOME=/root
 
-# 1) pedir endereço (autenticado com sua chave):
-/root/bin/af69_raw dhcp wlan0 \
-    --key <sua_privkey_hex> \
-    --server-pub <pubkey_do_servidor_hex>
+# 1) pedir endereço (usa a chave automática de ~/.ipv69/key):
+/root/bin/af69_raw dhcp wlan0 --server-pub <pubkey_do_servidor_hex>
 
 # saída:
 #   dhcp: OFFER 0000000000000010 lease 3600s
@@ -104,9 +153,8 @@ Depois de configurado, o endereço é **por-socket**: quem quiser "ter" o
 manter o endereço vivo, use o daemon:
 
 ```bash
-# segura o endereço + cria a interface TAP ip69-0 (autenticado):
+# segura o endereço + cria a interface TAP ip69-0 (chave automática):
 sudo /root/bin/ip69d wlan0 --raw --tap ip69-0 \
-    --key <sua_privkey_hex> \
     --server-pub <pubkey_do_servidor_hex>
 
 # em outro terminal, consultar como `ip addr`:
@@ -160,11 +208,11 @@ do receptor dropa quem não usa o próprio endereço):
 | Camada | O que faz | Quem configura |
 |---|---|---|
 | Allowlist de MAC (`--allow`) | só MACs listados pegam lease | servidor |
-| **Ed25519** (`--peer`/`--key`/`--server-pub`) | assina DHCP; vazou a privada de um device = só ele cai; sem secret compartilhado | servidor + clientes |
+| **Ed25519** (`--peer-file`/`--peer`/`--key`/`--server-pub`) | assina DHCP; vazou a privada de um device = só ele cai; sem secret compartilhado | servidor + clientes |
 | Binding de lease no módulo (`IPV69_BIND_ADD`) | dgram só de endereço com lease válido e MAC correto; resto dropado | automático (af69d) |
 
-Sem `--peer`/`--key` o DHCP fica sem cripto (só allowlist MAC se passar
-`--allow`) — ok para lab, não para rede compartilhada.
+Sem `--peer`/`--peer-file`/`--key` o DHCP fica sem cripto (só allowlist
+MAC se passar `--allow`) — ok para lab, não para rede compartilhada.
 
 Detalhes e wire format: `docs/security.md`.
 
@@ -174,6 +222,8 @@ Detalhes e wire format: `docs/security.md`.
 
 - **PATH do chroot**: sempre `export PATH=/usr/bin:/bin` antes de rodar
   (senão usa `/system/bin` do Android).
+- **HOME no chroot**: `export HOME=/root` — o auto-key guarda a chave
+  em `~/.ipv69/key`; sem HOME ela vai para um lugar inesperado.
 - **Portas são hex**: `recv ... 10` = porta 16 decimal; o frame mostra
   `ports=1/16` em decimal.
 - **src no send**: com binding ativo no receptor, mandar dgram com `src`
@@ -188,13 +238,53 @@ Detalhes e wire format: `docs/security.md`.
 - **Módulo em uso no WSL**: `rmmod af69` falha se houver socket AF_69
   aberto — mate os processos (`pkill -f 'build/ip69[d]'`) antes.
 
+---
+
 ## 7. Build
 
 ```bash
 make af69_raw af69_test af69d ipv69-keygen ip69 ip69d   # x64
 make -C kernel/af69 KDIR=/home/bacal/wsl-kernel         # módulo (WSL)
 # arm64 (celular):
-aarch64-linux-gnu-gcc -O2 -static -Iinclude -o af69_raw_arm64 \
-    tests/af69_raw.c src/IPv69/parse.c \
-    src/IPv69/tweetnacl.c src/IPv69/randombytes.c
+aarch64-linux-gnu-gcc -O2 -static -Iinclude -Ilib/ed25519/include \
+    -o af69_raw_arm64 tests/af69_raw.c src/IPv69/parse.c \
+    lib/ed25519/src/ed25519.c lib/ed25519/src/tweetnacl.c lib/ed25519/src/randombytes.c
 ```
+
+---
+
+## 8. A lib `ed25519` (para outros projetos)
+
+A cripto vive em `lib/ed25519/` **separada do protocolo** — o IPv69
+consome a mesma API que você usaria no seu "HTTPS próprio". Nada ali
+depende de AF_69, header.h ou do kernel.
+
+```c
+#include "ed25519.h"
+
+uint8_t seed[ED25519_SEED_LEN], sk[ED25519_SK_LEN], pk[ED25519_PUB_LEN];
+uint8_t sig[ED25519_SIG_LEN];
+
+ed25519_keypair(sk, pk);                          // sk[0..31]=seed, sk[32..63]=pub
+ed25519_seed_to_pub(pk, seed);                    // derivar pub de um seed existente
+ed25519_sign(sig, msg, msglen, sk);               // sk = seed (deriva a pub interna)
+ed25519_verify(msg, msglen, sig, pk) == 0;        // 0 = assinatura válida
+
+// persistência no estilo SSH (~/.ipv69/key, seed hex, modo 0600):
+char path[256];
+ed25519_keyfile_default_path(path, sizeof(path));
+ed25519_keyfile_load_or_create(sk, path);         // 1 = gerou e imprimiu a pub nova
+```
+
+Compilar contra a lib (sem Makefile do projeto):
+
+```bash
+gcc -O2 -Ilib/ed25519/include -o meu_app meu_app.c \
+    lib/ed25519/src/ed25519.c lib/ed25519/src/tweetnacl.c lib/ed25519/src/randombytes.c
+```
+
+Notas:
+- Assinatura ~1.7ms (x64) / ~7.4ms (arm64 A53) para mensagens pequenas.
+- A privada é o **seed** (32B hex no keyfile); a pub deriva dele.
+- `tweetnacl.c` é CC0/domínio público (TweetNaCl 20140427); `ed25519.c`
+  é o wrapper com a API limpa (sig separado, buffers independentes).
