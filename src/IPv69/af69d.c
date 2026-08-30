@@ -4,15 +4,20 @@
  * AF_69 kernel module (socket(AF_69)) or, without it, raw AF_PACKET
  * (same wire format).
  *
+ * Security:
+ *   --allow aa:bb:cc:dd:ee:ff   only these MACs may get a lease (repeatable)
+ *   --secret <hex>              shared secret; every DHCP message carries an
+ *                               8-byte HMAC-SHA256 token (client must know it)
+ *
  * Usage: af69d <ifname|ifindex> [pool_start] [pool_end] [lease_sec]
- *   pool_start/pool_end: 40-bit addr form ff.ff.ff.ff.ff or raw hex
- *   (default 00.00.00.00.10 - 00.00.00.00.fe, lease 3600s)
+ *             [--raw] [--allow MAC]... [--secret HEX]
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <errno.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
@@ -22,8 +27,10 @@
 #include "IPv69/af69.h"
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
+#include "IPv69/hmac.h"
 
 #define MAX_LEASES 256
+#define MAX_ALLOW 64
 #define BCAST_MAC { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }
 
 struct lease {
@@ -41,6 +48,10 @@ struct ctx {
     uint64_t pool_start, pool_end;
     uint32_t lease_sec;
     struct lease leases[MAX_LEASES];
+    uint8_t allow[MAX_ALLOW][6];
+    int n_allow;
+    uint8_t secret[32];       /* shared secret (raw bytes) */
+    int secret_len;
 };
 
 static void put_addr40(uint8_t *d, uint64_t v)
@@ -58,6 +69,69 @@ static uint64_t get_addr40(const uint8_t *s)
 static void put_be32(uint8_t *d, uint32_t v)
 {
     d[0] = v >> 24; d[1] = v >> 16; d[2] = v >> 8; d[3] = v;
+}
+
+/* append 8-byte HMAC-SHA256(secret, mac) token at *p; returns bytes written */
+static int token_append(struct ctx *c, const uint8_t *mac, uint8_t *p)
+{
+    uint8_t digest[32];
+
+    if (!c->secret_len)
+        return 0;
+    ipv69_hmac(c->secret, c->secret_len, mac, 6, digest);
+    memcpy(p, digest, IPV69_TOKEN_LEN);
+    return IPV69_TOKEN_LEN;
+}
+
+/* verify trailing token on a received message; plen is total payload len */
+static int token_check(struct ctx *c, const uint8_t *msg, size_t plen,
+                       const uint8_t *mac)
+{
+    uint8_t digest[32];
+
+    if (!c->secret_len)
+        return 1;               /* no auth configured: accept */
+    if (plen < IPV69_TOKEN_LEN)
+        return 0;
+    ipv69_hmac(c->secret, c->secret_len, mac, 6, digest);
+    return !memcmp(msg + plen - IPV69_TOKEN_LEN, digest, IPV69_TOKEN_LEN);
+}
+
+static int mac_allowed(struct ctx *c, const uint8_t *mac)
+{
+    if (!c->n_allow)
+        return 1;
+    for (int i = 0; i < c->n_allow; i++)
+        if (!memcmp(c->allow[i], mac, 6))
+            return 1;
+    return 0;
+}
+
+static void mac_str(const uint8_t *m, char out[18])
+{
+    snprintf(out, 18, "%02x:%02x:%02x:%02x:%02x:%02x",
+             m[0], m[1], m[2], m[3], m[4], m[5]);
+}
+
+/* tell the kernel module who owns a leased address (dgram source auth).
+ * Best effort: on kernels without AF_69 there is nothing to update. */
+static void binding_update(const uint8_t *mac, uint64_t addr,
+                           uint32_t lease_sec, int del)
+{
+    struct ipv69_bind_req req;
+    int fd = socket(AF_69, SOCK_DGRAM, 0);
+
+    if (fd < 0)
+        return;
+    memset(&req, 0, sizeof(req));
+    memcpy(req.mac, mac, 6);
+    req.addr = addr;
+    req.lease_sec = lease_sec;
+    int rc = ioctl(fd, del ? IPV69_BIND_DEL : IPV69_BIND_ADD, &req);
+    if (rc < 0)
+        fprintf(stderr, "af69d: binding ioctl %s: %s\n",
+                del ? "DEL" : "ADD", strerror(errno));
+    close(fd);
 }
 
 /* ---- lease table ----------------------------------------------------- */
@@ -201,7 +275,8 @@ static size_t recv_ctrl(struct ctx *c, uint8_t *buf, size_t bufsz)
 int main(int argc, char **argv)
 {
     struct ctx c;
-    uint8_t buf[1500], offer[1 + 6 + 5 + 4], ack[1 + 6 + 5 + 4];
+    uint8_t buf[1500], offer[1 + 6 + 5 + 4 + IPV69_TOKEN_LEN],
+                   ack[1 + 6 + 5 + 4 + IPV69_TOKEN_LEN];
     time_t now;
     uint64_t addr;
     int idx;
@@ -214,12 +289,14 @@ int main(int argc, char **argv)
 
     if (argc < 2) {
         fprintf(stderr,
-                "Usage: %s <ifname|ifindex> [pool_start] [pool_end] [lease_sec] [--raw]\n"
+                "Usage: %s <ifname|ifindex> [pool_start] [pool_end] [lease_sec]\n"
+                "       [--raw] [--allow aa:bb:cc:dd:ee:ff]... [--secret HEX]\n"
                 "  pool_start/pool_end: ff.ff.ff.ff.ff or raw hex\n"
                 "  defaults: pool 00.00.00.00.10-00.00.00.00.fe, lease 3600s\n"
-                "  --raw: force AF_PACKET (needed when the AF_69 module is\n"
-                "         loaded but replies must go unicast through an AP\n"
-                "         that filters wired->wireless broadcast)\n",
+                "  --raw:    force AF_PACKET (AP filtering wired->wireless\n"
+                "            broadcast requires unicast replies)\n"
+                "  --allow:  restrict leases to these MACs (repeatable)\n"
+                "  --secret: shared secret; DHCP msgs carry HMAC token\n",
                 argv[0]);
         return 1;
     }
@@ -230,19 +307,59 @@ int main(int argc, char **argv)
         c.ifindex = if_nametoindex(argv[1]);
         if (!c.ifindex) { perror("if_nametoindex"); return 1; }
     }
-    if (argc > 3 && strcmp(argv[2], "--raw") && strcmp(argv[3], "--raw")) {
-        if (parse_ipv69_addr(argv[2], &c.pool_start) < 0 ||
-            parse_ipv69_addr(argv[3], &c.pool_end) < 0) {
-            fprintf(stderr, "pool invalido\n");
+    /* positional pool/lease (argv 2/3/4), flags anywhere */
+    if (argc > 2 && strcmp(argv[2], "--raw") && strcmp(argv[2], "--allow") &&
+        strcmp(argv[2], "--secret"))
+        if (parse_ipv69_addr(argv[2], &c.pool_start) < 0) {
+            fprintf(stderr, "pool_start invalido\n");
             return 1;
         }
+    if (argc > 3 && strcmp(argv[3], "--raw") && strcmp(argv[3], "--allow") &&
+        strcmp(argv[3], "--secret"))
+        if (parse_ipv69_addr(argv[3], &c.pool_end) < 0) {
+            fprintf(stderr, "pool_end invalido\n");
+            return 1;
+        }
+    if (argc > 4 && strcmp(argv[4], "--raw") && strcmp(argv[4], "--allow") &&
+        strcmp(argv[4], "--secret")) {
+        char *end;
+        long v = strtol(argv[4], &end, 10);
+        if (*argv[4] && !*end && v > 0)
+            c.lease_sec = (uint32_t)v;
     }
-    if (argc > 4)
-        c.lease_sec = (uint32_t)atoi(argv[4]);
+    /* flags in any position */
     int force_raw = 0;
-    for (int i = 1; i < argc; i++)
-        if (!strcmp(argv[i], "--raw"))
+    for (int i = 2; i < argc; i++) {
+        if (!strcmp(argv[i], "--raw")) {
             force_raw = 1;
+        } else if (!strcmp(argv[i], "--allow") && i + 1 < argc) {
+            if (c.n_allow >= MAX_ALLOW) {
+                fprintf(stderr, "allow: limite %d\n", MAX_ALLOW);
+                return 1;
+            }
+            if (sscanf(argv[++i], "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+                       &c.allow[c.n_allow][0], &c.allow[c.n_allow][1],
+                       &c.allow[c.n_allow][2], &c.allow[c.n_allow][3],
+                       &c.allow[c.n_allow][4], &c.allow[c.n_allow][5]) != 6) {
+                fprintf(stderr, "allow: MAC invalido %s\n", argv[i]);
+                return 1;
+            }
+            c.n_allow++;
+        } else if (!strcmp(argv[i], "--secret") && i + 1 < argc) {
+            const char *hex = argv[++i];
+            size_t hl = strlen(hex);
+            if (hl % 2 || hl / 2 > sizeof(c.secret)) {
+                fprintf(stderr, "secret: hex par <= 64 chars\n");
+                return 1;
+            }
+            c.secret_len = (int)(hl / 2);
+            for (int j = 0; j < c.secret_len; j++) {
+                unsigned v;
+                sscanf(hex + 2 * j, "%2x", &v);
+                c.secret[j] = (uint8_t)v;
+            }
+        }
+    }
 
     /* AF_69 socket by default; --raw forces AF_PACKET */
     c.mode = 0;
@@ -278,10 +395,14 @@ int main(int argc, char **argv)
                c.ifindex, (unsigned long long)c.pool_start,
                (unsigned long long)c.pool_end, c.lease_sec);
     }
+    printf("af69d: allow=%d mac(s)%s, secret=%s\n",
+           c.n_allow, c.n_allow ? "" : " (todos)",
+           c.secret_len ? "sim (HMAC)" : "nao");
 
     for (;;) {
         size_t plen = recv_ctrl(&c, buf, sizeof(buf));
         uint8_t *mac;
+        char ms[18];
         if (plen < 7)
             continue;
         if (buf[0] != IPV69_CTRL_DHCP_DISCOVER &&
@@ -289,25 +410,36 @@ int main(int argc, char **argv)
             buf[0] != IPV69_CTRL_DHCP_RELEASE)
             continue;
         mac = buf + 1;
+        mac_str(mac, ms);
         now = time(NULL);
 
+        if (!mac_allowed(&c, mac)) {
+            printf("af69d: %s nao esta na allowlist -> ignorado\n", ms);
+            continue;
+        }
+        if (!token_check(&c, buf, plen, mac)) {
+            printf("af69d: %s token HMAC invalido -> ignorado\n", ms);
+            continue;
+        }
+
         if (buf[0] == IPV69_CTRL_DHCP_DISCOVER) {
+            size_t olen = sizeof(offer);
             addr = lease_alloc(&c, mac, now);
             if (!addr) {
-                printf("af69d: pool cheio, DISCOVER de %02x:%02x:%02x:%02x:%02x:%02x ignorado\n",
-                       mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+                printf("af69d: pool cheio, DISCOVER de %s ignorado\n", ms);
                 continue;
             }
             offer[0] = IPV69_CTRL_DHCP_OFFER;
             memcpy(offer + 1, mac, 6);
             put_addr40(offer + 7, addr);
             put_be32(offer + 12, c.lease_sec);
-            send_ctrl(&c, offer, sizeof(offer), mac);
-            printf("af69d: DISCOVER %02x:%02x:%02x:%02x:%02x:%02x -> OFFER %016llx\n",
-                   mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-                   (unsigned long long)addr);
+            olen = 16 + token_append(&c, mac, offer + 16);
+            send_ctrl(&c, offer, olen, mac);
+            printf("af69d: DISCOVER %s -> OFFER %016llx\n",
+                   ms, (unsigned long long)addr);
         } else if (buf[0] == IPV69_CTRL_DHCP_REQUEST) {
-            if (plen < 12)
+            size_t alen = sizeof(ack);
+            if (plen < 12 + (c.secret_len ? IPV69_TOKEN_LEN : 0))
                 continue;
             addr = get_addr40(buf + 7);
             if (lease_addr_taken(&c, addr, now) &&
@@ -328,16 +460,18 @@ int main(int argc, char **argv)
             memcpy(ack + 1, mac, 6);
             put_addr40(ack + 7, addr);
             put_be32(ack + 12, c.lease_sec);
-            send_ctrl(&c, ack, sizeof(ack), mac);
-            printf("af69d: REQUEST %02x:%02x:%02x:%02x:%02x:%02x -> ACK %016llx\n",
-                   mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-                   (unsigned long long)addr);
+            alen = 16 + token_append(&c, mac, ack + 16);
+            send_ctrl(&c, ack, alen, mac);
+            binding_update(mac, addr, c.lease_sec, 0);
+            printf("af69d: REQUEST %s -> ACK %016llx\n",
+                   ms, (unsigned long long)addr);
         } else {                    /* RELEASE */
             addr = plen >= 12 ? get_addr40(buf + 7) : 0;
             lease_release(&c, mac, addr);
-            printf("af69d: RELEASE %02x:%02x:%02x:%02x:%02x:%02x %016llx\n",
-                   mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-                   (unsigned long long)addr);
+            if (addr)
+                binding_update(mac, addr, 0, 1);
+            printf("af69d: RELEASE %s %016llx\n",
+                   ms, (unsigned long long)addr);
         }
     }
     return 0;
