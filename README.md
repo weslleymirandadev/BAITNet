@@ -1,5 +1,8 @@
 # IPv69 — Experimental Network Protocol
 
+> **New here? Start with [USAGE.md](USAGE.md)** — build, DHCP69,
+> Ed25519 auth, ip69d/ip69 and troubleshooting.
+
 ## Overview
 
 IPv69 is a meme protocol that will really be used for great stuff — tools
