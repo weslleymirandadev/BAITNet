@@ -30,6 +30,7 @@
 #include "IPv69/af69.h"
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
+#include "IPv69/tweetnacl.h"
 
 #define BCAST_MAC { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }
 #define DHCP_TIMEOUT_MS 3000
@@ -240,15 +241,75 @@ struct transport {
     int ifindex;
     uint8_t mac[6];
     const char *ifname_s;
+    uint8_t sk[64];           /* Ed25519 signing key (optional) */
+    int has_sk;
+    uint8_t server_pub[32];   /* validate OFFER/ACK (optional) */
+    int has_server_pub;
 };
+
+static int hex_decode(const char *hex, uint8_t *out, size_t max)
+{
+    size_t hl = strlen(hex);
+
+    if (hl % 2 || hl / 2 > max)
+        return -1;
+    for (size_t j = 0; j < hl / 2; j++) {
+        unsigned v;
+        if (sscanf(hex + 2 * j, "%2x", &v) != 1)
+            return -1;
+        out[j] = (uint8_t)v;
+    }
+    return (int)(hl / 2);
+}
+
+/* sign `plen` bytes at msg (type..lease); append pub + sig */
+static size_t sign_msg(const struct transport *t, uint8_t *msg, size_t plen)
+{
+    uint8_t *pub = msg + plen;
+    uint8_t *sig = pub + 32;
+    uint8_t tmp[64 + 16];
+    unsigned long long slen;
+
+    if (!t->has_sk)
+        return plen;
+    memcpy(pub, t->sk + 32, 32);
+    crypto_sign(tmp, &slen, msg, plen, t->sk);
+    memcpy(sig, tmp, 64);
+    return plen + 32 + 64;
+}
+
+/* validate a signed reply (OFFER/ACK) with the server pubkey */
+static int check_reply(const struct transport *t, const uint8_t *msg,
+                       size_t plen)
+{
+    unsigned char sm[64 + 16], m[64 + 16];
+    unsigned long long mlen;
+    const uint8_t *spub, *ssig;
+    size_t body;
+
+    if (!t->has_server_pub)
+        return 1;
+    if (plen < 16 + 32 + 64)
+        return 0;
+    body = plen - 32 - 64;
+    spub = msg + body;
+    ssig = spub + 32;
+    if (memcmp(spub, t->server_pub, 32))
+        return 0;
+    memcpy(sm, ssig, 64);
+    memcpy(sm + 64, msg, body);
+    return crypto_sign_open(m, &mlen, sm, 64 + body, t->server_pub) == 0;
+}
 
 static int dhcp_acquire(struct transport *t, struct lease *l, int force_raw)
 {
-    uint8_t discover[1 + 6], req[1 + 6 + 5], buf[1600];
+    uint8_t discover[1 + 6 + 32 + 64], req[1 + 6 + 5 + 32 + 64], buf[1600];
+    size_t dlen, rlen;
     ssize_t n;
 
     discover[0] = IPV69_CTRL_DHCP_DISCOVER;
     memcpy(discover + 1, t->mac, 6);
+    dlen = 7;
 
     if (force_raw) {
         struct dhcp_raw dr;
@@ -264,7 +325,8 @@ static int dhcp_acquire(struct transport *t, struct lease *l, int force_raw)
             memcpy(dr.mac, t->mac, 6);
         }
         t->mode = 1;
-        if (dhcp_raw_send(&dr, discover, sizeof(discover)) < 0) {
+        dlen = sign_msg(t, discover, dlen);
+        if (dhcp_raw_send(&dr, discover, dlen) < 0) {
             perror("send DISCOVER"); return -1;
         }
         n = dhcp_raw_recv(&dr, buf, sizeof(buf));
@@ -283,13 +345,18 @@ static int dhcp_acquire(struct transport *t, struct lease *l, int force_raw)
         t->mode = 0;
         iface_mac(t->ifname_s, t->mac);
         memcpy(discover + 1, t->mac, 6);
-        if (dhcp_af69_send(&da, discover, sizeof(discover)) < 0) {
+        dlen = sign_msg(t, discover, dlen);
+        if (dhcp_af69_send(&da, discover, dlen) < 0) {
             perror("send DISCOVER"); return -1;
         }
         n = dhcp_af69_recv(&da, buf, sizeof(buf), t->mac);
     }
     if (n < 16 || buf[0] != IPV69_CTRL_DHCP_OFFER) {
         fprintf(stderr, "ip69d: OFFER timeout\n");
+        return -1;
+    }
+    if (!check_reply(t, buf, (size_t)n)) {
+        fprintf(stderr, "ip69d: OFFER assinatura invalida\n");
         return -1;
     }
     l->addr = get_addr40(buf + 7);
@@ -300,18 +367,25 @@ static int dhcp_acquire(struct transport *t, struct lease *l, int force_raw)
     req[0] = IPV69_CTRL_DHCP_REQUEST;
     memcpy(req + 1, t->mac, 6);
     put_addr40(req + 7, l->addr);
+    rlen = 12;
     if (t->mode == 1) {
         struct dhcp_raw dr = { .fd = t->fd, .ifindex = t->ifindex };
         memcpy(dr.mac, t->mac, 6);
-        dhcp_raw_send(&dr, req, sizeof(req));
+        rlen = sign_msg(t, req, rlen);
+        dhcp_raw_send(&dr, req, rlen);
         n = dhcp_raw_recv(&dr, buf, sizeof(buf));
     } else {
         struct dhcp_af69 da = { .fd = t->fd, .ifindex = t->ifindex };
-        dhcp_af69_send(&da, req, sizeof(req));
+        rlen = sign_msg(t, req, rlen);
+        dhcp_af69_send(&da, req, rlen);
         n = dhcp_af69_recv(&da, buf, sizeof(buf), t->mac);
     }
     if (n < 16 || buf[0] != IPV69_CTRL_DHCP_ACK) {
         fprintf(stderr, "ip69d: ACK timeout\n");
+        return -1;
+    }
+    if (!check_reply(t, buf, (size_t)n)) {
+        fprintf(stderr, "ip69d: ACK assinatura invalida\n");
         return -1;
     }
     l->expiry = time(NULL) + l->lease_sec;
@@ -394,10 +468,26 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--raw")) force_raw = 1;
         else if (!strcmp(argv[i], "--tap") && i + 1 < argc) tapname = argv[++i];
         else if (!strcmp(argv[i], "--sock") && i + 1 < argc) sockpath = argv[++i];
-        else if (!ifname) ifname = argv[i];
+        else if (!strcmp(argv[i], "--key") && i + 1 < argc) {
+            uint8_t seed[32];
+            if (hex_decode(argv[++i], seed, 32) != 32) {
+                fprintf(stderr, "key: privkey invalida (32 bytes hex)\n");
+                return 1;
+            }
+            memcpy(t.sk, seed, 32);
+            crypto_sign_seed_to_pk(t.sk + 32, seed);
+            t.has_sk = 1;
+        } else if (!strcmp(argv[i], "--server-pub") && i + 1 < argc) {
+            if (hex_decode(argv[++i], t.server_pub, 32) != 32) {
+                fprintf(stderr, "server-pub: pubkey invalida (32 bytes hex)\n");
+                return 1;
+            }
+            t.has_server_pub = 1;
+        } else if (!ifname) ifname = argv[i];
         else {
             fprintf(stderr,
-                    "Usage: %s <ifname|ifindex> [--tap NAME] [--raw] [--sock PATH]\n",
+                    "Usage: %s <ifname|ifindex> [--tap NAME] [--raw] [--sock PATH]\n"
+                    "       [--key PRIV_HEX] [--server-pub PUB_HEX]\n",
                     argv[0]);
             return 1;
         }
