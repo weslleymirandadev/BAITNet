@@ -21,7 +21,7 @@
 #include "IPv69/af69.h"
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
-#include "IPv69/tweetnacl.h"
+#include "ed25519.h"
 
 #define IPV69_CTRL_ECHO_REQUEST 3
 #define IPV69_CTRL_ECHO_REPLY   4
@@ -162,7 +162,7 @@ static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
     uint64_t addr = 0;
     ssize_t n;
     size_t len;
-    const size_t SIGSZ = has_sk ? (32 + 64) : 0;   /* pub + sig tail */
+    const size_t SIGSZ = has_server_pub ? (32 + 64) : 0;   /* pub + sig tail */
 
     printf("dhcp: MAC %02x:%02x:%02x:%02x:%02x:%02x%s\n",
            src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5],
@@ -174,9 +174,8 @@ static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
     memcpy(pkt + 1, src_mac, 6);
     size_t dlen = 7;
     if (has_sk) {
-        unsigned long long slen;
         memcpy(pkt + 7, sk + 32, 32);           /* pub */
-        crypto_sign(pkt + 7 + 32, &slen, pkt, 7, sk);
+        ed25519_sign(pkt + 7 + 32, pkt, 7, sk);
         dlen += 32 + 64;
     }
     len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
@@ -191,18 +190,13 @@ static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
         if (n < 14 + IPV69_HEADER_LEN + 16 + (ssize_t)SIGSZ) continue;
         const struct ipv69_header *h = (const struct ipv69_header *)(frame + 14);
         const uint8_t *p = frame + 14 + IPV69_HEADER_LEN;
-        size_t plen = n - 14 - IPV69_HEADER_LEN;
         if (h->next_header != IPV69_NEXT_CONTROL || p[0] != IPV69_CTRL_DHCP_OFFER)
             continue;
         if (memcmp(p + 1, src_mac, 6)) continue;
         if (has_server_pub) {
-            unsigned char sm[64 + 16], m[64 + 16];
-            unsigned long long mlen;
             const uint8_t *spub = p + 16, *ssig = p + 16 + 32;
-            memcpy(sm, ssig, 64);
-            memcpy(sm + 64, p, 16);
             if (memcmp(spub, server_pub, 32) ||
-                crypto_sign_open(m, &mlen, sm, 64 + 16, server_pub) != 0) {
+                ed25519_verify(p, 16, ssig, server_pub) != 0) {
                 printf("dhcp: OFFER assinatura invalida\n");
                 return 1;
             }
@@ -219,9 +213,8 @@ static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
     put_addr40(pkt + 7, addr);
     size_t rlen = 12;
     if (has_sk) {
-        unsigned long long slen;
         memcpy(pkt + 12, sk + 32, 32);
-        crypto_sign(pkt + 12 + 32, &slen, pkt, 12, sk);
+        ed25519_sign(pkt + 12 + 32, pkt, 12, sk);
         rlen += 32 + 64;
     }
     len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
@@ -236,18 +229,13 @@ static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
         if (n < 14 + IPV69_HEADER_LEN + 16 + (ssize_t)SIGSZ) continue;
         const struct ipv69_header *h = (const struct ipv69_header *)(frame + 14);
         const uint8_t *p = frame + 14 + IPV69_HEADER_LEN;
-        size_t plen = n - 14 - IPV69_HEADER_LEN;
         if (h->next_header != IPV69_NEXT_CONTROL || p[0] != IPV69_CTRL_DHCP_ACK)
             continue;
         if (memcmp(p + 1, src_mac, 6)) continue;
         if (has_server_pub) {
-            unsigned char sm[64 + 16], m[64 + 16];
-            unsigned long long mlen;
             const uint8_t *spub = p + 16, *ssig = p + 16 + 32;
-            memcpy(sm, ssig, 64);
-            memcpy(sm + 64, p, 16);
             if (memcmp(spub, server_pub, 32) ||
-                crypto_sign_open(m, &mlen, sm, 64 + 16, server_pub) != 0) {
+                ed25519_verify(p, 16, ssig, server_pub) != 0) {
                 printf("dhcp: ACK assinatura invalida\n");
                 return 1;
             }
@@ -287,7 +275,7 @@ int main(int argc, char **argv)
                 return 1;
             }
             memcpy(sk, seed, 32);
-            crypto_sign_seed_to_pk(sk + 32, seed);
+            ed25519_seed_to_pub(sk + 32, seed);
             has_sk = 1;
         } else if (!strcmp(argv[i], "--server-pub")) {
             if (hex_decode(argv[i + 1], server_pub, 32) != 32) {
@@ -418,8 +406,19 @@ int main(int argc, char **argv)
         }
     }
 
-    if (!strcmp(argv[1], "dhcp"))
+    if (!strcmp(argv[1], "dhcp")) {
+        if (!has_sk) {
+            /* auto: load ~/.ipv69/key or generate + register it */
+            char kpath[256];
+            ed25519_keyfile_default_path(kpath, sizeof(kpath));
+            if (ed25519_keyfile_load_or_create(kpath, sk, server_pub) < 0) {
+                fprintf(stderr, "dhcp: nao foi possivel carregar/criar chave em %s\n", kpath);
+                return 1;
+            }
+            has_sk = 1;
+        }
         return dhcp_client(fd, ifindex, src_mac, sk, has_sk, server_pub, has_server_pub);
+    }
 
     fprintf(stderr, "modo desconhecido: %s\n", argv[1]);
     return 1;
