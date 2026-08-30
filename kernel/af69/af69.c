@@ -48,9 +48,9 @@
 #define IPV69_VERSION       6
 #define IPV69_TRAFFIC_CLASS 9
 #define IPV69_HEADER_LEN    32
-#define IPV69_NEXT_DGRAM    253
-#define IPV69_NEXT_STREAM   254     /* reserved (future SCTP-derived transport) */
-#define IPV69_NEXT_CONTROL  255
+#define IPV69_NEXT_CONTROL  0
+#define IPV69_NEXT_DGRAM    1
+#define IPV69_NEXT_STREAM   2       /* reserved (future SCTP-derived transport) */
 #define IPV69_FLAG_NOFRAG   (1 << 0)
 #define IPV69_MAX_PAYLOAD   1400
 #define IPV69_DEFAULT_HOP   64
@@ -89,12 +89,13 @@ struct ipv69_hdr {
     __u8  hop_limit;
     __u8  flags;
     __u8  reserved;
-    __be16 reserved2;
-    __be32 sequence;
+    __be16 src_port;
+    __be16 dst_port;
+    __u8  sequence[4];
     __u8  source[5];     /* 40-bit address */
-    __u8  source_res[3];
+    __u8  source_res[2];
     __u8  dest[5];       /* 40-bit address */
-    __u8  dest_res[3];
+    __u8  dest_res[2];
 };
 
 struct ipv69_neigh {
@@ -316,7 +317,8 @@ static struct net_device *ipv69_fwd_dev(struct net *net,
 static int ipv69_xmit(struct sock *sk, struct net *net,
                       struct net_device *dev, const u8 *dst_mac,
                       u64 src_addr, u64 dst_addr, u8 next_header,
-                      u8 hop_limit, const u8 *payload, size_t plen)
+                      u8 hop_limit, u16 src_port, u16 dst_port,
+                      const u8 *payload, size_t plen)
 {
     struct sk_buff *skb;
     struct ipv69_hdr *h;
@@ -350,7 +352,12 @@ static int ipv69_xmit(struct sock *sk, struct net *net,
     h->next_header = next_header;
     h->hop_limit = hop_limit ? hop_limit : IPV69_DEFAULT_HOP;
     h->flags = IPV69_FLAG_NOFRAG;
-    h->sequence = htonl(1);
+    h->src_port = htons(src_port);
+    h->dst_port = htons(dst_port);
+    h->sequence[0] = 0;
+    h->sequence[1] = 0;
+    h->sequence[2] = 0;
+    h->sequence[3] = 1;
     ipv69_put_addr(h->source, src_addr);
     ipv69_put_addr(h->dest, dst_addr);
     memcpy(skb_put(skb, plen), payload, plen);
@@ -374,7 +381,8 @@ static void ipv69_send_err(struct net *net, struct net_device *dev,
     buf[0] = type;
     memcpy(buf + 1, h, IPV69_HEADER_LEN);
     ipv69_xmit(NULL, net, dev, dst_mac, 0, ipv69_get_addr(h->source),
-               IPV69_NEXT_CONTROL, IPV69_DEFAULT_HOP, buf, sizeof(buf));
+               IPV69_NEXT_CONTROL, IPV69_DEFAULT_HOP, 0, 0,
+               buf, sizeof(buf));
 }
 
 static int ipv69_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
@@ -405,7 +413,7 @@ static int ipv69_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
             src = sa->src;
         src_port = sa->src_port;
         dst_port = sa->dst_port;
-        next_header = sa->next_header ? sa->next_header : IPV69_NEXT_DGRAM;
+        next_header = sa->next_header;
         hop_limit = sa->hop_limit;
     }
     if (next_header != IPV69_NEXT_DGRAM && next_header != IPV69_NEXT_CONTROL)
@@ -413,19 +421,9 @@ static int ipv69_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
     if (len > IPV69_MAX_PAYLOAD)
         return -EMSGSIZE;
 
-    /* dgram: [src_port 2][dst_port 2][data]; control: [type][data] */
-    if (next_header == IPV69_NEXT_DGRAM) {
-        plen = 4 + len;
-        if (plen > IPV69_MAX_PAYLOAD)
-            return -EMSGSIZE;
-        payload[0] = src_port >> 8;
-        payload[1] = src_port & 0xff;
-        payload[2] = dst_port >> 8;
-        payload[3] = dst_port & 0xff;
-    } else {
-        plen = len;
-    }
-    if (!copy_from_iter_full(payload + plen - len, len, &msg->msg_iter))
+    /* dgram: [data]; control: [type][data]. Ports live in the header. */
+    plen = len;
+    if (!copy_from_iter_full(payload, len, &msg->msg_iter))
         return -EFAULT;
 
     if (!ifindex) {
@@ -446,13 +444,14 @@ static int ipv69_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
         u8 req[1 + 5] = { IPV69_CTRL_ND_REQUEST };
         ipv69_put_addr(req + 1, dst);
         ipv69_xmit(NULL, net, dev, ipv69_bcast, src, dst,
-                   IPV69_NEXT_CONTROL, hop_limit, req, sizeof(req));
+                   IPV69_NEXT_CONTROL, hop_limit, 0, 0, req, sizeof(req));
         memcpy(dst_mac, ipv69_bcast, ETH_ALEN);
     }
 
     err = ipv69_xmit(sock->sk, net, dev,
                      dst == IPV69_BCAST_ADDR ? ipv69_bcast : dst_mac,
-                     src, dst, next_header, hop_limit, payload, plen);
+                     src, dst, next_header, hop_limit, src_port, dst_port,
+                     payload, plen);
     dev_put(dev);
     return err < 0 ? err : (int)len;
 
@@ -488,11 +487,7 @@ static void ipv69_deliver(struct sk_buff *skb, const struct ipv69_hdr *h,
     struct ipv69_sock *is;
     struct sock *sk;
     __u64 dst = ipv69_get_addr(h->dest);
-    __u16 fport = 0;
-
-    if (h->next_header == IPV69_NEXT_DGRAM)
-        fport = (skb->data[IPV69_HEADER_LEN + 2] << 8) |
-                skb->data[IPV69_HEADER_LEN + 3];
+    __u16 fport = ntohs(h->dst_port);
 
     spin_lock_bh(&ipv69_lock);
     list_for_each_entry(is, &ipv69_socks, list) {
@@ -510,7 +505,8 @@ static void ipv69_deliver(struct sk_buff *skb, const struct ipv69_hdr *h,
         if (is->src_addr && is->src_addr != dst && dst != IPV69_BCAST_ADDR)
             continue;
         /* port demux (dgram only) */
-        if (is->dst_port && fport && is->dst_port != fport)
+        if (is->dst_port && fport && h->next_header == IPV69_NEXT_DGRAM &&
+            is->dst_port != fport)
             continue;
         skb2 = skb_clone(skb, GFP_ATOMIC);
         if (!skb2)
@@ -546,7 +542,7 @@ static void ipv69_handle_ctrl(struct sk_buff *skb, const struct ipv69_hdr *h,
         ipv69_put_addr(buf + 1, dst);
         memcpy(buf + 6, dev->dev_addr, ETH_ALEN);
         ipv69_xmit(NULL, net, dev, smac, dst, src, IPV69_NEXT_CONTROL,
-                   IPV69_DEFAULT_HOP, buf, 12);
+                   IPV69_DEFAULT_HOP, 0, 0, buf, 12);
         break;
     case IPV69_CTRL_ECHO_REQUEST:
         if (dst == 0 || dst == IPV69_BCAST_ADDR)
@@ -557,7 +553,7 @@ static void ipv69_handle_ctrl(struct sk_buff *skb, const struct ipv69_hdr *h,
         if (plen - 1 <= IPV69_MAX_PAYLOAD - 1)
             memcpy(buf + 1, d, plen - 1);
         ipv69_xmit(NULL, net, dev, smac, dst, src, IPV69_NEXT_CONTROL,
-                   IPV69_DEFAULT_HOP, buf, plen);
+                   IPV69_DEFAULT_HOP, 0, 0, buf, plen);
         break;
     default:
         break;   /* ND_REPLY, ECHO_REPLY, errors: just delivered */
@@ -582,10 +578,8 @@ static int ipv69_rcv(struct sk_buff *skb, struct net_device *dev,
         goto drop;
     if (h->next_header != IPV69_NEXT_DGRAM &&
         h->next_header != IPV69_NEXT_CONTROL)
-        goto drop;   /* 254 STREAM reserved */
+        goto drop;   /* 2 STREAM reserved */
     if (ntohs(h->payload_len) != skb->len - IPV69_HEADER_LEN)
-        goto drop;
-    if (h->next_header == IPV69_NEXT_DGRAM && skb->len < IPV69_HEADER_LEN + 4)
         goto drop;
     if (h->next_header == IPV69_NEXT_CONTROL && skb->len < IPV69_HEADER_LEN + 1)
         goto drop;
@@ -619,7 +613,8 @@ static int ipv69_rcv(struct sk_buff *skb, struct net_device *dev,
                     dmac = mac;
                 ipv69_xmit(NULL, dev_net(fwd), fwd, dmac,
                            ipv69_get_addr(h->source), dst, h->next_header,
-                           h->hop_limit - 1,
+                           h->hop_limit - 1, ntohs(h->src_port),
+                           ntohs(h->dst_port),
                            skb->data + IPV69_HEADER_LEN,
                            ntohs(h->payload_len));
                 dev_put(fwd);
@@ -641,7 +636,7 @@ static int ipv69_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
     struct sock *sk = sock->sk;
     struct sk_buff *skb;
     struct ipv69_hdr *h;
-    size_t plen, off, copylen;
+    size_t plen, copylen;
     int err;
 
     skb = skb_recv_datagram(sk, flags, &err);
@@ -650,13 +645,10 @@ static int ipv69_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 
     h = (struct ipv69_hdr *)skb->data;   /* Ethernet header already pulled */
     plen = ntohs(h->payload_len);
-    if (h->next_header == IPV69_NEXT_DGRAM) {
-        off = IPV69_HEADER_LEN + 4;      /* skip ports */
-        copylen = plen > 4 ? min(len, plen - 4) : 0;
-    } else {
-        off = IPV69_HEADER_LEN;          /* control: [type][data] */
-        copylen = min(len, plen);
-    }
+    if (h->next_header == IPV69_NEXT_DGRAM)
+        copylen = min(len, plen);        /* dgram: [data] */
+    else
+        copylen = min(len, plen);        /* control: [type][data] */
 
     if (msg->msg_name) {
         struct sockaddr_69 *sa = msg->msg_name;
@@ -665,21 +657,15 @@ static int ipv69_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
         sa->ifindex = skb->dev ? skb->dev->ifindex : 0;
         sa->src = ipv69_get_addr(h->source);
         sa->dst = ipv69_get_addr(h->dest);
-        sa->src_port = 0;
-        sa->dst_port = 0;
-        if (h->next_header == IPV69_NEXT_DGRAM) {
-            const __be16 *ports =
-                (const __be16 *)(skb->data + IPV69_HEADER_LEN);
-            sa->src_port = ntohs(ports[0]);
-            sa->dst_port = ntohs(ports[1]);
-        }
+        sa->src_port = ntohs(h->src_port);
+        sa->dst_port = ntohs(h->dst_port);
         sa->next_header = h->next_header;
         sa->hop_limit = h->hop_limit;
         sa->reserved = 0;
         msg->msg_namelen = sizeof(struct sockaddr_69);
     }
 
-    err = skb_copy_datagram_msg(skb, off, msg, copylen);
+    err = skb_copy_datagram_msg(skb, IPV69_HEADER_LEN, msg, copylen);
     skb_free_datagram(sk, skb);
     return err ? err : (int)copylen;
 }
