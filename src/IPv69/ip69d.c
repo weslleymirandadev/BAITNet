@@ -30,7 +30,7 @@
 #include "IPv69/af69.h"
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
-#include "IPv69/tweetnacl.h"
+#include "ed25519.h"
 
 #define BCAST_MAC { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }
 #define DHCP_TIMEOUT_MS 3000
@@ -267,14 +267,12 @@ static size_t sign_msg(const struct transport *t, uint8_t *msg, size_t plen)
 {
     uint8_t *pub = msg + plen;
     uint8_t *sig = pub + 32;
-    uint8_t tmp[64 + 16];
-    unsigned long long slen;
 
     if (!t->has_sk)
         return plen;
     memcpy(pub, t->sk + 32, 32);
-    crypto_sign(tmp, &slen, msg, plen, t->sk);
-    memcpy(sig, tmp, 64);
+    if (ed25519_sign(sig, msg, plen, t->sk) < 0)
+        return plen;
     return plen + 32 + 64;
 }
 
@@ -282,8 +280,6 @@ static size_t sign_msg(const struct transport *t, uint8_t *msg, size_t plen)
 static int check_reply(const struct transport *t, const uint8_t *msg,
                        size_t plen)
 {
-    unsigned char sm[64 + 16], m[64 + 16];
-    unsigned long long mlen;
     const uint8_t *spub, *ssig;
     size_t body;
 
@@ -296,9 +292,7 @@ static int check_reply(const struct transport *t, const uint8_t *msg,
     ssig = spub + 32;
     if (memcmp(spub, t->server_pub, 32))
         return 0;
-    memcpy(sm, ssig, 64);
-    memcpy(sm + 64, msg, body);
-    return crypto_sign_open(m, &mlen, sm, 64 + body, t->server_pub) == 0;
+    return ed25519_verify(msg, body, ssig, t->server_pub) == 0;
 }
 
 static int dhcp_acquire(struct transport *t, struct lease *l, int force_raw)
@@ -475,7 +469,7 @@ int main(int argc, char **argv)
                 return 1;
             }
             memcpy(t.sk, seed, 32);
-            crypto_sign_seed_to_pk(t.sk + 32, seed);
+            ed25519_seed_to_pub(t.sk + 32, seed);
             t.has_sk = 1;
         } else if (!strcmp(argv[i], "--server-pub") && i + 1 < argc) {
             if (hex_decode(argv[++i], t.server_pub, 32) != 32) {
@@ -509,6 +503,18 @@ int main(int argc, char **argv)
     t.ifname_s = ifname;
 
     signal(SIGUSR1, on_sigusr1);
+
+    if (!t.has_sk) {
+        /* auto: load ~/.ipv69/key or generate + register it */
+        char kpath[256];
+        ed25519_keyfile_default_path(kpath, sizeof(kpath));
+        if (ed25519_keyfile_load_or_create(kpath, t.sk, t.server_pub) < 0) {
+            fprintf(stderr, "ip69d: nao foi possivel carregar/criar chave em %s\n", kpath);
+            return 1;
+        }
+        t.has_sk = 1;
+    }
+
     tapfd = tap_create(tapname);
     if (tapfd >= 0)
         tap_up(tapname);
