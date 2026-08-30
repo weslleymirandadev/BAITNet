@@ -1,7 +1,7 @@
 /* af69_raw - IPv69 (ethertype 0x6969) over AF_PACKET, no kernel module.
  * For devices whose kernel lacks the AF_69 patch (e.g. stock Android).
  * Same wire format as the af69.ko module: Ethernet + 32B IPv69 header
- * + [src_port 2][dst_port 2][payload] for the 253 datagram.
+ * (ports native at offsets 10/12) + [payload] for the dgram protocol.
  * Usage: af69_raw recv <ifname> [src_port_hex]
  *        af69_raw send <ifname> <dst> <src_port_hex> <dst_port_hex> [payload]
  *        af69_raw ping <ifname> <dst> [payload]   (echo request/reply)
@@ -40,6 +40,7 @@ static uint64_t get_addr40(const uint8_t *s)
 static size_t build_frame(uint8_t *frame, const uint8_t *dst_mac,
                           const uint8_t *src_mac, uint64_t src, uint64_t dst,
                           uint8_t next_header, uint8_t hop_limit,
+                          uint16_t src_port, uint16_t dst_port,
                           const uint8_t *payload, size_t plen)
 {
     struct ethernet_header *eth = (struct ethernet_header *)frame;
@@ -56,6 +57,8 @@ static size_t build_frame(uint8_t *frame, const uint8_t *dst_mac,
     h->next_header = next_header;
     h->hop_limit = hop_limit ? hop_limit : 64;
     h->flags = IPV69_FLAG_NOFRAG;
+    wr_be16(&h->src_port, src_port);
+    wr_be16(&h->dst_port, dst_port);
     put_addr40(h->source, src);
     put_addr40(h->dest, dst);
 
@@ -107,12 +110,13 @@ static void dump_frame(const uint8_t *frame, size_t len)
            eth->dst_mac[3], eth->dst_mac[4], eth->dst_mac[5],
            (unsigned long long)get_addr40(h->source),
            (unsigned long long)get_addr40(h->dest), h->next_header);
-    if (h->next_header == 253 && plen >= 4) {
+    if (h->next_header == IPV69_NEXT_DGRAM) {
         const uint8_t *p = frame + 14 + IPV69_HEADER_LEN;
-        printf(" ports=%u/%u payload(%zu)=", rd_be16(p), rd_be16(p + 2), plen - 4);
-        for (size_t i = 4; i < plen && i < 128; i++)
+        printf(" ports=%u/%u payload(%zu)=", rd_be16(&h->src_port),
+               rd_be16(&h->dst_port), plen);
+        for (size_t i = 0; i < plen && i < 128; i++)
             putchar((p[i] >= 0x20 && p[i] <= 0x7e) ? p[i] : '.');
-    } else if (h->next_header == 255 && plen >= 1) {
+    } else if (h->next_header == IPV69_NEXT_CONTROL && plen >= 1) {
         printf(" ctrl=%u", frame[14 + IPV69_HEADER_LEN]);
     }
     putchar('\n');
@@ -152,7 +156,6 @@ int main(int argc, char **argv)
 
     if (!strcmp(argv[1], "send")) {
         uint64_t dst;
-        uint8_t payload[1400];
         size_t plen;
         if (argc < 6 || parse_ipv69_addr(argv[3], &dst) < 0) {
             fprintf(stderr, "send: precisa <dst> <src_port> <dst_port> [payload]\n");
@@ -162,12 +165,9 @@ int main(int argc, char **argv)
         size_t dlen = strlen(data);
         uint16_t sp = (uint16_t)strtoul(argv[4], NULL, 16);
         uint16_t dp = (uint16_t)strtoul(argv[5], NULL, 16);
-        payload[0] = sp >> 8; payload[1] = sp & 0xff;
-        payload[2] = dp >> 8; payload[3] = dp & 0xff;
-        memcpy(payload + 4, data, dlen);
-        plen = 4 + dlen;
-        size_t len = build_frame(frame, bcast, src_mac, 0, dst, 253, 64,
-                                 payload, plen);
+        plen = dlen;
+        size_t len = build_frame(frame, bcast, src_mac, 0, dst, IPV69_NEXT_DGRAM,
+                                 64, sp, dp, (const uint8_t *)data, plen);
         if (send_frame(fd, ifindex, bcast, frame, len) < 0) { perror("sendto"); return 1; }
         printf("sent %zu bytes (dgram, dst=%016llx)\n", dlen, (unsigned long long)dst);
         return 0;
@@ -185,8 +185,8 @@ int main(int argc, char **argv)
         size_t dlen = strlen(data);
         req[0] = IPV69_CTRL_ECHO_REQUEST;
         memcpy(req + 1, data, dlen);
-        size_t len = build_frame(frame, bcast, src_mac, 1, dst, 255, 64,
-                                 req, 1 + dlen);
+        size_t len = build_frame(frame, bcast, src_mac, 1, dst, IPV69_NEXT_CONTROL,
+                                 64, 0, 0, req, 1 + dlen);
         if (send_frame(fd, ifindex, bcast, frame, len) < 0) { perror("sendto"); return 1; }
         printf("ping enviado para %016llx, aguardando reply...\n",
                (unsigned long long)dst);
@@ -197,7 +197,7 @@ int main(int argc, char **argv)
             if (n >= 14 + IPV69_HEADER_LEN + 1) {
                 const struct ipv69_header *h =
                     (const struct ipv69_header *)(frame + 14);
-                if (h->next_header == 255 &&
+                if (h->next_header == IPV69_NEXT_CONTROL &&
                     frame[14 + IPV69_HEADER_LEN] == IPV69_CTRL_ECHO_REPLY) {
                     printf("reply de %016llx: ",
                            (unsigned long long)get_addr40(h->source));
