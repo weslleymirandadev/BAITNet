@@ -579,7 +579,9 @@ static int ipv69_rcv(struct sk_buff *skb, struct net_device *dev,
     if (h->next_header != IPV69_NEXT_DGRAM &&
         h->next_header != IPV69_NEXT_CONTROL)
         goto drop;   /* 2 STREAM reserved */
-    if (ntohs(h->payload_len) != skb->len - IPV69_HEADER_LEN)
+    /* payload_len must fit in the frame; Ethernet padding allowed
+       (real NICs pad short frames to the 60B minimum) */
+    if (ntohs(h->payload_len) > skb->len - IPV69_HEADER_LEN)
         goto drop;
     if (h->next_header == IPV69_NEXT_CONTROL && skb->len < IPV69_HEADER_LEN + 1)
         goto drop;
