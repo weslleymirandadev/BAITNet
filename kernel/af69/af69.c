@@ -99,9 +99,28 @@ struct ipv69_hdr {
 };
 
 struct ipv69_neigh {
-    __u64 addr;                 /* 40-bit IPv69 address */
-    u8    mac[ETH_ALEN];
+    u64 addr;                 /* 40-bit IPv69 address */
+    u8  mac[ETH_ALEN];
     unsigned long used;
+};
+
+/* DHCP69 lease binding: addr is owned by mac until expiry.
+ * Populated by the server via ioctl (AF_69 BIND_ADD/DEL); dgram frames
+ * whose source has no valid binding (or a different MAC) are dropped. */
+struct ipv69_binding {
+    u8  mac[ETH_ALEN];
+    u64 addr;
+    unsigned long expiry;
+};
+
+#define IPV69_BIND_MAX 256
+#define IPV69_BIND_ADD _IOW(0x69, 1, struct ipv69_bind_req)
+#define IPV69_BIND_DEL _IOW(0x69, 2, struct ipv69_bind_req)
+
+struct ipv69_bind_req {
+    u8  mac[ETH_ALEN];
+    u64 addr;
+    u32 lease_sec;
 };
 
 struct ipv69_sock {
@@ -183,6 +202,68 @@ static void ipv69_nd_learn(u64 addr, const u8 *mac)
     memcpy(ipv69_nd_tab[slot].mac, mac, ETH_ALEN);
     ipv69_nd_tab[slot].used = now;
 out:
+    spin_unlock_bh(&ipv69_lock);
+}
+
+/* ---- DHCP69 lease bindings (source authentication) ------------------ */
+
+static struct ipv69_binding ipv69_bind_tab[IPV69_BIND_MAX];
+
+/* does a dgram frame from `addr`/`mac` have a valid lease binding? */
+static bool ipv69_binding_ok(u64 addr, const u8 *mac)
+{
+    unsigned long now = jiffies;
+    int i;
+
+    if (!addr)
+        return false;               /* unleased source: drop dgram */
+    spin_lock_bh(&ipv69_lock);
+    for (i = 0; i < IPV69_BIND_MAX; i++) {
+        if (ipv69_bind_tab[i].addr == addr) {
+            if (time_before(now, ipv69_bind_tab[i].expiry) &&
+                !memcmp(ipv69_bind_tab[i].mac, mac, ETH_ALEN)) {
+                spin_unlock_bh(&ipv69_lock);
+                return true;
+            }
+            spin_unlock_bh(&ipv69_lock);
+            return false;           /* expired or spoofed MAC */
+        }
+    }
+    spin_unlock_bh(&ipv69_lock);
+    return false;
+}
+
+/* called from ipv69_ioctl: add/renew a lease binding */
+static void ipv69_binding_add(const struct ipv69_bind_req *r)
+{
+    unsigned long now = jiffies;
+    int i, slot = -1;
+
+    spin_lock_bh(&ipv69_lock);
+    for (i = 0; i < IPV69_BIND_MAX; i++) {
+        if (ipv69_bind_tab[i].addr == r->addr ||
+            (slot < 0 && ipv69_bind_tab[i].addr == 0))
+            slot = i;
+    }
+    if (slot < 0)
+        goto out;
+    memcpy(ipv69_bind_tab[slot].mac, r->mac, ETH_ALEN);
+    ipv69_bind_tab[slot].addr = r->addr;
+    ipv69_bind_tab[slot].expiry = now + msecs_to_jiffies(r->lease_sec * 1000);
+out:
+    spin_unlock_bh(&ipv69_lock);
+}
+
+static void ipv69_binding_del(const struct ipv69_bind_req *r)
+{
+    int i;
+
+    spin_lock_bh(&ipv69_lock);
+    for (i = 0; i < IPV69_BIND_MAX; i++) {
+        if (ipv69_bind_tab[i].addr == r->addr &&
+            !memcmp(ipv69_bind_tab[i].mac, r->mac, ETH_ALEN))
+            ipv69_bind_tab[i].addr = 0;
+    }
     spin_unlock_bh(&ipv69_lock);
 }
 
@@ -590,6 +671,13 @@ static int ipv69_rcv(struct sk_buff *skb, struct net_device *dev,
        pulled from skb->data but preserved via mac_header) */
     ipv69_nd_learn(ipv69_get_addr(h->source), eth_hdr(skb)->h_source);
 
+    /* source authentication: dgram from an address without a valid DHCP69
+       lease binding (or from a different MAC) is dropped. Control (DHCP,
+       ND, echo) always passes. */
+    if (h->next_header == IPV69_NEXT_DGRAM &&
+        !ipv69_binding_ok(ipv69_get_addr(h->source), eth_hdr(skb)->h_source))
+        goto drop;
+
     if (h->next_header == IPV69_NEXT_CONTROL)
         ipv69_handle_ctrl(skb, h, dev);
 
@@ -688,6 +776,25 @@ static int ipv69_release(struct socket *sock)
     return 0;
 }
 
+static int ipv69_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
+{
+    struct ipv69_bind_req req;
+
+    if (cmd != IPV69_BIND_ADD && cmd != IPV69_BIND_DEL)
+        return -ENOIOCTLCMD;
+    if (!ns_capable(sock_net(sock->sk)->user_ns, CAP_NET_ADMIN))
+        return -EPERM;              /* only the DHCP server may bind */
+    if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
+        return -EFAULT;
+    if (req.lease_sec > 0x7fffffff)
+        return -EINVAL;
+    if (cmd == IPV69_BIND_ADD)
+        ipv69_binding_add(&req);
+    else
+        ipv69_binding_del(&req);
+    return 0;
+}
+
 static const struct proto_ops ipv69_ops = {
     .family     = IPV69_AF,
     .owner      = THIS_MODULE,
@@ -698,7 +805,7 @@ static const struct proto_ops ipv69_ops = {
     .accept     = sock_no_accept,
     .getname    = sock_no_getname,
     .poll       = datagram_poll,
-    .ioctl      = sock_no_ioctl,
+    .ioctl      = ipv69_ioctl,
     .listen     = sock_no_listen,
     .shutdown   = sock_no_shutdown,
     .sendmsg    = ipv69_sendmsg,
