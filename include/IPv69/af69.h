@@ -2,6 +2,7 @@
 #define IPV69_AF_H
 
 #include <stdint.h>
+#include <sys/ioctl.h>
 
 /* AF_69: IPv69 socket address family.
  *
@@ -38,6 +39,17 @@
 #define IPV69_DHCP_POOL_END      0xfe    /* 00.00.00.00.fe */
 #define IPV69_DHCP_LEASE_DEFAULT 3600
 
+/* DHCP69 lease binding: addr is owned by mac until expiry. The server
+ * registers it in the kernel module (ioctl on an AF_69 socket) so dgram
+ * frames from unleased or spoofed sources are dropped. */
+struct ipv69_bind_req {
+    uint8_t  mac[6];
+    uint64_t addr;
+    uint32_t lease_sec;
+};
+#define IPV69_BIND_ADD _IOW(0x69, 1, struct ipv69_bind_req)
+#define IPV69_BIND_DEL _IOW(0x69, 2, struct ipv69_bind_req)
+
 /* AF_69 sockaddr: 40-bit addresses (5 octets, ff.ff.ff.ff.ff) + native
  * header ports (src/dst). ifindex 0 = auto-detect the interface on send
  * (pure layer 2). next_header selects the payload protocol: 1 dgram
@@ -50,7 +62,7 @@ struct sockaddr_69 {
     uint64_t dst;
     uint16_t src_port;
     uint16_t dst_port;
-    uint16_t next_header;   /* 0/253 dgram, 255 control; 254 reserved */
+    uint16_t next_header;   /* 0 control, 1 dgram, 2 stream (reserved) */
     uint8_t  hop_limit;     /* 0 = default (64) */
     uint8_t  reserved;
 };
