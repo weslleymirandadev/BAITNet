@@ -4,13 +4,23 @@
  * AF_69 kernel module (socket(AF_69)) or, without it, raw AF_PACKET
  * (same wire format).
  *
- * Security:
- *   --allow aa:bb:cc:dd:ee:ff   only these MACs may get a lease (repeatable)
- *   --secret <hex>              shared secret; every DHCP message carries an
- *                               8-byte HMAC-SHA256 token (client must know it)
+ * Security (Ed25519):
+ *   --peer <pubkey_hex>   allowlist: only these public keys may get a
+ *                         lease (repeatable). The private key stays on
+ *                         the client device; a leaked/revoked key only
+ *                         kills that one device.
+ *   --key <privkey_hex>   the server's own private key: OFFER/ACK are
+ *                         signed so clients can detect rogue servers.
  *
- * Usage: af69d <ifname|ifindex> [pool_start] [pool_end] [lease_sec]
- *             [--raw] [--allow MAC]... [--secret HEX]
+ * Wire format with auth (next_header 0, payload):
+ *   DISCOVER [7][mac 6][pub 32][sig 64]
+ *   OFFER    [8][mac 6][addr 5][lease 4][pub 32][sig 64]
+ *   REQUEST  [9][mac 6][addr 5][pub 32][sig 64]
+ *   ACK      [10][mac 6][addr 5][lease 4][pub 32][sig 64]
+ *   RELEASE  [11][mac 6][addr 5][pub 32][sig 64]
+ * The signature covers every byte before it (type..lease). Without
+ * --peer/--key the short legacy forms are used (DISCOVER 7, OFFER/ACK 16,
+ * REQUEST/RELEASE 12).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,11 +37,13 @@
 #include "IPv69/af69.h"
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
-#include "IPv69/hmac.h"
+#include "IPv69/tweetnacl.h"
 
 #define MAX_LEASES 256
-#define MAX_ALLOW 64
+#define MAX_PEERS 64
 #define BCAST_MAC { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }
+#define PUB_LEN 32
+#define SIG_LEN 64
 
 struct lease {
     uint8_t mac[6];
@@ -48,10 +60,12 @@ struct ctx {
     uint64_t pool_start, pool_end;
     uint32_t lease_sec;
     struct lease leases[MAX_LEASES];
-    uint8_t allow[MAX_ALLOW][6];
+    uint8_t allow[MAX_PEERS][6];      /* MAC allowlist (optional) */
     int n_allow;
-    uint8_t secret[32];       /* shared secret (raw bytes) */
-    int secret_len;
+    uint8_t peers[MAX_PEERS][PUB_LEN]; /* pubkey allowlist (optional) */
+    int n_peers;
+    uint8_t sk[64];                   /* server signing key (optional) */
+    int has_sk;
 };
 
 static void put_addr40(uint8_t *d, uint64_t v)
@@ -71,30 +85,84 @@ static void put_be32(uint8_t *d, uint32_t v)
     d[0] = v >> 24; d[1] = v >> 16; d[2] = v >> 8; d[3] = v;
 }
 
-/* append 8-byte HMAC-SHA256(secret, mac) token at *p; returns bytes written */
-static int token_append(struct ctx *c, const uint8_t *mac, uint8_t *p)
+static int hex_decode(const char *hex, uint8_t *out, size_t max)
 {
-    uint8_t digest[32];
+    size_t hl = strlen(hex);
 
-    if (!c->secret_len)
-        return 0;
-    ipv69_hmac(c->secret, c->secret_len, mac, 6, digest);
-    memcpy(p, digest, IPV69_TOKEN_LEN);
-    return IPV69_TOKEN_LEN;
+    if (hl % 2 || hl / 2 > max)
+        return -1;
+    for (size_t j = 0; j < hl / 2; j++) {
+        unsigned v;
+        if (sscanf(hex + 2 * j, "%2x", &v) != 1)
+            return -1;
+        out[j] = (uint8_t)v;
+    }
+    return (int)(hl / 2);
 }
 
-/* verify trailing token on a received message; plen is total payload len */
-static int token_check(struct ctx *c, const uint8_t *msg, size_t plen,
-                       const uint8_t *mac)
+static void mac_str(const uint8_t *m, char out[18])
 {
-    uint8_t digest[32];
+    snprintf(out, 18, "%02x:%02x:%02x:%02x:%02x:%02x",
+             m[0], m[1], m[2], m[3], m[4], m[5]);
+}
 
-    if (!c->secret_len)
-        return 1;               /* no auth configured: accept */
-    if (plen < IPV69_TOKEN_LEN)
+static void pub_str(const uint8_t *p, char out[65])
+{
+    for (int i = 0; i < 32; i++)
+        snprintf(out + 2 * i, 3, "%02x", p[i]);
+    out[64] = 0;
+}
+
+/* sign `plen` bytes at msg (type..lease); append pub + sig. Returns the
+ * new total length, or plen unchanged when no server key is configured. */
+static size_t sign_msg(struct ctx *c, uint8_t *msg, size_t plen)
+{
+    uint8_t *pub = msg + plen;
+    uint8_t *sig = pub + PUB_LEN;
+    uint8_t tmp[SIG_LEN + (1 + 6 + 5 + 4)];
+    unsigned long long slen;
+
+    if (!c->has_sk)
+        return plen;
+    /* public key = sk[32..63] (TweetNaCl appends it on keypair) */
+    memcpy(pub, c->sk + 32, PUB_LEN);
+    /* crypto_sign writes [sig 64][msg] into tmp */
+    crypto_sign(tmp, &slen, msg, plen, c->sk);
+    memcpy(sig, tmp, SIG_LEN);
+    return plen + PUB_LEN + SIG_LEN;
+}
+
+/* verify a signed message: pub at msg+plen-96, sig at msg+plen-64.
+ * Checks the pub against the allowlist and the signature over
+ * msg[0..plen-96]. Returns 1 when valid (or when no auth configured). */
+static int check_msg(struct ctx *c, const uint8_t *msg, size_t plen)
+{
+    const uint8_t *pub, *sig;
+    unsigned long long mlen;
+    char ps[65];
+    size_t body = plen - PUB_LEN - SIG_LEN;
+
+    if (!c->n_peers)
+        return 1;                       /* no pubkey auth: accept */
+    if (plen < 1 + 6 + PUB_LEN + SIG_LEN)
         return 0;
-    ipv69_hmac(c->secret, c->secret_len, mac, 6, digest);
-    return !memcmp(msg + plen - IPV69_TOKEN_LEN, digest, IPV69_TOKEN_LEN);
+    pub = msg + body;
+    sig = msg + body + PUB_LEN;
+    pub_str(pub, ps);
+    for (int i = 0; i < c->n_peers; i++)
+        if (!memcmp(c->peers[i], pub, PUB_LEN)) {
+            /* crypto_sign_open wants [sig][msg] concatenated, and m/sm
+               must be separate buffers (open overwrites sm[32..63]) */
+            uint8_t sm[SIG_LEN + 1 + 6 + 5 + 4], m[SIG_LEN + 1 + 6 + 5 + 4];
+            memcpy(sm, sig, SIG_LEN);
+            memcpy(sm + SIG_LEN, msg, body);
+            if (crypto_sign_open(m, &mlen, sm, SIG_LEN + body, pub) == 0)
+                return 1;
+            printf("af69d: assinatura invalida de %s\n", ps);
+            return 0;
+        }
+    printf("af69d: pub %s nao esta na allowlist -> ignorado\n", ps);
+    return 0;
 }
 
 static int mac_allowed(struct ctx *c, const uint8_t *mac)
@@ -105,12 +173,6 @@ static int mac_allowed(struct ctx *c, const uint8_t *mac)
         if (!memcmp(c->allow[i], mac, 6))
             return 1;
     return 0;
-}
-
-static void mac_str(const uint8_t *m, char out[18])
-{
-    snprintf(out, 18, "%02x:%02x:%02x:%02x:%02x:%02x",
-             m[0], m[1], m[2], m[3], m[4], m[5]);
 }
 
 /* tell the kernel module who owns a leased address (dgram source auth).
@@ -275,8 +337,8 @@ static size_t recv_ctrl(struct ctx *c, uint8_t *buf, size_t bufsz)
 int main(int argc, char **argv)
 {
     struct ctx c;
-    uint8_t buf[1500], offer[1 + 6 + 5 + 4 + IPV69_TOKEN_LEN],
-                   ack[1 + 6 + 5 + 4 + IPV69_TOKEN_LEN];
+    uint8_t buf[1500], offer[1 + 6 + 5 + 4 + PUB_LEN + SIG_LEN],
+                   ack[1 + 6 + 5 + 4 + PUB_LEN + SIG_LEN];
     time_t now;
     uint64_t addr;
     int idx;
@@ -290,13 +352,17 @@ int main(int argc, char **argv)
     if (argc < 2) {
         fprintf(stderr,
                 "Usage: %s <ifname|ifindex> [pool_start] [pool_end] [lease_sec]\n"
-                "       [--raw] [--allow aa:bb:cc:dd:ee:ff]... [--secret HEX]\n"
+                "       [--raw] [--allow MAC]... [--peer PUBKEY_HEX]... [--key PRIVKEY_HEX]\n"
                 "  pool_start/pool_end: ff.ff.ff.ff.ff or raw hex\n"
                 "  defaults: pool 00.00.00.00.10-00.00.00.00.fe, lease 3600s\n"
                 "  --raw:    force AF_PACKET (AP filtering wired->wireless\n"
                 "            broadcast requires unicast replies)\n"
-                "  --allow:  restrict leases to these MACs (repeatable)\n"
-                "  --secret: shared secret; DHCP msgs carry HMAC token\n",
+                "  --allow:  MAC allowlist (repeatable)\n"
+                "  --peer:   Ed25519 pubkey allowlist (repeatable) - only\n"
+                "            these devices may get a lease\n"
+                "  --key:    server privkey - signs OFFER/ACK so clients\n"
+                "            can detect rogue servers\n"
+                "Generate keys: ipv69-keygen\n",
                 argv[0]);
         return 1;
     }
@@ -309,19 +375,19 @@ int main(int argc, char **argv)
     }
     /* positional pool/lease (argv 2/3/4), flags anywhere */
     if (argc > 2 && strcmp(argv[2], "--raw") && strcmp(argv[2], "--allow") &&
-        strcmp(argv[2], "--secret"))
+        strcmp(argv[2], "--peer") && strcmp(argv[2], "--key"))
         if (parse_ipv69_addr(argv[2], &c.pool_start) < 0) {
             fprintf(stderr, "pool_start invalido\n");
             return 1;
         }
     if (argc > 3 && strcmp(argv[3], "--raw") && strcmp(argv[3], "--allow") &&
-        strcmp(argv[3], "--secret"))
+        strcmp(argv[3], "--peer") && strcmp(argv[3], "--key"))
         if (parse_ipv69_addr(argv[3], &c.pool_end) < 0) {
             fprintf(stderr, "pool_end invalido\n");
             return 1;
         }
     if (argc > 4 && strcmp(argv[4], "--raw") && strcmp(argv[4], "--allow") &&
-        strcmp(argv[4], "--secret")) {
+        strcmp(argv[4], "--peer") && strcmp(argv[4], "--key")) {
         char *end;
         long v = strtol(argv[4], &end, 10);
         if (*argv[4] && !*end && v > 0)
@@ -333,8 +399,8 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--raw")) {
             force_raw = 1;
         } else if (!strcmp(argv[i], "--allow") && i + 1 < argc) {
-            if (c.n_allow >= MAX_ALLOW) {
-                fprintf(stderr, "allow: limite %d\n", MAX_ALLOW);
+            if (c.n_allow >= MAX_PEERS) {
+                fprintf(stderr, "allow: limite %d\n", MAX_PEERS);
                 return 1;
             }
             if (sscanf(argv[++i], "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
@@ -345,19 +411,26 @@ int main(int argc, char **argv)
                 return 1;
             }
             c.n_allow++;
-        } else if (!strcmp(argv[i], "--secret") && i + 1 < argc) {
-            const char *hex = argv[++i];
-            size_t hl = strlen(hex);
-            if (hl % 2 || hl / 2 > sizeof(c.secret)) {
-                fprintf(stderr, "secret: hex par <= 64 chars\n");
+        } else if (!strcmp(argv[i], "--peer") && i + 1 < argc) {
+            if (c.n_peers >= MAX_PEERS) {
+                fprintf(stderr, "peer: limite %d\n", MAX_PEERS);
                 return 1;
             }
-            c.secret_len = (int)(hl / 2);
-            for (int j = 0; j < c.secret_len; j++) {
-                unsigned v;
-                sscanf(hex + 2 * j, "%2x", &v);
-                c.secret[j] = (uint8_t)v;
+            if (hex_decode(argv[++i], c.peers[c.n_peers], PUB_LEN) != PUB_LEN) {
+                fprintf(stderr, "peer: pubkey invalida (32 bytes hex)\n");
+                return 1;
             }
+            c.n_peers++;
+        } else if (!strcmp(argv[i], "--key") && i + 1 < argc) {
+            uint8_t seed[32];
+            if (hex_decode(argv[++i], seed, 32) != 32) {
+                fprintf(stderr, "key: privkey invalida (32 bytes hex)\n");
+                return 1;
+            }
+            /* sk[64] = seed || pub (TweetNaCl keypair layout) */
+            memcpy(c.sk, seed, 32);
+            crypto_sign_seed_to_pk(c.sk + 32, seed);
+            c.has_sk = 1;
         }
     }
 
@@ -395,9 +468,8 @@ int main(int argc, char **argv)
                c.ifindex, (unsigned long long)c.pool_start,
                (unsigned long long)c.pool_end, c.lease_sec);
     }
-    printf("af69d: allow=%d mac(s)%s, secret=%s\n",
-           c.n_allow, c.n_allow ? "" : " (todos)",
-           c.secret_len ? "sim (HMAC)" : "nao");
+    printf("af69d: allow=%d mac(s), peers=%d pubkey(s), server-key=%s\n",
+           c.n_allow, c.n_peers, c.has_sk ? "sim" : "nao");
 
     for (;;) {
         size_t plen = recv_ctrl(&c, buf, sizeof(buf));
@@ -417,13 +489,13 @@ int main(int argc, char **argv)
             printf("af69d: %s nao esta na allowlist -> ignorado\n", ms);
             continue;
         }
-        if (!token_check(&c, buf, plen, mac)) {
-            printf("af69d: %s token HMAC invalido -> ignorado\n", ms);
+        if (!check_msg(&c, buf, plen)) {
+            printf("af69d: %s assinatura/pubkey invalida -> ignorado\n", ms);
             continue;
         }
 
         if (buf[0] == IPV69_CTRL_DHCP_DISCOVER) {
-            size_t olen = sizeof(offer);
+            size_t olen = 16;
             addr = lease_alloc(&c, mac, now);
             if (!addr) {
                 printf("af69d: pool cheio, DISCOVER de %s ignorado\n", ms);
@@ -433,13 +505,13 @@ int main(int argc, char **argv)
             memcpy(offer + 1, mac, 6);
             put_addr40(offer + 7, addr);
             put_be32(offer + 12, c.lease_sec);
-            olen = 16 + token_append(&c, mac, offer + 16);
+            olen = sign_msg(&c, offer, olen);
             send_ctrl(&c, offer, olen, mac);
             printf("af69d: DISCOVER %s -> OFFER %016llx\n",
                    ms, (unsigned long long)addr);
         } else if (buf[0] == IPV69_CTRL_DHCP_REQUEST) {
-            size_t alen = sizeof(ack);
-            if (plen < 12 + (c.secret_len ? IPV69_TOKEN_LEN : 0))
+            size_t alen = 16;
+            if (plen < 12)
                 continue;
             addr = get_addr40(buf + 7);
             if (lease_addr_taken(&c, addr, now) &&
@@ -460,7 +532,7 @@ int main(int argc, char **argv)
             memcpy(ack + 1, mac, 6);
             put_addr40(ack + 7, addr);
             put_be32(ack + 12, c.lease_sec);
-            alen = 16 + token_append(&c, mac, ack + 16);
+            alen = sign_msg(&c, ack, alen);
             send_ctrl(&c, ack, alen, mac);
             binding_update(mac, addr, c.lease_sec, 0);
             printf("af69d: REQUEST %s -> ACK %016llx\n",
