@@ -105,6 +105,7 @@ int main(int argc, char **argv)
         }
         sa.src_port = (uint16_t)strtoul(argv[4], NULL, 16);
         sa.dst_port = (uint16_t)strtoul(argv[5], NULL, 16);
+        sa.next_header = IPV69_NEXT_DGRAM;
         const char *payload = argc > 6 ? argv[6] : "hello af69";
         if (argc > 7)
             sa.hop_limit = (uint8_t)atoi(argv[7]);
