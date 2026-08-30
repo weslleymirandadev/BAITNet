@@ -19,7 +19,7 @@ Status: **spec only** — not implemented yet.
 Pool is configurable on the server (start/end), default
 `00.00.00.00.10`–`00.00.00.00.fe` (239 addresses).
 
-## Control types (next_header 255)
+## Control types (next_header 0)
 
 Payload layout: `[type 1B][fields...]` — same control channel as ND/echo
 (`IPV69_CTRL_*` in `include/IPv69/af69.h`).
@@ -77,7 +77,7 @@ client (unconfigured, src=0)          server (src=00.00.00.00.01)
   - send DISCOVER, wait OFFER (filter by own MAC), send REQUEST,
     wait ACK, bind(src=addr), print assigned address
 - no kernel changes required: `ipv69_rcv` already accepts next_header
-  255 and the control switch defaults to delivery; new types flow to
+  0 (control) and the control switch defaults to delivery; new types flow to
   userspace sockets untouched.
 - shared constants go to `include/IPv69/af69.h`
   (`IPV69_CTRL_DHCP_DISCOVER` etc.) so kernel/userspace/raw agree.

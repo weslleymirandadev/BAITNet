@@ -7,8 +7,8 @@ sockets and no interface plumbing. Pure layer 2 — no IPv4/IPv6 anywhere.
 ## Files
 
 - `af69.c` — the module: AF_69 family + `packet_type` for 0x6969.
-  SOCK_DGRAM carries the 253 datagram (src/dst ports + payload);
-  `ifindex 0` auto-detects the active L2 interface on send.
+  SOCK_DGRAM carries the dgram protocol (payload, ports native in the
+  header); `ifindex 0` auto-detects the active L2 interface on send.
 - `af69-kernel.patch` — required kernel patch: `AF_69=69`, `AF_MAX=70`
   (`include/linux/socket.h`). Without it the kernel rejects families
   `>= AF_MAX` (~46), so the real 69 cannot be registered.
@@ -22,7 +22,8 @@ keeps 3 reserved bytes per address field for future 64-bit expansion.
 ## Stack (v0.3)
 
 - **Demux**: RX delivers to sockets matching the dst address and, for
-  dgram, the bound port. Unbound sockets (src=0) are promiscuous.
+  dgram, the bound port (native header ports). Unbound sockets (src=0)
+  are promiscuous.
 - **Neighbor discovery**: 40-bit → MAC cache learned from every RX frame;
   sending to an unknown dst emits a broadcast ND request (ARP-like) and
   the owner answers with an ND reply (unicast).
@@ -30,9 +31,9 @@ keeps 3 reserved bytes per address field for future 64-bit expansion.
   with a TIME_EXCEEDED control message (original header attached).
 - **Forwarding**: frames with a non-local dst are relayed on another up
   interface of the same netns (simple route — no routing table yet).
-- **Control** (`next_header` 255): ND request/reply, echo request/reply
+- **Control** (`next_header` 0): ND request/reply, echo request/reply
   (kernel answers ping), dest unreachable, time exceeded.
-- `next_header` 254 (STREAM) is **reserved** for a future SCTP-derived
+- `next_header` 2 (STREAM) is **reserved** for a future SCTP-derived
   transport protocol — not implemented here.
 
 ## Build
@@ -83,7 +84,7 @@ frame with the 40-bit addresses, ports and next_header:
 
 ```text
 listening on ifindex 0 src=0000000000000002 port=0007
-frame: src=0000000000000000 dst=0000000000000002 if=3 nh=253 ports=1/7 payload(7)=hi af69
+frame: src=0000000000000000 dst=0000000000000002 if=3 nh=1 ports=1/7 payload(7)=hi af69
 ```
 
 ### Ping (echo request/reply, kernel answers)
@@ -139,7 +140,7 @@ frame on vR2; C receives it. Sending to an unknown address with
 
 ## Current status / next steps
 
-- [x] AF_69 family registered (SOCK_DGRAM, 253 datagram) — validated
+- [x] AF_69 family registered (SOCK_DGRAM, dgram protocol) — validated
 - [x] TX: full Ethernet frame build (broadcast dst, interface src MAC)
 - [x] RX: EtherType 0x6969 hook, validation, demux by addr/port
 - [x] Auto-detect interface on send (pure L2: first Ethernet up with carrier)
@@ -149,5 +150,5 @@ frame on vR2; C receives it. Sending to an unknown address with
 - [x] Control plane: echo (ping), dest unreachable, time exceeded
 - [ ] Routing table (dst → iface) instead of "first other up iface"
 - [ ] L2 resolution for the forward path (uses cache or broadcast today)
-- [ ] `next_header` 254 STREAM: SCTP-derived transport (reserved, planned)
+- [ ] `next_header` 2 STREAM: SCTP-derived transport (reserved, planned)
 - [ ] netdev integration (Phase 4: IPv69 network interface, drivers)
