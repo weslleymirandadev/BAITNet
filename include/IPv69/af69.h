@@ -19,13 +19,24 @@
 #define IPV69_NEXT_DGRAM     1
 #define IPV69_NEXT_STREAM    2       /* reserved (future SCTP-derived transport) */
 
-/* control payload[0] types (next_header 255) */
+/* control payload[0] types (next_header 0) */
 #define IPV69_CTRL_ND_REQUEST    1
 #define IPV69_CTRL_ND_REPLY      2
 #define IPV69_CTRL_ECHO_REQUEST  3
 #define IPV69_CTRL_ECHO_REPLY    4
 #define IPV69_CTRL_UNREACHABLE   5
 #define IPV69_CTRL_TIME_EXCEEDED 6
+#define IPV69_CTRL_DHCP_DISCOVER 7
+#define IPV69_CTRL_DHCP_OFFER    8
+#define IPV69_CTRL_DHCP_REQUEST  9
+#define IPV69_CTRL_DHCP_ACK      10
+#define IPV69_CTRL_DHCP_RELEASE  11
+
+/* DHCP69 addressing (see docs/dhcp69-spec.md) */
+#define IPV69_SERVER_ADDR        1       /* 00.00.00.00.01 */
+#define IPV69_DHCP_POOL_START    0x10    /* 00.00.00.00.10 */
+#define IPV69_DHCP_POOL_END      0xfe    /* 00.00.00.00.fe */
+#define IPV69_DHCP_LEASE_DEFAULT 3600
 
 /* AF_69 sockaddr: 40-bit addresses (5 octets, ff.ff.ff.ff.ff) + native
  * header ports (src/dst). ifindex 0 = auto-detect the interface on send
