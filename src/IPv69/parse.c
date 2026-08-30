@@ -26,8 +26,8 @@ int parse_ipv69_frame(const uint8_t *frame, size_t len) {
         return ERR_LEN;
 
     uint8_t nh = h->next_header;
-    if (nh != 0 && nh != IPV69_NEXT_DGRAM && nh != IPV69_NEXT_STREAM &&
-        nh != IPV69_NEXT_CONTROL)
+    if (nh != IPV69_NEXT_CONTROL && nh != IPV69_NEXT_DGRAM &&
+        nh != IPV69_NEXT_STREAM)
         return ERR_NEXTHDR;
 
     return 0;
@@ -47,6 +47,8 @@ static const struct field fields[] = {
     { "next_header", offsetof(struct ipv69_header, next_header), 1 },
     { "hop_limit",   offsetof(struct ipv69_header, hop_limit),   1 },
     { "flags",       offsetof(struct ipv69_header, flags),       1 },
+    { "src_port",    offsetof(struct ipv69_header, src_port),    2 },
+    { "dst_port",    offsetof(struct ipv69_header, dst_port),    2 },
     { "sequence",    offsetof(struct ipv69_header, sequence),    4 },
     { "source",      offsetof(struct ipv69_header, source),      5 },
     { "dest",        offsetof(struct ipv69_header, dest),        5 },
