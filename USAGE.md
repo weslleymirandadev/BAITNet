@@ -81,7 +81,25 @@ nos clientes) — o auto-key é dispensado quando `--key` é dado.
 
 ## 2. Subir o servidor DHCP (VM)
 
-### Com arquivo de peers (recomendado — reload automático)
+### Auto-registro (`--learn`) — zero cadastro manual
+
+```bash
+# o servidor aceita qualquer pubkey com assinatura válida e registra
+# sozinho (append no --peer-file, se dado):
+sudo ./af69d eth0 --raw --peer-file /home/kali/peers.txt --learn \
+     --key <privkey_do_servidor_hex>   # opcional: assina OFFER/ACK
+
+# log:
+#   af69d: aprendi pub 8566295b... do MAC 00:08:22:9c:03:fc -> registrada no peer-file
+#   af69d: DISCOVER 00:08:22:9c:03:fc -> OFFER 0000000000000010
+#   af69d: REQUEST 00:08:22:9c:03:fc -> ACK 0000000000000010
+```
+
+O celular roda `dhcp wlan0` e pronto — sem copiar hex nenhum. O
+`--learn` sem `--allow` é **rede aberta** (qualquer um com chave entra);
+com `--allow MAC...` ele restringe o aprendizado só aos MACs listados.
+
+### Com arquivo de peers (fechado — reload automático)
 
 ```bash
 # 1) crie o arquivo com as PUBKEYs permitidas (1 por linha):
