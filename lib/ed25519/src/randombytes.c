@@ -1,7 +1,7 @@
 /* randombytes.c - getrandom() backend for TweetNaCl (Linux + Android). */
 #include <stdint.h>
 #include <sys/random.h>
-#include "IPv69/tweetnacl.h"
+#include "tweetnacl.h"
 
 void randombytes(uint8_t *buf, uint64_t n)
 {
