@@ -21,4 +21,10 @@ af69:
 af69_test: tests/af69_test.c src/IPv69/parse.c include/IPv69/af69.h include/IPv69/parse.h include/IPv69/header.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $(BUILD)/$@ tests/af69_test.c src/IPv69/parse.c
 
-.PHONY: all caps af69 af69_test
+af69d: src/IPv69/af69d.c src/IPv69/parse.c include/IPv69/af69.h include/IPv69/parse.h include/IPv69/header.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/$@ src/IPv69/af69d.c src/IPv69/parse.c
+
+af69_raw: tests/af69_raw.c src/IPv69/parse.c include/IPv69/af69.h include/IPv69/parse.h include/IPv69/header.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/$@ tests/af69_raw.c src/IPv69/parse.c
+
+.PHONY: all caps af69 af69_test af69d af69_raw
