@@ -8,7 +8,7 @@
 #include <net/if.h>
 #include "IPv69/af69.h"
 #include "IPv69/parse.h"
-#include "IPv69/tweetnacl.h"
+#include "ed25519.h"
 
 static int hex_decode(const char *hex, uint8_t *out, size_t max)
 {
@@ -63,7 +63,7 @@ static int dhcp_client(int fd, struct sockaddr_69 *sa, uint64_t dst,
     uint64_t addr = 0;
     uint32_t lease = 0;
     ssize_t n;
-    const size_t SIGSZ = has_sk ? (32 + 64) : 0;
+    const size_t SIGSZ = has_server_pub ? (32 + 64) : 0;
 
     if (ifindex_mac(sa->ifindex, mac) < 0) {
         fprintf(stderr, "dhcp: nao achei MAC do ifindex %d\n", sa->ifindex);
@@ -79,9 +79,8 @@ static int dhcp_client(int fd, struct sockaddr_69 *sa, uint64_t dst,
     memcpy(pkt + 1, mac, 6);
     size_t dlen = 7;
     if (has_sk) {
-        unsigned long long slen;
         memcpy(pkt + 7, sk + 32, 32);
-        crypto_sign(pkt + 7 + 32, &slen, pkt, 7, sk);
+        ed25519_sign(pkt + 7 + 32, pkt, 7, sk);
         dlen += 32 + 64;
     }
     sa->dst = dst;
@@ -105,14 +104,10 @@ static int dhcp_client(int fd, struct sockaddr_69 *sa, uint64_t dst,
         if (memcmp(buf + 1, mac, 6))
             continue;               /* offer for another client */
         if (has_server_pub) {
-            unsigned char sm[64 + 16], m[64 + 16];
-            unsigned long long mlen;
             const uint8_t *spub = (const uint8_t *)buf + 16;
             const uint8_t *ssig = spub + 32;
-            memcpy(sm, ssig, 64);
-            memcpy(sm + 64, buf, 16);
             if (memcmp(spub, server_pub, 32) ||
-                crypto_sign_open(m, &mlen, sm, 64 + 16, server_pub) != 0) {
+                ed25519_verify((const uint8_t *)buf, 16, ssig, server_pub) != 0) {
                 printf("dhcp: OFFER assinatura invalida\n");
                 return 1;
             }
@@ -133,9 +128,8 @@ static int dhcp_client(int fd, struct sockaddr_69 *sa, uint64_t dst,
     pkt[9] = (addr >> 16) & 0xff; pkt[10] = (addr >> 8) & 0xff; pkt[11] = addr & 0xff;
     size_t rlen = 12;
     if (has_sk) {
-        unsigned long long slen;
         memcpy(pkt + 12, sk + 32, 32);
-        crypto_sign(pkt + 12 + 32, &slen, pkt, 12, sk);
+        ed25519_sign(pkt + 12 + 32, pkt, 12, sk);
         rlen += 32 + 64;
     }
     if (sendto(fd, pkt, rlen, 0, (struct sockaddr *)sa, sizeof(*sa)) < 0) {
@@ -157,14 +151,10 @@ static int dhcp_client(int fd, struct sockaddr_69 *sa, uint64_t dst,
         if (memcmp(buf + 1, mac, 6))
             continue;
         if (has_server_pub) {
-            unsigned char sm[64 + 16], m[64 + 16];
-            unsigned long long mlen;
             const uint8_t *spub = (const uint8_t *)buf + 16;
             const uint8_t *ssig = spub + 32;
-            memcpy(sm, ssig, 64);
-            memcpy(sm + 64, buf, 16);
             if (memcmp(spub, server_pub, 32) ||
-                crypto_sign_open(m, &mlen, sm, 64 + 16, server_pub) != 0) {
+                ed25519_verify((const uint8_t *)buf, 16, ssig, server_pub) != 0) {
                 printf("dhcp: ACK assinatura invalida\n");
                 return 1;
             }
@@ -392,7 +382,7 @@ int main(int argc, char **argv)
                     return 1;
                 }
                 memcpy(sk, seed, 32);
-                crypto_sign_seed_to_pk(sk + 32, seed);
+                ed25519_seed_to_pub(sk + 32, seed);
                 has_sk = 1;
             } else if (!strcmp(argv[i], "--server-pub")) {
                 if (hex_decode(argv[i + 1], server_pub, 32) != 32) {
@@ -401,6 +391,16 @@ int main(int argc, char **argv)
                 }
                 has_server_pub = 1;
             }
+        }
+        if (!has_sk) {
+            /* auto: load ~/.ipv69/key or generate + register it */
+            char kpath[256];
+            ed25519_keyfile_default_path(kpath, sizeof(kpath));
+            if (ed25519_keyfile_load_or_create(kpath, sk, server_pub) < 0) {
+                fprintf(stderr, "dhcp: nao foi possivel carregar/criar chave em %s\n", kpath);
+                return 1;
+            }
+            has_sk = 1;
         }
         return dhcp_client(fd, &sa, 0xFFFFFFFFFFULL, sk, has_sk,
                            server_pub, has_server_pub);
