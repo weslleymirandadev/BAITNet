@@ -21,7 +21,7 @@
 #include "IPv69/af69.h"
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
-#include "IPv69/hmac.h"
+#include "IPv69/tweetnacl.h"
 
 #define IPV69_CTRL_ECHO_REQUEST 3
 #define IPV69_CTRL_ECHO_REPLY   4
@@ -43,6 +43,21 @@ static uint32_t get_be32(const uint8_t *s)
 {
     return ((uint32_t)s[0] << 24) | ((uint32_t)s[1] << 16) |
            ((uint32_t)s[2] << 8) | s[3];
+}
+
+static int hex_decode(const char *hex, uint8_t *out, size_t max)
+{
+    size_t hl = strlen(hex);
+
+    if (hl % 2 || hl / 2 > max)
+        return -1;
+    for (size_t j = 0; j < hl / 2; j++) {
+        unsigned v;
+        if (sscanf(hex + 2 * j, "%2x", &v) != 1)
+            return -1;
+        out[j] = (uint8_t)v;
+    }
+    return (int)(hl / 2);
 }
 
 /* build an Ethernet frame: [eth 14][ipv69 32][payload]; returns total len */
@@ -131,56 +146,64 @@ static void dump_frame(const uint8_t *frame, size_t len)
     putchar('\n');
 }
 
-/* DHCP69 client: DISCOVER [7][mac][tok?] -> OFFER [8][mac][addr5][lease4][tok?]
- * -> REQUEST [9][mac][addr5][tok?] -> ACK [10][mac][addr5][lease4][tok?].
+/* DHCP69 client: DISCOVER -> OFFER -> REQUEST -> ACK, then bind(src).
  * Same wire format for raw and AF_69 paths; client filters by its MAC.
- * With a secret, every message carries a trailing 8-byte HMAC token. */
+ * With --key the messages are signed (Ed25519):
+ *   DISCOVER [7][mac][pub 32][sig 64]  REQUEST [9][mac][addr][pub][sig]
+ *   OFFER/ACK [8|10][mac][addr][lease][pub][sig] signed by the server;
+ *   --server-pub validates them (rogue-server protection). */
 static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
-                       const uint8_t *secret, size_t secret_len)
+                       const uint8_t *sk, int has_sk,
+                       const uint8_t *server_pub, int has_server_pub)
 {
     const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
-    uint8_t frame[1600], pkt[1 + 6 + 5 + 4 + IPV69_TOKEN_LEN];
+    uint8_t frame[1600], pkt[1 + 6 + 5 + 4 + 32 + 64];
     struct timeval tv = { 3, 0 };
     uint64_t addr = 0;
     ssize_t n;
     size_t len;
-    uint8_t digest[32];
+    const size_t SIGSZ = has_sk ? (32 + 64) : 0;   /* pub + sig tail */
 
     printf("dhcp: MAC %02x:%02x:%02x:%02x:%02x:%02x%s\n",
            src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5],
-           secret_len ? " (HMAC)" : "");
+           has_sk ? " (Ed25519)" : "");
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    /* DISCOVER [7][mac] + token */
+    /* DISCOVER [7][mac] + pub + sig */
     pkt[0] = IPV69_CTRL_DHCP_DISCOVER;
     memcpy(pkt + 1, src_mac, 6);
     size_t dlen = 7;
-    if (secret_len) {
-        ipv69_hmac(secret, secret_len, src_mac, 6, digest);
-        memcpy(pkt + 7, digest, IPV69_TOKEN_LEN);
-        dlen += IPV69_TOKEN_LEN;
+    if (has_sk) {
+        unsigned long long slen;
+        memcpy(pkt + 7, sk + 32, 32);           /* pub */
+        crypto_sign(pkt + 7 + 32, &slen, pkt, 7, sk);
+        dlen += 32 + 64;
     }
     len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
                       IPV69_NEXT_CONTROL, 64, 0, 0, pkt, dlen);
     if (send_frame(fd, ifindex, bcast, frame, len) < 0) { perror("sendto(DISCOVER)"); return 1; }
     printf("dhcp: DISCOVER enviado\n");
 
-    /* wait OFFER [8][mac][addr5][lease4] + token */
+    /* wait OFFER [8][mac][addr5][lease4] + pub + sig */
     for (;;) {
         n = recv(fd, frame, sizeof(frame), 0);
         if (n < 0) { perror("recvfrom(OFFER): timeout?"); return 1; }
-        if (n < 14 + IPV69_HEADER_LEN + 16 + (secret_len ? IPV69_TOKEN_LEN : 0)) continue;
+        if (n < 14 + IPV69_HEADER_LEN + 16 + (ssize_t)SIGSZ) continue;
         const struct ipv69_header *h = (const struct ipv69_header *)(frame + 14);
         const uint8_t *p = frame + 14 + IPV69_HEADER_LEN;
         size_t plen = n - 14 - IPV69_HEADER_LEN;
         if (h->next_header != IPV69_NEXT_CONTROL || p[0] != IPV69_CTRL_DHCP_OFFER)
             continue;
         if (memcmp(p + 1, src_mac, 6)) continue;
-        if (secret_len) {
-            ipv69_hmac(secret, secret_len, src_mac, 6, digest);
-            if (plen < 16 + IPV69_TOKEN_LEN ||
-                memcmp(p + 16, digest, IPV69_TOKEN_LEN)) {
-                printf("dhcp: OFFER token invalido\n");
+        if (has_server_pub) {
+            unsigned char sm[64 + 16], m[64 + 16];
+            unsigned long long mlen;
+            const uint8_t *spub = p + 16, *ssig = p + 16 + 32;
+            memcpy(sm, ssig, 64);
+            memcpy(sm + 64, p, 16);
+            if (memcmp(spub, server_pub, 32) ||
+                crypto_sign_open(m, &mlen, sm, 64 + 16, server_pub) != 0) {
+                printf("dhcp: OFFER assinatura invalida\n");
                 return 1;
             }
         }
@@ -190,37 +213,42 @@ static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
         break;
     }
 
-    /* REQUEST [9][mac][addr5] + token */
+    /* REQUEST [9][mac][addr5] + pub + sig */
     pkt[0] = IPV69_CTRL_DHCP_REQUEST;
     memcpy(pkt + 1, src_mac, 6);
     put_addr40(pkt + 7, addr);
     size_t rlen = 12;
-    if (secret_len) {
-        ipv69_hmac(secret, secret_len, src_mac, 6, digest);
-        memcpy(pkt + 12, digest, IPV69_TOKEN_LEN);
-        rlen += IPV69_TOKEN_LEN;
+    if (has_sk) {
+        unsigned long long slen;
+        memcpy(pkt + 12, sk + 32, 32);
+        crypto_sign(pkt + 12 + 32, &slen, pkt, 12, sk);
+        rlen += 32 + 64;
     }
     len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
                       IPV69_NEXT_CONTROL, 64, 0, 0, pkt, rlen);
     if (send_frame(fd, ifindex, bcast, frame, len) < 0) { perror("sendto(REQUEST)"); return 1; }
     printf("dhcp: REQUEST %016llx\n", (unsigned long long)addr);
 
-    /* wait ACK [10][mac][addr5][lease4] + token */
+    /* wait ACK [10][mac][addr5][lease4] + pub + sig */
     for (;;) {
         n = recv(fd, frame, sizeof(frame), 0);
         if (n < 0) { perror("recvfrom(ACK): timeout?"); return 1; }
-        if (n < 14 + IPV69_HEADER_LEN + 16 + (secret_len ? IPV69_TOKEN_LEN : 0)) continue;
+        if (n < 14 + IPV69_HEADER_LEN + 16 + (ssize_t)SIGSZ) continue;
         const struct ipv69_header *h = (const struct ipv69_header *)(frame + 14);
         const uint8_t *p = frame + 14 + IPV69_HEADER_LEN;
         size_t plen = n - 14 - IPV69_HEADER_LEN;
         if (h->next_header != IPV69_NEXT_CONTROL || p[0] != IPV69_CTRL_DHCP_ACK)
             continue;
         if (memcmp(p + 1, src_mac, 6)) continue;
-        if (secret_len) {
-            ipv69_hmac(secret, secret_len, src_mac, 6, digest);
-            if (plen < 16 + IPV69_TOKEN_LEN ||
-                memcmp(p + 16, digest, IPV69_TOKEN_LEN)) {
-                printf("dhcp: ACK token invalido\n");
+        if (has_server_pub) {
+            unsigned char sm[64 + 16], m[64 + 16];
+            unsigned long long mlen;
+            const uint8_t *spub = p + 16, *ssig = p + 16 + 32;
+            memcpy(sm, ssig, 64);
+            memcpy(sm + 64, p, 16);
+            if (memcmp(spub, server_pub, 32) ||
+                crypto_sign_open(m, &mlen, sm, 64 + 16, server_pub) != 0) {
+                printf("dhcp: ACK assinatura invalida\n");
                 return 1;
             }
         }
@@ -245,39 +273,45 @@ int main(int argc, char **argv)
     const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
     uint8_t src_mac[6], frame[1600];
     int ifindex;
-    uint8_t secret[32];
-    size_t secret_len = 0;
+    uint8_t sk[64], server_pub[32];
+    int has_sk = 0, has_server_pub = 0;
 
     setvbuf(stdout, NULL, _IONBF, 0);
 
-    /* global option: --secret HEX (any position) */
+    /* global options (any position): --key PRIV_HEX --server-pub PUB_HEX */
     for (int i = 1; i < argc - 1; i++) {
-        if (!strcmp(argv[i], "--secret")) {
-            const char *hex = argv[i + 1];
-            size_t hl = strlen(hex);
-            if (hl % 2 || hl / 2 > sizeof(secret)) {
-                fprintf(stderr, "secret: hex par <= 64 chars\n");
+        if (!strcmp(argv[i], "--key")) {
+            uint8_t seed[32];
+            if (hex_decode(argv[i + 1], seed, 32) != 32) {
+                fprintf(stderr, "key: privkey invalida (32 bytes hex)\n");
                 return 1;
             }
-            secret_len = hl / 2;
-            for (size_t j = 0; j < secret_len; j++) {
-                unsigned v;
-                sscanf(hex + 2 * j, "%2x", &v);
-                secret[j] = (uint8_t)v;
+            memcpy(sk, seed, 32);
+            crypto_sign_seed_to_pk(sk + 32, seed);
+            has_sk = 1;
+        } else if (!strcmp(argv[i], "--server-pub")) {
+            if (hex_decode(argv[i + 1], server_pub, 32) != 32) {
+                fprintf(stderr, "server-pub: pubkey invalida (32 bytes hex)\n");
+                return 1;
             }
-            /* remove --secret and its value from argv */
-            memmove(&argv[i], &argv[i + 2], sizeof(char *) * (argc - i - 1));
-            argc -= 2;
-            break;
+            has_server_pub = 1;
+        } else {
+            continue;
         }
+        /* remove the flag and its value from argv */
+        memmove(&argv[i], &argv[i + 2], sizeof(char *) * (argc - i - 1));
+        argc -= 2;
+        i--;
     }
 
     if (argc < 3) {
         fprintf(stderr,
                 "Usage: %s recv <ifname> [src_addr] [src_port_hex]\n"
-                "       %s send <ifname> <dst> <src_port_hex> <dst_port_hex> [payload]\n"
+                "       %s send <ifname> <dst> <src_port_hex> <dst_port_hex> [payload] [src_addr]\n"
                 "       %s ping <ifname> <dst> [payload]\n"
-                "       %s dhcp <ifname> [--secret HEX]\n",
+                "       %s dhcp <ifname> [--key PRIV_HEX] [--server-pub PUB_HEX]\n"
+                "  --key:        your Ed25519 privkey (ipv69-keygen) - signs DHCP msgs\n"
+                "  --server-pub: server pubkey - validates OFFER/ACK (rogue-server guard)\n",
                 argv[0], argv[0], argv[0], argv[0]);
         return 1;
     }
@@ -385,7 +419,7 @@ int main(int argc, char **argv)
     }
 
     if (!strcmp(argv[1], "dhcp"))
-        return dhcp_client(fd, ifindex, src_mac, secret, secret_len);
+        return dhcp_client(fd, ifindex, src_mac, sk, has_sk, server_pub, has_server_pub);
 
     fprintf(stderr, "modo desconhecido: %s\n", argv[1]);
     return 1;
