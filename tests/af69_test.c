@@ -8,6 +8,7 @@
 #include <net/if.h>
 #include "IPv69/af69.h"
 #include "IPv69/parse.h"
+#include "IPv69/hmac.h"
 
 /* MAC of the interface with the given ifindex (for DHCP client) */
 static int ifindex_mac(int ifindex, uint8_t mac[6])
@@ -31,11 +32,14 @@ static int ifindex_mac(int ifindex, uint8_t mac[6])
 }
 
 /* DHCP69 client: DISCOVER -> OFFER -> REQUEST -> ACK, then bind(src).
- * On success prints the leased address and keeps receiving until timeout. */
-static int dhcp_client(int fd, struct sockaddr_69 *sa, uint64_t dst)
+ * On success prints the leased address and keeps receiving until timeout.
+ * With a secret, every message carries a trailing 8-byte HMAC token. */
+static int dhcp_client(int fd, struct sockaddr_69 *sa, uint64_t dst,
+                       const uint8_t *secret, size_t secret_len)
 {
     uint8_t mac[6];
-    uint8_t pkt[1 + 6 + 5 + 4];
+    uint8_t pkt[1 + 6 + 5 + 4 + IPV69_TOKEN_LEN];
+    uint8_t digest[32];
     struct sockaddr_69 from;
     socklen_t flen = sizeof(from);
     struct timeval tv = { 3, 0 };
@@ -48,22 +52,29 @@ static int dhcp_client(int fd, struct sockaddr_69 *sa, uint64_t dst)
         fprintf(stderr, "dhcp: nao achei MAC do ifindex %d\n", sa->ifindex);
         return 1;
     }
-    printf("dhcp: MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
-           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    printf("dhcp: MAC %02x:%02x:%02x:%02x:%02x:%02x%s\n",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+           secret_len ? " (HMAC)" : "");
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    /* DISCOVER [7][mac] -> broadcast */
+    /* DISCOVER [7][mac] + token -> broadcast */
     pkt[0] = IPV69_CTRL_DHCP_DISCOVER;
     memcpy(pkt + 1, mac, 6);
+    size_t dlen = 7;
+    if (secret_len) {
+        ipv69_hmac(secret, secret_len, mac, 6, digest);
+        memcpy(pkt + 7, digest, IPV69_TOKEN_LEN);
+        dlen += IPV69_TOKEN_LEN;
+    }
     sa->dst = dst;
     sa->next_header = IPV69_NEXT_CONTROL;
-    if (sendto(fd, pkt, 7, 0, (struct sockaddr *)sa, sizeof(*sa)) < 0) {
+    if (sendto(fd, pkt, dlen, 0, (struct sockaddr *)sa, sizeof(*sa)) < 0) {
         perror("sendto(DISCOVER)");
         return 1;
     }
     printf("dhcp: DISCOVER enviado\n");
 
-    /* wait OFFER [8][mac][addr 5][lease 4], then REQUEST [9][mac][addr] */
+    /* wait OFFER [8][mac][addr 5][lease 4] + token */
     for (;;) {
         n = recvfrom(fd, buf, sizeof(buf), 0,
                      (struct sockaddr *)&from, &flen);
@@ -71,10 +82,19 @@ static int dhcp_client(int fd, struct sockaddr_69 *sa, uint64_t dst)
             perror("recvfrom(OFFER): timeout?");
             return 1;
         }
-        if (n < 7 || (uint8_t)buf[0] != IPV69_CTRL_DHCP_OFFER)
+        if (n < 16 + (ssize_t)(secret_len ? IPV69_TOKEN_LEN : 0) ||
+            (uint8_t)buf[0] != IPV69_CTRL_DHCP_OFFER)
             continue;
         if (memcmp(buf + 1, mac, 6))
             continue;               /* offer for another client */
+        if (secret_len) {
+            ipv69_hmac(secret, secret_len, mac, 6, digest);
+            if (n < 16 + IPV69_TOKEN_LEN ||
+                memcmp(buf + 16, digest, IPV69_TOKEN_LEN)) {
+                printf("dhcp: OFFER token invalido\n");
+                return 1;
+            }
+        }
         addr = ((uint64_t)buf[7] << 32) | ((uint64_t)buf[8] << 24) |
                ((uint64_t)buf[9] << 16) | ((uint64_t)buf[10] << 8) | buf[11];
         lease = ((uint32_t)buf[12] << 24) | ((uint32_t)buf[13] << 16) |
@@ -84,18 +104,24 @@ static int dhcp_client(int fd, struct sockaddr_69 *sa, uint64_t dst)
         break;
     }
 
-    /* REQUEST [9][mac][addr 5] */
+    /* REQUEST [9][mac][addr 5] + token */
     pkt[0] = IPV69_CTRL_DHCP_REQUEST;
     memcpy(pkt + 1, mac, 6);
     pkt[7] = (addr >> 32) & 0xff; pkt[8] = (addr >> 24) & 0xff;
     pkt[9] = (addr >> 16) & 0xff; pkt[10] = (addr >> 8) & 0xff; pkt[11] = addr & 0xff;
-    if (sendto(fd, pkt, 12, 0, (struct sockaddr *)sa, sizeof(*sa)) < 0) {
+    size_t rlen = 12;
+    if (secret_len) {
+        ipv69_hmac(secret, secret_len, mac, 6, digest);
+        memcpy(pkt + 12, digest, IPV69_TOKEN_LEN);
+        rlen += IPV69_TOKEN_LEN;
+    }
+    if (sendto(fd, pkt, rlen, 0, (struct sockaddr *)sa, sizeof(*sa)) < 0) {
         perror("sendto(REQUEST)");
         return 1;
     }
     printf("dhcp: REQUEST %016llx\n", (unsigned long long)addr);
 
-    /* wait ACK [10][mac][addr 5][lease 4] */
+    /* wait ACK [10][mac][addr 5][lease 4] + token */
     for (;;) {
         n = recvfrom(fd, buf, sizeof(buf), 0,
                      (struct sockaddr *)&from, &flen);
@@ -103,10 +129,19 @@ static int dhcp_client(int fd, struct sockaddr_69 *sa, uint64_t dst)
             perror("recvfrom(ACK): timeout?");
             return 1;
         }
-        if (n < 7 || (uint8_t)buf[0] != IPV69_CTRL_DHCP_ACK)
+        if (n < 16 + (ssize_t)(secret_len ? IPV69_TOKEN_LEN : 0) ||
+            (uint8_t)buf[0] != IPV69_CTRL_DHCP_ACK)
             continue;
         if (memcmp(buf + 1, mac, 6))
             continue;
+        if (secret_len) {
+            ipv69_hmac(secret, secret_len, mac, 6, digest);
+            if (n < 16 + IPV69_TOKEN_LEN ||
+                memcmp(buf + 16, digest, IPV69_TOKEN_LEN)) {
+                printf("dhcp: ACK token invalido\n");
+                return 1;
+            }
+        }
         printf("dhcp: ACK %016llx lease %us — configurado!\n",
                (unsigned long long)addr, lease);
         break;
@@ -320,7 +355,24 @@ int main(int argc, char **argv)
             fprintf(stderr, "iface invalida: %s\n", argv[2]);
             return 1;
         }
-        return dhcp_client(fd, &sa, 0xFFFFFFFFFFULL);
+        uint8_t secret[32];
+        size_t secret_len = 0;
+        for (int i = 3; i + 1 < argc; i++) {
+            if (!strcmp(argv[i], "--secret")) {
+                size_t hl = strlen(argv[i + 1]);
+                if (hl % 2 || hl / 2 > sizeof(secret)) {
+                    fprintf(stderr, "secret: hex par <= 64 chars\n");
+                    return 1;
+                }
+                secret_len = hl / 2;
+                for (size_t j = 0; j < secret_len; j++) {
+                    unsigned v;
+                    sscanf(argv[i + 1] + 2 * j, "%2x", &v);
+                    secret[j] = (uint8_t)v;
+                }
+            }
+        }
+        return dhcp_client(fd, &sa, 0xFFFFFFFFFFULL, secret, secret_len);
     }
 
     usage(argv[0]);
