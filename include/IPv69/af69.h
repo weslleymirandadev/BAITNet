@@ -14,10 +14,10 @@
 #define PF_69 AF_69
 #endif
 
-/* next_header values */
-#define IPV69_NEXT_DGRAM    253
-#define IPV69_NEXT_STREAM   254     /* reserved (future SCTP-derived transport) */
-#define IPV69_NEXT_CONTROL  255
+/* next_header values (protocol of the payload) */
+#define IPV69_NEXT_CONTROL   0
+#define IPV69_NEXT_DGRAM     1
+#define IPV69_NEXT_STREAM    2       /* reserved (future SCTP-derived transport) */
 
 /* control payload[0] types (next_header 255) */
 #define IPV69_CTRL_ND_REQUEST    1
@@ -27,10 +27,11 @@
 #define IPV69_CTRL_UNREACHABLE   5
 #define IPV69_CTRL_TIME_EXCEEDED 6
 
-/* AF_69 sockaddr: 40-bit addresses (5 octets, ff.ff.ff.ff.ff) + 253-datagram
- * ports. ifindex 0 = auto-detect the interface on send (pure layer 2).
- * next_header selects dgram (253, default) or control (255); hop_limit
- * 0 = kernel default (64). Keep in sync with kernel/af69/af69.c. */
+/* AF_69 sockaddr: 40-bit addresses (5 octets, ff.ff.ff.ff.ff) + native
+ * header ports (src/dst). ifindex 0 = auto-detect the interface on send
+ * (pure layer 2). next_header selects the payload protocol: 1 dgram
+ * (default), 0 control, 2 stream (reserved). hop_limit 0 = kernel
+ * default (64). Keep in sync with kernel/af69/af69.c. */
 struct sockaddr_69 {
     uint16_t sa_family;
     uint16_t ifindex;
