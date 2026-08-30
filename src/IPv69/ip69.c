@@ -59,9 +59,10 @@ int main(int argc, char **argv)
         else
             return 1;
     } else if (!strcmp(argv[1], "lease")) {
-        if (query("lease", buf, sizeof(buf)) == 0)
+        if (query("lease", buf, sizeof(buf)) == 0) {
+            buf[strcspn(buf, "\n")] = 0;   /* daemon appends \n */
             printf("lease: %s seconds\n", buf);
-        else
+        } else
             return 1;
     } else if (!strcmp(argv[1], "renew")) {
         if (query("renew", buf, sizeof(buf)) == 0)
