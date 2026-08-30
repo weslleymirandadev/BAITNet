@@ -5,10 +5,11 @@
  *
  * The private key stays on the device that owns it. Register the PUBLIC
  * key on the DHCP server (af69d --peer). Nobody else ever needs the
- * private key; a leaked/revoked key only affects that one device.
  */
 #include <stdio.h>
-#include "IPv69/tweetnacl.h"
+#include <stdlib.h>
+#include <string.h>
+#include "ed25519.h"
 
 static void print_hex(const unsigned char *b, int n)
 {
@@ -26,7 +27,7 @@ int main(int argc, char **argv)
     }
     for (int i = 0; i < count; i++) {
         unsigned char pk[32], sk[64];
-        crypto_sign_keypair(pk, sk);
+        ed25519_keypair(sk, pk);
         print_hex(sk, 32);
         putchar(' ');
         print_hex(pk, 32);
