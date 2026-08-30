@@ -34,7 +34,15 @@
 #include <linux/if_arp.h>
 #include <linux/skbuff.h>
 #include <linux/uio.h>
+#include <linux/version.h>
 #include <net/sock.h>
+
+/* kernel >= 7.0 renamed the callback sockaddr to sockaddr_unsized */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+#define IPV69_SOCKADDR struct sockaddr_unsized
+#else
+#define IPV69_SOCKADDR struct sockaddr
+#endif
 
 #define IPV69_ETHERTYPE     0x6969
 #define IPV69_VERSION       6
@@ -209,7 +217,7 @@ static int ipv69_create(struct net *net, struct socket *sock, int protocol,
     return 0;
 }
 
-static int ipv69_bind(struct socket *sock, struct sockaddr *addr, int addrlen)
+static int ipv69_bind(struct socket *sock, IPV69_SOCKADDR *addr, int addrlen)
 {
     struct sockaddr_69 *sa = (struct sockaddr_69 *)addr;
     struct ipv69_sock *is = ipv69_sk(sock->sk);
@@ -233,7 +241,7 @@ static int ipv69_bind(struct socket *sock, struct sockaddr *addr, int addrlen)
     return 0;
 }
 
-static int ipv69_connect(struct socket *sock, struct sockaddr *addr,
+static int ipv69_connect(struct socket *sock, IPV69_SOCKADDR *addr,
                          int addrlen, int flags)
 {
     return ipv69_bind(sock, addr, addrlen);
