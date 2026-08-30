@@ -1,6 +1,6 @@
 /* af69d - DHCP69 server daemon (spec: docs/dhcp69-spec.md).
  *
- * Leases 40-bit addresses over the IPv69 control channel. Works with the
+ * Leases 80-bit addresses over the IPv69 control channel. Works with the
  * AF_69 kernel module (socket(AF_69)) or, without it, raw AF_PACKET
  * (same wire format).
  *
@@ -9,18 +9,26 @@
  *                         lease (repeatable). The private key stays on
  *                         the client device; a leaked/revoked key only
  *                         kills that one device.
+ *   --peer-file <path>    same, but loaded from a file (one pubkey per
+ *                         line, '#' comments); reloaded automatically
+ *                         when the file mtime changes (~1s poll).
  *   --key <privkey_hex>   the server's own private key: OFFER/ACK are
  *                         signed so clients can detect rogue servers.
+ *   --learn               auto-register: unknown pubkeys are accepted
+ *                         and recorded (appended to --peer-file when
+ *                         given). With --allow, only MACs in that list
+ *                         are learned; without it, any valid signature
+ *                         is registered (open network).
  *
  * Wire format with auth (next_header 0, payload):
  *   DISCOVER [7][mac 6][pub 32][sig 64]
- *   OFFER    [8][mac 6][addr 5][lease 4][pub 32][sig 64]
- *   REQUEST  [9][mac 6][addr 5][pub 32][sig 64]
- *   ACK      [10][mac 6][addr 5][lease 4][pub 32][sig 64]
- *   RELEASE  [11][mac 6][addr 5][pub 32][sig 64]
+ *   OFFER    [8][mac 6][addr 10][lease 4][pub 32][sig 64]
+ *   REQUEST  [9][mac 6][addr 10][pub 32][sig 64]
+ *   ACK      [10][mac 6][addr 10][lease 4][pub 32][sig 64]
+ *   RELEASE  [11][mac 6][addr 10][pub 32][sig 64]
  * The signature covers every byte before it (type..lease). Without
- * --peer/--key the short legacy forms are used (DISCOVER 7, OFFER/ACK 16,
- * REQUEST/RELEASE 12).
+ * --peer/--key the short legacy forms are used (DISCOVER 7, OFFER/ACK 21,
+ * REQUEST/RELEASE 17).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +36,9 @@
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
@@ -37,13 +48,41 @@
 #include "IPv69/af69.h"
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
-#include "IPv69/tweetnacl.h"
+#include "ed25519.h"
 
 #define MAX_LEASES 256
 #define MAX_PEERS 64
 #define BCAST_MAC { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }
 #define PUB_LEN 32
 #define SIG_LEN 64
+#define IPV69_BCAST_ADDR 0xFFFFFFFFFFULL
+
+static int hex_decode(const char *hex, uint8_t *out, size_t max)
+{
+    size_t hl = strlen(hex);
+
+    if (hl % 2 || hl / 2 > max)
+        return -1;
+    for (size_t j = 0; j < hl / 2; j++) {
+        unsigned v;
+        if (sscanf(hex + 2 * j, "%2x", &v) != 1)
+            return -1;
+        out[j] = (uint8_t)v;
+    }
+    return (int)(hl / 2);
+}
+
+static void put_addr40(uint8_t *d, uint64_t v)
+{
+    d[0] = (v >> 32) & 0xff; d[1] = (v >> 24) & 0xff;
+    d[2] = (v >> 16) & 0xff; d[3] = (v >> 8) & 0xff; d[4] = v & 0xff;
+}
+
+static uint64_t get_addr40(const uint8_t *s)
+{
+    return ((uint64_t)s[0] << 32) | ((uint64_t)s[1] << 24) |
+           ((uint64_t)s[2] << 16) | ((uint64_t)s[3] << 8) | s[4];
+}
 
 struct lease {
     uint8_t mac[6];
@@ -64,40 +103,52 @@ struct ctx {
     int n_allow;
     uint8_t peers[MAX_PEERS][PUB_LEN]; /* pubkey allowlist (optional) */
     int n_peers;
+    int auth_enabled;                 /* --peer/--peer-file given */
+    int learn;                        /* --learn: auto-register pubkeys */
+    const char *peer_file;            /* pubkey file, reload on mtime */
     uint8_t sk[64];                   /* server signing key (optional) */
     int has_sk;
 };
 
-static void put_addr40(uint8_t *d, uint64_t v)
+static volatile sig_atomic_t g_reload = 0;
+
+static void on_hup(int sig)
 {
-    d[0] = (v >> 32) & 0xff; d[1] = (v >> 24) & 0xff;
-    d[2] = (v >> 16) & 0xff; d[3] = (v >> 8) & 0xff; d[4] = v & 0xff;
+    (void)sig;
+    g_reload = 1;
 }
 
-static uint64_t get_addr40(const uint8_t *s)
+/* (re)load pubkeys from a file: one hex key per line, '#' comments.
+ * Polled via mtime every loop iteration, so edits take effect without
+ * any signal (SIGHUP is just an immediate trigger). */
+static void peer_file_load(struct ctx *c, const char *path)
 {
-    return ((uint64_t)s[0] << 32) | ((uint64_t)s[1] << 24) |
-           ((uint64_t)s[2] << 16) | ((uint64_t)s[3] << 8) | s[4];
+    FILE *f = fopen(path, "r");
+    char line[96];
+
+    if (!f) {
+        fprintf(stderr, "af69d: peer-file %s: %s\n", path, strerror(errno));
+        return;
+    }
+    c->n_peers = 0;
+    while (c->n_peers < MAX_PEERS && fgets(line, sizeof(line), f)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '\n' || *p == 0)
+            continue;
+        line[strcspn(line, "\n")] = 0;
+        if (hex_decode(p, c->peers[c->n_peers], PUB_LEN) == PUB_LEN)
+            c->n_peers++;
+        else
+            fprintf(stderr, "af69d: peer-file: linha invalida ignorada: %s\n", p);
+    }
+    fclose(f);
+    printf("af69d: peer-file %s: %d pubkey(s)\n", path, c->n_peers);
 }
 
 static void put_be32(uint8_t *d, uint32_t v)
 {
     d[0] = v >> 24; d[1] = v >> 16; d[2] = v >> 8; d[3] = v;
-}
-
-static int hex_decode(const char *hex, uint8_t *out, size_t max)
-{
-    size_t hl = strlen(hex);
-
-    if (hl % 2 || hl / 2 > max)
-        return -1;
-    for (size_t j = 0; j < hl / 2; j++) {
-        unsigned v;
-        if (sscanf(hex + 2 * j, "%2x", &v) != 1)
-            return -1;
-        out[j] = (uint8_t)v;
-    }
-    return (int)(hl / 2);
 }
 
 static void mac_str(const uint8_t *m, char out[18])
@@ -119,30 +170,32 @@ static size_t sign_msg(struct ctx *c, uint8_t *msg, size_t plen)
 {
     uint8_t *pub = msg + plen;
     uint8_t *sig = pub + PUB_LEN;
-    uint8_t tmp[SIG_LEN + (1 + 6 + 5 + 4)];
-    unsigned long long slen;
 
     if (!c->has_sk)
         return plen;
-    /* public key = sk[32..63] (TweetNaCl appends it on keypair) */
+    /* public key = sk[32..63] (keypair appends it) */
     memcpy(pub, c->sk + 32, PUB_LEN);
-    /* crypto_sign writes [sig 64][msg] into tmp */
-    crypto_sign(tmp, &slen, msg, plen, c->sk);
-    memcpy(sig, tmp, SIG_LEN);
+    if (ed25519_sign(sig, msg, plen, c->sk) < 0)
+        return plen;
     return plen + PUB_LEN + SIG_LEN;
 }
 
+static int mac_in_allowlist(struct ctx *c, const uint8_t *mac);
+static int learn_peer(struct ctx *c, const uint8_t *pub, const uint8_t *mac);
+
 /* verify a signed message: pub at msg+plen-96, sig at msg+plen-64.
  * Checks the pub against the allowlist and the signature over
- * msg[0..plen-96]. Returns 1 when valid (or when no auth configured). */
-static int check_msg(struct ctx *c, const uint8_t *msg, size_t plen)
+ * msg[0..plen-96]. Returns 1 when valid (or when no auth configured).
+ * With --learn, an unknown-but-valid pubkey is registered on the spot
+ * (restricted to --allow MACs when given; open otherwise) and accepted. */
+static int check_msg(struct ctx *c, const uint8_t *msg, size_t plen,
+                     const uint8_t *mac)
 {
     const uint8_t *pub, *sig;
-    unsigned long long mlen;
     char ps[65];
     size_t body = plen - PUB_LEN - SIG_LEN;
 
-    if (!c->n_peers)
+    if (!c->auth_enabled)
         return 1;                       /* no pubkey auth: accept */
     if (plen < 1 + 6 + PUB_LEN + SIG_LEN)
         return 0;
@@ -151,16 +204,16 @@ static int check_msg(struct ctx *c, const uint8_t *msg, size_t plen)
     pub_str(pub, ps);
     for (int i = 0; i < c->n_peers; i++)
         if (!memcmp(c->peers[i], pub, PUB_LEN)) {
-            /* crypto_sign_open wants [sig][msg] concatenated, and m/sm
-               must be separate buffers (open overwrites sm[32..63]) */
-            uint8_t sm[SIG_LEN + 1 + 6 + 5 + 4], m[SIG_LEN + 1 + 6 + 5 + 4];
-            memcpy(sm, sig, SIG_LEN);
-            memcpy(sm + SIG_LEN, msg, body);
-            if (crypto_sign_open(m, &mlen, sm, SIG_LEN + body, pub) == 0)
+            if (ed25519_verify(msg, body, sig, pub) == 0)
                 return 1;
             printf("af69d: assinatura invalida de %s\n", ps);
             return 0;
         }
+    if (c->learn && (!c->n_allow || mac_in_allowlist(c, mac)) &&
+        ed25519_verify(msg, body, sig, pub) == 0) {
+        learn_peer(c, pub, mac);
+        return 1;
+    }
     printf("af69d: pub %s nao esta na allowlist -> ignorado\n", ps);
     return 0;
 }
@@ -173,6 +226,47 @@ static int mac_allowed(struct ctx *c, const uint8_t *mac)
         if (!memcmp(c->allow[i], mac, 6))
             return 1;
     return 0;
+}
+
+/* strict check: mac must be explicitly listed in --allow */
+static int mac_in_allowlist(struct ctx *c, const uint8_t *mac)
+{
+    for (int i = 0; i < c->n_allow; i++)
+        if (!memcmp(c->allow[i], mac, 6))
+            return 1;
+    return 0;
+}
+
+/* --learn: register an unknown-but-valid pubkey. Only call after the
+ * signature was verified against that pubkey (and, when --allow is
+ * given, the MAC is in the explicit allowlist). Appends to
+ * --peer-file (if any) so the key survives restarts. */
+static int learn_peer(struct ctx *c, const uint8_t *pub, const uint8_t *mac)
+{
+    char ps[65], ms[18];
+
+    for (int i = 0; i < c->n_peers; i++)
+        if (!memcmp(c->peers[i], pub, PUB_LEN))
+            return 0;               /* already known */
+    if (c->n_peers >= MAX_PEERS) {
+        fprintf(stderr, "af69d: learn: tabela de peers cheia (%d)\n",
+                MAX_PEERS);
+        return 0;
+    }
+    memcpy(c->peers[c->n_peers++], pub, PUB_LEN);
+    if (c->peer_file) {
+        FILE *f = fopen(c->peer_file, "a");
+        if (f) {
+            pub_str(pub, ps);
+            fprintf(f, "%s\n", ps);
+            fclose(f);
+        }
+    }
+    mac_str(mac, ms);
+    pub_str(pub, ps);
+    printf("af69d: aprendi pub %s do MAC %s -> registrada%s\n", ps, ms,
+           c->peer_file ? " no peer-file" : " (so memoria)");
+    return 1;
 }
 
 /* tell the kernel module who owns a leased address (dgram source auth).
@@ -216,14 +310,14 @@ static int lease_addr_taken(struct ctx *c, uint64_t addr, time_t now)
 }
 
 /* pick a free pool address for mac; renews an existing lease if any */
-static uint64_t lease_alloc(struct ctx *c, const uint8_t *mac, time_t now)
+static int lease_alloc(struct ctx *c, const uint8_t *mac, time_t now)
 {
     struct lease *l = lease_find(c, mac);
     uint64_t a;
 
     if (l) {                        /* renew: same address */
         l->expiry = now + c->lease_sec;
-        return l->addr;
+        return 1;
     }
     for (a = c->pool_start; a <= c->pool_end; a++) {
         if (lease_addr_taken(c, a, now))
@@ -234,9 +328,10 @@ static uint64_t lease_alloc(struct ctx *c, const uint8_t *mac, time_t now)
                 memcpy(c->leases[i].mac, mac, 6);
                 c->leases[i].addr = a;
                 c->leases[i].expiry = now + c->lease_sec;
-                return a;
+                return 1;
             }
         }
+        return 0;                   /* table full */
     }
     return 0;                       /* pool full */
 }
@@ -262,7 +357,7 @@ static int send_ctrl(struct ctx *c, const uint8_t *payload, size_t plen,
         sa.sa_family = AF_69;
         sa.ifindex = c->ifindex;
         sa.src = IPV69_SERVER_ADDR;
-        sa.dst = 0xFFFFFFFFFFULL;   /* broadcast */
+        sa.dst = IPV69_BCAST_ADDR;
         sa.next_header = IPV69_NEXT_CONTROL;
         int r = sendto(c->fd, payload, plen, 0,
                       (struct sockaddr *)&sa, sizeof(sa));
@@ -290,7 +385,7 @@ static int send_ctrl(struct ctx *c, const uint8_t *payload, size_t plen,
     h->hop_limit = 64;
     h->flags = IPV69_FLAG_NOFRAG;
     put_addr40(h->source, IPV69_SERVER_ADDR);
-    put_addr40(h->dest, 0xFFFFFFFFFFULL);
+    put_addr40(h->dest, IPV69_BCAST_ADDR);
     memcpy(frame + 14 + IPV69_HEADER_LEN, payload, plen);
 
     memset(&sll, 0, sizeof(sll));
@@ -325,7 +420,7 @@ static size_t recv_ctrl(struct ctx *c, uint8_t *buf, size_t bufsz)
         uint64_t dst = get_addr40(h->dest);
         if (h->next_header != IPV69_NEXT_CONTROL)
             return 0;
-        if (dst != 0xFFFFFFFFFFULL && dst != IPV69_SERVER_ADDR)
+        if (dst != IPV69_BCAST_ADDR && dst != IPV69_SERVER_ADDR)
             return 0;               /* not for us */
     }
     memmove(buf, buf + 14 + IPV69_HEADER_LEN, n - 14 - IPV69_HEADER_LEN);
@@ -340,7 +435,6 @@ int main(int argc, char **argv)
     uint8_t buf[1500], offer[1 + 6 + 5 + 4 + PUB_LEN + SIG_LEN],
                    ack[1 + 6 + 5 + 4 + PUB_LEN + SIG_LEN];
     time_t now;
-    uint64_t addr;
     int idx;
 
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -352,7 +446,8 @@ int main(int argc, char **argv)
     if (argc < 2) {
         fprintf(stderr,
                 "Usage: %s <ifname|ifindex> [pool_start] [pool_end] [lease_sec]\n"
-                "       [--raw] [--allow MAC]... [--peer PUBKEY_HEX]... [--key PRIVKEY_HEX]\n"
+                "       [--raw] [--allow MAC]... [--peer PUBKEY_HEX]... [--peer-file PATH] [--key PRIVKEY_HEX]\n"
+                "       [--learn]\n"
                 "  pool_start/pool_end: ff.ff.ff.ff.ff or raw hex\n"
                 "  defaults: pool 00.00.00.00.10-00.00.00.00.fe, lease 3600s\n"
                 "  --raw:    force AF_PACKET (AP filtering wired->wireless\n"
@@ -360,6 +455,12 @@ int main(int argc, char **argv)
                 "  --allow:  MAC allowlist (repeatable)\n"
                 "  --peer:   Ed25519 pubkey allowlist (repeatable) - only\n"
                 "            these devices may get a lease\n"
+                "  --peer-file: file with one pubkey per line ('#' comments);\n"
+                "            reloads automatically when the file changes\n"
+                "  --learn:  auto-register unknown pubkeys (with a valid\n"
+                "            signature); restricted to --allow MACs when\n"
+                "            given, open otherwise; appended to\n"
+                "            --peer-file when given\n"
                 "  --key:    server privkey - signs OFFER/ACK so clients\n"
                 "            can detect rogue servers\n"
                 "Generate keys: ipv69-keygen\n",
@@ -375,19 +476,22 @@ int main(int argc, char **argv)
     }
     /* positional pool/lease (argv 2/3/4), flags anywhere */
     if (argc > 2 && strcmp(argv[2], "--raw") && strcmp(argv[2], "--allow") &&
-        strcmp(argv[2], "--peer") && strcmp(argv[2], "--key"))
+        strcmp(argv[2], "--peer") && strcmp(argv[2], "--peer-file") &&
+        strcmp(argv[2], "--key") && strcmp(argv[2], "--learn"))
         if (parse_ipv69_addr(argv[2], &c.pool_start) < 0) {
             fprintf(stderr, "pool_start invalido\n");
             return 1;
         }
     if (argc > 3 && strcmp(argv[3], "--raw") && strcmp(argv[3], "--allow") &&
-        strcmp(argv[3], "--peer") && strcmp(argv[3], "--key"))
+        strcmp(argv[3], "--peer") && strcmp(argv[3], "--peer-file") &&
+        strcmp(argv[3], "--key") && strcmp(argv[3], "--learn"))
         if (parse_ipv69_addr(argv[3], &c.pool_end) < 0) {
             fprintf(stderr, "pool_end invalido\n");
             return 1;
         }
     if (argc > 4 && strcmp(argv[4], "--raw") && strcmp(argv[4], "--allow") &&
-        strcmp(argv[4], "--peer") && strcmp(argv[4], "--key")) {
+        strcmp(argv[4], "--peer") && strcmp(argv[4], "--peer-file") &&
+        strcmp(argv[4], "--key") && strcmp(argv[4], "--learn")) {
         char *end;
         long v = strtol(argv[4], &end, 10);
         if (*argv[4] && !*end && v > 0)
@@ -421,15 +525,22 @@ int main(int argc, char **argv)
                 return 1;
             }
             c.n_peers++;
+            c.auth_enabled = 1;
+        } else if (!strcmp(argv[i], "--peer-file") && i + 1 < argc) {
+            c.peer_file = argv[++i];
+            c.auth_enabled = 1;
+            peer_file_load(&c, c.peer_file);
+        } else if (!strcmp(argv[i], "--learn")) {
+            c.learn = 1;
         } else if (!strcmp(argv[i], "--key") && i + 1 < argc) {
             uint8_t seed[32];
             if (hex_decode(argv[++i], seed, 32) != 32) {
                 fprintf(stderr, "key: privkey invalida (32 bytes hex)\n");
                 return 1;
             }
-            /* sk[64] = seed || pub (TweetNaCl keypair layout) */
+            /* sk[64] = seed || pub (keypair layout) */
             memcpy(c.sk, seed, 32);
-            crypto_sign_seed_to_pk(c.sk + 32, seed);
+            ed25519_seed_to_pub(c.sk + 32, seed);
             c.has_sk = 1;
         }
     }
@@ -468,10 +579,37 @@ int main(int argc, char **argv)
                c.ifindex, (unsigned long long)c.pool_start,
                (unsigned long long)c.pool_end, c.lease_sec);
     }
-    printf("af69d: allow=%d mac(s), peers=%d pubkey(s), server-key=%s\n",
-           c.n_allow, c.n_peers, c.has_sk ? "sim" : "nao");
+    printf("af69d: allow=%d mac(s), peers=%d pubkey(s), learn=%s, server-key=%s\n",
+           c.n_allow, c.n_peers, c.learn ? "sim" : "nao",
+           c.has_sk ? "sim" : "nao");
+    if (c.peer_file)
+        signal(SIGHUP, on_hup);
+    struct stat pst = { 0 };
+    if (c.peer_file)
+        stat(c.peer_file, &pst);
 
     for (;;) {
+        /* poll peer-file mtime: reload without signals */
+        if (c.peer_file) {
+            struct stat nst;
+            if (stat(c.peer_file, &nst) == 0 &&
+                (nst.st_mtime != pst.st_mtime || nst.st_size != pst.st_size)) {
+                pst = nst;
+                printf("af69d: peer-file mudou, recarregando...\n");
+                peer_file_load(&c, c.peer_file);
+            }
+        }
+        if (g_reload && c.peer_file) {
+            g_reload = 0;
+            printf("af69d: SIGHUP, recarregando peers...\n");
+            peer_file_load(&c, c.peer_file);
+        }
+        /* poll with timeout: lets the peer-file mtime check run even
+           without traffic, so edits take effect within ~1s */
+        struct pollfd pf = { .fd = c.fd, .events = POLLIN };
+        int pr = poll(&pf, 1, 1000);
+        if (pr <= 0)
+            continue;               /* timeout or EINTR: recheck mtime */
         size_t plen = recv_ctrl(&c, buf, sizeof(buf));
         uint8_t *mac;
         char ms[18];
@@ -489,61 +627,64 @@ int main(int argc, char **argv)
             printf("af69d: %s nao esta na allowlist -> ignorado\n", ms);
             continue;
         }
-        if (!check_msg(&c, buf, plen)) {
+        if (!check_msg(&c, buf, plen, mac)) {
             printf("af69d: %s assinatura/pubkey invalida -> ignorado\n", ms);
             continue;
         }
 
         if (buf[0] == IPV69_CTRL_DHCP_DISCOVER) {
             size_t olen = 16;
-            addr = lease_alloc(&c, mac, now);
-            if (!addr) {
+            uint64_t oaddr;
+            if (!lease_alloc(&c, mac, now)) {
                 printf("af69d: pool cheio, DISCOVER de %s ignorado\n", ms);
                 continue;
             }
+            struct lease *l = lease_find(&c, mac);
+            oaddr = l->addr;
             offer[0] = IPV69_CTRL_DHCP_OFFER;
             memcpy(offer + 1, mac, 6);
-            put_addr40(offer + 7, addr);
+            put_addr40(offer + 7, oaddr);
             put_be32(offer + 12, c.lease_sec);
             olen = sign_msg(&c, offer, olen);
             send_ctrl(&c, offer, olen, mac);
             printf("af69d: DISCOVER %s -> OFFER %016llx\n",
-                   ms, (unsigned long long)addr);
+                   ms, (unsigned long long)oaddr);
         } else if (buf[0] == IPV69_CTRL_DHCP_REQUEST) {
             size_t alen = 16;
             if (plen < 12)
                 continue;
-            addr = get_addr40(buf + 7);
-            if (lease_addr_taken(&c, addr, now) &&
-                (!lease_find(&c, mac) || lease_find(&c, mac)->addr != addr)) {
-                printf("af69d: REQUEST %016llx de MAC estranho -> negado\n",
-                       (unsigned long long)addr);
-                continue;           /* no ACK: client restarts DISCOVER */
-            }
+            uint64_t req_addr = get_addr40(buf + 7);
             struct lease *l = lease_find(&c, mac);
             if (!l) {               /* fresh request without discover */
-                addr = lease_alloc(&c, mac, now);
-                if (!addr)
+                if (!lease_alloc(&c, mac, now))
                     continue;
+                l = lease_find(&c, mac);
             } else {
                 l->expiry = now + c.lease_sec;
             }
-            ack[0] = IPV69_CTRL_DHCP_ACK;
-            memcpy(ack + 1, mac, 6);
-            put_addr40(ack + 7, addr);
-            put_be32(ack + 12, c.lease_sec);
-            alen = sign_msg(&c, ack, alen);
-            send_ctrl(&c, ack, alen, mac);
-            binding_update(mac, addr, c.lease_sec, 0);
-            printf("af69d: REQUEST %s -> ACK %016llx\n",
-                   ms, (unsigned long long)addr);
+            /* client asked for a specific address; confirm it matches
+               the lease (else keep the leased one) */
+            if (req_addr == l->addr) {
+                ack[0] = IPV69_CTRL_DHCP_ACK;
+                memcpy(ack + 1, mac, 6);
+                put_addr40(ack + 7, req_addr);
+                put_be32(ack + 12, c.lease_sec);
+                alen = sign_msg(&c, ack, alen);
+                send_ctrl(&c, ack, alen, mac);
+                binding_update(mac, req_addr, c.lease_sec, 0);
+                printf("af69d: REQUEST %s -> ACK %016llx\n",
+                       ms, (unsigned long long)req_addr);
+            } else {
+                printf("af69d: REQUEST %s pediu %016llx != lease -> negado\n",
+                       ms, (unsigned long long)req_addr);
+            }
         } else {                    /* RELEASE */
-            addr = plen >= 12 ? get_addr40(buf + 7) : 0;
-            lease_release(&c, mac, addr);
-            if (addr)
-                binding_update(mac, addr, 0, 1);
+            uint64_t rel_addr = plen >= 12 ? get_addr40(buf + 7) : 0;
+            lease_release(&c, mac, rel_addr);
+            if (rel_addr)
+                binding_update(mac, rel_addr, 0, 1);
             printf("af69d: RELEASE %s %016llx\n",
-                   ms, (unsigned long long)addr);
+                   ms, (unsigned long long)rel_addr);
         }
     }
     return 0;
