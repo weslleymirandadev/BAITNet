@@ -48,6 +48,28 @@ static const uint8_t *peer_dst(const struct icsp_assoc *a,
     return a->has_peer_mac ? a->peer_mac : bcast;
 }
 
+static void chat_usage(void)
+{
+    fprintf(stderr,
+        "icsp_chat - example chat built on the ICSP API\n"
+        "\n"
+        "Usage: icsp_chat <server|client> <ifname> [port|:port] "
+        "[--peer HEX] [--echo]\n"
+        "       icsp_chat client <ifname> <dst:porta> [--peer HEX] [--echo]\n"
+        "\n"
+        "  server  wait for a connection (persistent; replies unicast to\n"
+        "          the peer MAC, so it works across Wi-Fi APs)\n"
+        "  client  connect to <dst:porta> (address-less port form ok)\n"
+        "\n"
+        "Options:\n"
+        "  --peer HEX   allowlist: accept only this identity (repeatable)\n"
+        "  --echo       echo received messages back (test mode)\n"
+        "\n"
+        "Identity: ~/.hosts69 keyring (ipv69 keygen). Both sides print\n"
+        "the session key — identical = authenticated ECDH handshake.\n"
+        "Ctrl-D closes gracefully (SHUTDOWN).\n");
+}
+
 static int chat_loop(struct icsp_assoc *a, int fd, int ifindex,
                      const uint8_t src_mac[6], uint64_t dst_addr,
                      int echo_mode, int use_stdin)
@@ -155,12 +177,14 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IOLBF, 0);
 
     if (argc < 3) {
-        fprintf(stderr, "usage: icsp_chat <server|client> <ifname> "
-                "[port|:port] [--peer HEX] [--echo]\n"
-                "       icsp_chat client <ifname> <dst:porta> [--peer HEX] [--echo]\n");
+        chat_usage();
         return 1;
     }
     for (int i = 3; i < argc; i++) {
+        if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
+            chat_usage();
+            return 0;
+        }
         if (!strcmp(argv[i], "--peer") && i + 1 < argc) {
             if (hex_decode(argv[++i], peers[n_peers], 32) != 32) {
                 fprintf(stderr, "chat: --peer invalido\n");

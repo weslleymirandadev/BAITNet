@@ -430,6 +430,7 @@ make chat        # builds build/icsp_chat separately
 # client:
 ./build/icsp_chat client wlan0 00.00.00.00.01:6969
 
+# every subcommand has built-in help: ipv69 help <cmd> or ipv69 <cmd> --help
 # after connecting: type + Enter to send (stream 1); Ctrl-D closes
 # gracefully. Both sides print the session key — identical on both =
 # the authenticated ECDH handshake worked (nobody in the middle can
