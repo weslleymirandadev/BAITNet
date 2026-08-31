@@ -31,38 +31,7 @@
 #define IPV69_CTRL_ECHO_REPLY   4
 #define IPV69_BCAST_ADDR        0xFFFFFFFFFFULL
 
-void put_addr40(uint8_t *d, uint64_t v)
-{
-    d[0] = (v >> 32) & 0xff; d[1] = (v >> 24) & 0xff;
-    d[2] = (v >> 16) & 0xff; d[3] = (v >> 8) & 0xff; d[4] = v & 0xff;
-}
-
-uint64_t get_addr40(const uint8_t *s)
-{
-    return ((uint64_t)s[0] << 32) | ((uint64_t)s[1] << 24) |
-           ((uint64_t)s[2] << 16) | ((uint64_t)s[3] << 8) | s[4];
-}
-
-uint32_t get_be32(const uint8_t *s)
-{
-    return ((uint32_t)s[0] << 24) | ((uint32_t)s[1] << 16) |
-           ((uint32_t)s[2] << 8) | s[3];
-}
-
-int hex_decode(const char *hex, uint8_t *out, size_t max)
-{
-    size_t hl = strlen(hex);
-
-    if (hl % 2 || hl / 2 > max)
-        return -1;
-    for (size_t j = 0; j < hl / 2; j++) {
-        unsigned v;
-        if (sscanf(hex + 2 * j, "%2x", &v) != 1)
-            return -1;
-        out[j] = (uint8_t)v;
-    }
-    return (int)(hl / 2);
-}
+/* hex_decode comes from l2.c (see l2.h) */
 
 /* ---- UDP tunnel backend (--remote gw1,gw2:port) ---------------------- */
 #define MAX_GW 4
@@ -167,37 +136,11 @@ static int gw_query(uint64_t addr, struct sockaddr_storage *ep,
     return 0;
 }
 
-/* build an Ethernet frame: [eth 14][ipv69 32][payload]; returns total len */
-size_t build_frame(uint8_t *frame, const uint8_t *dst_mac,
-                   const uint8_t src_mac[6], uint64_t src, uint64_t dst,
-                   uint8_t next_header, uint8_t hop_limit,
-                   uint16_t src_port, uint16_t dst_port,
-                   const uint8_t *payload, size_t plen)
-{
-    struct ethernet_header *eth = (struct ethernet_header *)frame;
-    struct ipv69_header *h = (struct ipv69_header *)(frame + 14);
+/* build_frame comes from l2.c (see l2.h). Tunnel-aware wrappers: */
 
-    memcpy(eth->dst_mac, dst_mac, 6);
-    memcpy(eth->src_mac, src_mac, 6);
-    eth->ethertype = htons(ETHERTYPE_IPV69);
-
-    memset(h, 0, IPV69_HEADER_LEN);
-    h->ver_traffic = (IPV69_VERSION << 4) | IPV69_TRAFFIC_CLASS;
-    wr_be16(&h->payload_len, plen);
-    wr_be16(&h->flow_id, 1);
-    h->next_header = next_header;
-    h->hop_limit = hop_limit ? hop_limit : 64;
-    h->flags = IPV69_FLAG_NOFRAG;
-    wr_be16(&h->src_port, src_port);
-    wr_be16(&h->dst_port, dst_port);
-    put_addr40(h->source, src);
-    put_addr40(h->dest, dst);
-
-    memcpy(frame + 14 + IPV69_HEADER_LEN, payload, plen);
-    return 14 + IPV69_HEADER_LEN + plen;
-}
-
-int raw_socket(const char *ifname, int *ifindex, uint8_t *src_mac)
+/* tunnel-aware raw socket: UDP when --remote gateways are set, else
+ * the plain AF_PACKET socket from l2.c. Same API as l2 raw_socket. */
+int raw_socket_tun(const char *ifname, int *ifindex, uint8_t *src_mac)
 {
     if (g_ngw > 0) {
         /* UDP tunnel mode: one socket, any local port, family of gw[0] */
@@ -215,29 +158,15 @@ int raw_socket(const char *ifname, int *ifindex, uint8_t *src_mac)
         *ifindex = 0;
         return g_udp_fd;
     }
-    int fd = socket(AF_PACKET, SOCK_RAW, htons(ETHERTYPE_IPV69));
-    struct ifreq ifr;
-    int err;
-
-    if (fd < 0) { perror("socket(AF_PACKET)"); return -1; }
-    memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
-    if (ioctl(fd, SIOCGIFINDEX, &ifr) < 0) { perror("SIOCGIFINDEX"); return -1; }
-    *ifindex = ifr.ifr_ifindex;
-    if (ioctl(fd, SIOCGIFHWADDR, &ifr) < 0) { perror("SIOCGIFHWADDR"); return -1; }
-    memcpy(src_mac, ifr.ifr_hwaddr.sa_data, 6);
-    err = bind(fd, (struct sockaddr *)&(struct sockaddr_ll){
-        .sll_family = AF_PACKET, .sll_protocol = htons(ETHERTYPE_IPV69),
-        .sll_ifindex = *ifindex }, sizeof(struct sockaddr_ll));
-    if (err < 0) { perror("bind(AF_PACKET)"); return -1; }
-    return fd;
+    return raw_socket(ifname, ifindex, src_mac);
 }
 
-int send_frame(int fd, int ifindex, const uint8_t *dst_mac,
-                      const uint8_t *frame, size_t len)
+/* tunnel-aware send: broadcast to every gateway (failover) when
+ * --remote is set, else plain L2 send_frame. */
+int send_frame_tun(int fd, int ifindex, const uint8_t *dst_mac,
+                   const uint8_t *frame, size_t len)
 {
     if (g_ngw > 0) {
-        /* UDP tunnel: send to every gateway (failover) */
         int sent = 0;
         for (int i = 0; i < g_ngw; i++)
             if (sendto(g_udp_fd, frame, len, 0,
@@ -245,12 +174,7 @@ int send_frame(int fd, int ifindex, const uint8_t *dst_mac,
                 sent++;
         return sent > 0 ? (int)len : -1;
     }
-    struct sockaddr_ll sll = {
-        .sll_family = AF_PACKET, .sll_protocol = htons(ETHERTYPE_IPV69),
-        .sll_ifindex = ifindex, .sll_halen = 6,
-    };
-    memcpy(sll.sll_addr, dst_mac, 6);
-    return sendto(fd, frame, len, 0, (struct sockaddr *)&sll, sizeof(sll));
+    return send_frame(fd, ifindex, dst_mac, frame, len);
 }
 
 static void dump_frame(const uint8_t *frame, size_t len)
@@ -315,7 +239,7 @@ static int dhcp_discover(int fd, int ifindex, const uint8_t src_mac[6],
     }
     len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
                       IPV69_NEXT_CONTROL, 64, 0, 0, pkt, dlen);
-    if (send_frame(fd, ifindex, bcast, frame, len) < 0)
+    if (send_frame_tun(fd, ifindex, bcast, frame, len) < 0)
         return -1;
 
     /* wait OFFER [8][mac][addr5][lease4] + pub + sig */
@@ -350,7 +274,7 @@ static int dhcp_discover(int fd, int ifindex, const uint8_t src_mac[6],
     }
     len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
                       IPV69_NEXT_CONTROL, 64, 0, 0, pkt, rlen);
-    if (send_frame(fd, ifindex, bcast, frame, len) < 0)
+    if (send_frame_tun(fd, ifindex, bcast, frame, len) < 0)
         return -1;
 
     /* wait ACK [10][mac][addr5][lease4] + pub + sig */
@@ -501,12 +425,12 @@ int cmd_raw(int argc, char **argv)
             uint8_t req[1 + 5] = { IPV69_CTRL_ND_REQUEST };
             struct timeval tv = { 1, 0 };
             memcpy(req + 1, derived, 5);
-            int dfd = raw_socket(argv[2], &ifindex, src_mac);
+            int dfd = raw_socket_tun(argv[2], &ifindex, src_mac);
             if (dfd < 0)
                 return 1;
             size_t len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
                                      IPV69_NEXT_CONTROL, 64, 0, 0, req, sizeof(req));
-            if (send_frame(dfd, ifindex, bcast, frame, len) < 0) {
+            if (send_frame_tun(dfd, ifindex, bcast, frame, len) < 0) {
                 perror("sendto(DAD)"); return 1;
             }
             setsockopt(dfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -539,7 +463,7 @@ int cmd_raw(int argc, char **argv)
         return 1;
     }
 
-    int fd = raw_socket(argv[2], &ifindex, src_mac);
+    int fd = raw_socket_tun(argv[2], &ifindex, src_mac);
     if (fd < 0) return 1;
     printf("iface=%s ifindex=%d mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
            argv[2], ifindex, src_mac[0], src_mac[1], src_mac[2],
@@ -598,7 +522,7 @@ int cmd_raw(int argc, char **argv)
                 size_t l = build_frame(frame, bcast, src_mac, my_addr,
                                        0xFFFFFFFFFFULL, IPV69_NEXT_CONTROL,
                                        64, 0, 0, req, sizeof(req));
-                send_frame(fd, ifindex, bcast, frame, l);
+                send_frame_tun(fd, ifindex, bcast, frame, l);
                 last_ann = time(NULL);
             }
             ssize_t n = recv(fd, frame, sizeof(frame), 0);
@@ -677,7 +601,7 @@ int cmd_raw(int argc, char **argv)
             size_t alen = build_frame(af, bcast, src_mac, src,
                                       0xFFFFFFFFFFULL, IPV69_NEXT_CONTROL,
                                       64, 0, 0, ann, sizeof(ann));
-            send_frame(fd, ifindex, bcast, af, alen);
+            send_frame_tun(fd, ifindex, bcast, af, alen);
             /* P2P: ask the gateway where dst lives; send direct if known */
             struct sockaddr_storage ep;
             socklen_t eplen = sizeof(ep);
@@ -696,7 +620,7 @@ int cmd_raw(int argc, char **argv)
         }
         size_t len = build_frame(frame, bcast, src_mac, src, dst, IPV69_NEXT_DGRAM,
                                  64, sp, dp, (const uint8_t *)data, plen);
-        if (send_frame(fd, ifindex, bcast, frame, len) < 0) { perror("sendto"); return 1; }
+        if (send_frame_tun(fd, ifindex, bcast, frame, len) < 0) { perror("sendto"); return 1; }
         printf("sent %zu bytes (dgram, dst=%016llx src=%016llx)\n",
                dlen, (unsigned long long)dst, (unsigned long long)src);
         return 0;
@@ -716,7 +640,7 @@ int cmd_raw(int argc, char **argv)
         memcpy(req + 1, data, dlen);
         size_t len = build_frame(frame, bcast, src_mac, 1, dst, IPV69_NEXT_CONTROL,
                                  64, 0, 0, req, 1 + dlen);
-        if (send_frame(fd, ifindex, bcast, frame, len) < 0) { perror("sendto"); return 1; }
+        if (send_frame_tun(fd, ifindex, bcast, frame, len) < 0) { perror("sendto"); return 1; }
         printf("ping enviado para %016llx, aguardando reply...\n",
                (unsigned long long)dst);
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
