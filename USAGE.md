@@ -51,11 +51,15 @@ It depends on nothing from IPv69 — reusable in any project (your future
 
 ## Addresses and ports
 
-- Addresses: 40-bit, format `00.00.00.00.10` (5 octets)
+- Addresses: 40-bit, format `00.00.00.00.10` (5 octets), IPv4-style classes:
+  - `00.xx.xx.xx.xx` **class A** — private local (LAN, DHCP pool)
+  - `01.xx.xx.xx.xx` **class B** — private extended (VPN / multi-site)
+  - `10.xx.xx.xx.xx` **class C** — public (internet, via gateway)
+  - `110.xx.xx.xx.xx` **class D** — multicast
+  - `111.xx.xx.xx.xx` **class E** — reserved (broadcast `ff.ff.ff.ff.ff`)
   - `00.00.00.00.01` = DHCP server (reserved)
-  - `00.00.00.00.10`–`00.00.00.00.fe` = DHCP pool (default)
-  - `ff.ff.ff.ff.ff` = broadcast
-  - identity-derived: `ipv69 addr` (SLAAC-style, no DHCP)
+  - `00.00.00.00.10`–`00.00.00.00.fe` = DHCP pool (default, class A)
+  - identity-derived: `ipv69 addr [--class A|B|C]` (default C = public)
 - Ports: **hexadecimal** on the CLI (`10` = 16 decimal)
 - `next_header`: `0` control (DHCP/ND/echo), `1` dgram, `2` stream (reserved)
 
@@ -304,12 +308,19 @@ binary has no DNS):
     --remote 203.0.113.10:6969,203.0.113.11:6969
 ```
 
-Identity-derived address (no DHCP):
+Identity-derived address (no DHCP). Classes are IPv4-style: class C
+(public, default) for the internet, A/B (private) for local/VPN:
 
 ```bash
-./ipv69 addr                 # print the address derived from your key
+./ipv69 addr                 # print the address derived from your key (class C)
+./ipv69 addr --class B       # private extended (VPN)
+./ipv69 addr --class A       # private local (LAN)
 ./ipv69 addr --dad           # ... and check for collision (ND request)
 ```
+
+The gateway is the class guard: without `--private` only public class C
+crosses it (private never leaks to the internet); with `--private`,
+class A/B also route (private VPN over the internet).
 
 The gateway learns `addr/MAC -> endpoint` from traffic (like a switch),
 forwards unicast, replicates broadcast, answers QUERY ("where is addr?")

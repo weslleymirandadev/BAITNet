@@ -35,18 +35,37 @@ does. Addressing and traffic are server-free.
 ## 2. Addressing: identity-derived (no DHCP needed)
 
 Instead of asking a server for an address, a device derives its own
-from its Ed25519 public key:
+from its Ed25519 public key. **IPv4-style classes** organize the 40-bit
+space into private/public worlds:
 
 ```
-addr = first 5 bytes of SHA-512(pubkey)   →  40-bit IPv69 address
+00.xx.xx.xx.xx   class A — private local      (LAN, DHCP pool)
+01.xx.xx.xx.xx   class B — private extended   (VPN / multi-site)
+10.xx.xx.xx.xx   class C — public             (internet, via gateway)
+110.xx.xx.xx.xx  class D — multicast
+111.xx.xx.xx.xx  class E — reserved           (broadcast ff.ff.ff.ff.ff)
 ```
 
-- Deterministic: same key, same address, forever.
+The derived address prefixes 4 hash bytes with the class byte:
+
+```
+addr = [class byte] + first 4 bytes of SHA-512(pubkey)   →  40 bits
+```
+
+- Deterministic: same key + same class = same address, forever.
 - No server, no lease, no renewal, no broadcast — the address is a
   property of the identity, like IPv6 SLAAC privacy addresses.
-- 40 bits → ~2^20 devices before meaningful birthday collision risk;
-  collisions are detected by **DAD** (duplicate address detection):
-  send an ND request for your own address; a reply means collision.
+- 32 free bits per class → ~2^16 devices before meaningful birthday
+  collision risk; collisions are detected by **DAD** (duplicate address
+  detection): send an ND request for your own address; a reply means
+  collision.
+- One device, several worlds: `ipv69 addr` (class C) for the internet,
+  `ipv69 addr --class A` for the local LAN — same key, different
+  classes.
+
+The gateway is the **class guard**: without `--private` only public
+class C crosses it (private never leaks to the internet); with
+`--private`, classes A/B also route (private VPN over the internet).
 
 DHCP69 remains **optional** and is **private-network oriented**:
 it is for closed networks that want centrally assigned pool addresses
