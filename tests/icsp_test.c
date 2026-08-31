@@ -185,7 +185,7 @@ static int run_server(int argc, char **argv, uint8_t sk[64],
            port, n_peers, echo_mode, loss_pct);
 
     if (icsp_server_accept(fd, ifindex, src_mac, 0, port, sk,
-                           peers, n_peers, &a) < 0)
+                           peers, n_peers, &a, 30) < 0)
         return 1;
     printf("icsp: session_key == %02x%02x..%02x%02x\n",
            a.session_key[0], a.session_key[1],
@@ -241,7 +241,7 @@ static int run_server(int argc, char **argv, uint8_t sk[64],
                    "aguardando proxima...\n");
             /* accept a fresh association on the same port */
             if (icsp_server_accept(fd, ifindex, src_mac, 0, port, sk,
-                                   peers, n_peers, &a) < 0)
+                                   peers, n_peers, &a, 30) < 0)
                 return 1;
             printf("icsp: nova associação aceita — session_key == "
                    "%02x%02x..%02x%02x\n",
