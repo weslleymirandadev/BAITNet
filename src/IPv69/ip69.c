@@ -39,7 +39,7 @@ static int query(const char *cmd, char *out, size_t outsz)
     return n > 0 ? 0 : 1;
 }
 
-int main(int argc, char **argv)
+int cmd_ip69(int argc, char **argv)
 {
     char buf[512];
 
