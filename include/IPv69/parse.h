@@ -23,6 +23,10 @@ void print_payload(const uint8_t *payload, size_t len);
    returns 0 on success, -1 on error */
 int parse_ipv69_addr(const char *s, uint64_t *out);
 
+/* parses "ff.ff.ff.ff.ff[:porta_hex]" (or raw hex[:porta_hex]); the
+   optional :porta is hex, like the CLI convention. 0 on success. */
+int parse_ipv69_addr_port(const char *s, uint64_t *addr, uint16_t *port);
+
 /* identity-derived address (SLAAC-style): 4 bytes of SHA-512(pubkey)
    prefixed with the class byte -> 40-bit address. Deterministic: same
    key, same address, forever. No DHCP needed.
