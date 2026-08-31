@@ -78,6 +78,10 @@ struct icsp_assoc {
     uint8_t  session_key[32];   /* secretbox key, derived from ECDH */
     int      has_key;
     uint16_t streams_in, streams_out;
+    /* peer MAC from the last received frame: replies go unicast to it
+     * (broadcast does not traverse APs reliably wired->wireless) */
+    uint8_t  peer_mac[6];
+    int      has_peer_mac;
 
     /* Phase 2: data path */
     int      n_streams;
@@ -136,7 +140,7 @@ int icsp_server_accept(int fd, int ifindex, const uint8_t src_mac[6],
                        uint64_t srv_addr, uint16_t port,
                        const uint8_t sk[64],
                        const uint8_t (*peers)[32], int n_peers,
-                       struct icsp_assoc *a);
+                       struct icsp_assoc *a, int timeout_s);
 
 /* --- Phase 2: data path --- */
 

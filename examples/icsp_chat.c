@@ -41,6 +41,12 @@ static int load_identity(uint8_t sk[64], uint8_t pub[32])
     return keyring_load_or_create(key, kpub, sk, pub, comment,
                                   sizeof(comment));
 }
+/* ---- the chat loop ---- */
+static const uint8_t *peer_dst(const struct icsp_assoc *a,
+                               const uint8_t bcast[6])
+{
+    return a->has_peer_mac ? a->peer_mac : bcast;
+}
 
 static int chat_loop(struct icsp_assoc *a, int fd, int ifindex,
                      const uint8_t src_mac[6], uint64_t dst_addr,
@@ -70,7 +76,8 @@ static int chat_loop(struct icsp_assoc *a, int fd, int ifindex,
             return 1;
         }
         if (r == 0 && time(NULL) - last_heartbeat >= 6) {
-            icsp_heartbeat_send(a, fd, ifindex, src_mac, bcast, dst_addr, 0);
+            icsp_heartbeat_send(a, fd, ifindex, src_mac, peer_dst(a, bcast),
+                                dst_addr, 0);
             last_heartbeat = (int)time(NULL);
             continue;
         }
@@ -83,7 +90,8 @@ static int chat_loop(struct icsp_assoc *a, int fd, int ifindex,
                 line[--n] = 0;
             if (!n)
                 continue;
-            if (icsp_data_send(a, fd, ifindex, src_mac, bcast, dst_addr, 0,
+            if (icsp_data_send(a, fd, ifindex, src_mac, peer_dst(a, bcast),
+                               dst_addr, 0,
                                1, (const uint8_t *)line, n) < 0) {
                 fprintf(stderr, "chat: falha ao enviar\n");
                 return 1;
@@ -103,10 +111,12 @@ static int chat_loop(struct icsp_assoc *a, int fd, int ifindex,
                 continue;
             const uint8_t *payload = buf + 14 + IPV69_HEADER_LEN;
             uint8_t ctype = payload[ICSP_HEADER_LEN];
+            memcpy(a->peer_mac, buf + 6, 6);   /* reply unicast */
+            a->has_peer_mac = 1;
 
             if (ctype == ICSP_CHUNK_HEARTBEAT) {
-                icsp_heartbeat_ack(a, fd, ifindex, src_mac, bcast,
-                                   dst_addr, 0);
+                icsp_heartbeat_ack(a, fd, ifindex, src_mac,
+                                   peer_dst(a, bcast), dst_addr, 0);
                 continue;
             }
             size_t olen = sizeof(buf);
@@ -117,8 +127,9 @@ static int chat_loop(struct icsp_assoc *a, int fd, int ifindex,
             if (m > 0) {
                 printf("eles (%u): %.*s\n", ostream, m, (char *)buf);
                 if (echo_mode)
-                    icsp_data_send(a, fd, ifindex, src_mac, bcast,
-                                   dst_addr, 0, ostream, buf, (size_t)m);
+                    icsp_data_send(a, fd, ifindex, src_mac,
+                                   peer_dst(a, bcast), dst_addr, 0,
+                                   ostream, buf, (size_t)m);
             }
             if (icsp_life_handle(a, payload,
                                  (size_t)(n - 14 - IPV69_HEADER_LEN))) {
@@ -127,7 +138,8 @@ static int chat_loop(struct icsp_assoc *a, int fd, int ifindex,
             }
         }
     }
-    icsp_shutdown_send(a, fd, ifindex, src_mac, bcast, dst_addr, 0);
+    icsp_shutdown_send(a, fd, ifindex, src_mac, peer_dst(a, bcast),
+                       dst_addr, 0);
     printf("chat: encerrado\n");
     return 0;
 }
@@ -166,7 +178,6 @@ int main(int argc, char **argv)
     fd = raw_socket(argv[2], &ifindex, src_mac);
     if (fd < 0)
         return 1;
-
     if (!strcmp(argv[1], "server")) {
         uint16_t port = 6969;
         for (int i = 3; i < argc; i++) {
@@ -175,19 +186,24 @@ int main(int argc, char **argv)
             port = (uint16_t)atoi(argv[i]);
             break;
         }
+        /* also accept `:porta` (address-less form) */
         for (int i = 3; i < argc; i++)
             if (argv[i][0] == ':' && argv[i][1]) {
                 port = (uint16_t)atoi(argv[i] + 1);
                 break;
             }
         printf("chat: servidor em %s:%u (peers=%d)\n", argv[2], port, n_peers);
-        if (icsp_server_accept(fd, ifindex, src_mac, 0, port, sk,
-                               peers, n_peers, &a) < 0)
-            return 1;
-        printf("chat: session_key == %02x%02x..%02x%02x\n",
-               a.session_key[0], a.session_key[1],
-               a.session_key[30], a.session_key[31]);
-        return chat_loop(&a, fd, ifindex, src_mac, 0, echo_mode, 0);
+        /* serve associations forever: accept, chat, then accept again */
+        for (;;) {
+            if (icsp_server_accept(fd, ifindex, src_mac, 0, port, sk,
+                                   peers, n_peers, &a, 0) < 0)
+                return 1;
+            printf("chat: session_key == %02x%02x..%02x%02x\n",
+                   a.session_key[0], a.session_key[1],
+                   a.session_key[30], a.session_key[31]);
+            chat_loop(&a, fd, ifindex, src_mac, 0, echo_mode, 0);
+            printf("chat: aguardando proxima associacao...\n");
+        }
     }
 
     if (!strcmp(argv[1], "client")) {

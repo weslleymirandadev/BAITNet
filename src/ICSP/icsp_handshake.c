@@ -73,7 +73,7 @@ static int cookie_valid(const uint8_t c[COOKIE_LEN], const struct icsp_assoc *a)
 /* --- frame plumbing: ICSP payload inside an IPv69 frame (nh=2) --- */
 static ssize_t icsp_recv(int fd, uint8_t frame[1600],
                          uint8_t **icsp_payload, size_t *plen,
-                         uint64_t *src_addr)
+                         uint64_t *src_addr, uint8_t *src_mac)
 {
     ssize_t n = recv(fd, frame, 1600, 0);
     if (n < 0)
@@ -86,6 +86,8 @@ static ssize_t icsp_recv(int fd, uint8_t frame[1600],
     *icsp_payload = frame + 14 + IPV69_HEADER_LEN;
     *plen = (size_t)(n - 14 - IPV69_HEADER_LEN);
     *src_addr = get_addr40(h->source);
+    if (src_mac)
+        memcpy(src_mac, frame + 6, 6);   /* ethernet src */
     return n;
 }
 
@@ -194,8 +196,10 @@ int icsp_client_handshake(int fd, int ifindex, const uint8_t src_mac[6],
 
     /* wait INIT-ACK [ver][streams][eph 32][id 32][sig 64][cookie] */
     for (;;) {
-        ssize_t n = icsp_recv(fd, frame, &payload, &plen, &from);
+        ssize_t n = icsp_recv(fd, frame, &payload, &plen, &from,
+                              a->peer_mac);
         if (n < 0) { perror("icsp: INIT-ACK"); return -1; }
+        a->has_peer_mac = 1;
         if (payload[4] != ICSP_VERSION ||
             payload[ICSP_HEADER_LEN] != ICSP_CHUNK_INIT_ACK)
             continue;
@@ -222,7 +226,8 @@ int icsp_client_handshake(int fd, int ifindex, const uint8_t src_mac[6],
                                       COOKIE_LEN + 64);
         memcpy(ckd, cd + 69 + 64, COOKIE_LEN);
         ed25519_sign(ckd + COOKIE_LEN, ckd, COOKIE_LEN, sk);
-        if (icsp_send_pkt(fd, ifindex, src_mac, bcast, dst_addr, 0, a,
+        if (icsp_send_pkt(fd, ifindex, src_mac, a->has_peer_mac ?
+                          a->peer_mac : bcast, dst_addr, 0, a,
                           ck, sizeof(ck)) < 0) {
             perror("icsp: send COOKIE-ECHO");
             return -1;
@@ -233,7 +238,8 @@ int icsp_client_handshake(int fd, int ifindex, const uint8_t src_mac[6],
 
     /* wait COOKIE-ACK */
     for (;;) {
-        ssize_t n = icsp_recv(fd, frame, &payload, &plen, &from);
+        ssize_t n = icsp_recv(fd, frame, &payload, &plen, &from,
+                              a->peer_mac);
         if (n < 0) { perror("icsp: COOKIE-ACK"); return -1; }
         if (payload[ICSP_HEADER_LEN] != ICSP_CHUNK_COOKIE_ACK)
             continue;
@@ -250,7 +256,7 @@ int icsp_server_accept(int fd, int ifindex, const uint8_t src_mac[6],
                        uint64_t srv_addr, uint16_t port,
                        const uint8_t sk[64],
                        const uint8_t (*peers)[32], int n_peers,
-                       struct icsp_assoc *a)
+                       struct icsp_assoc *a, int timeout_s)
 {
     const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
     uint8_t frame[1600];
@@ -274,12 +280,23 @@ int icsp_server_accept(int fd, int ifindex, const uint8_t src_mac[6],
     }
     if (ed25519_scalarmult_base(a->eph_pub, eph_priv) != 0)
         return -1;
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    if (timeout_s > 0) {
+        tv.tv_sec = timeout_s;
+        tv.tv_usec = 0;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    } else {
+        /* blocking listen: a real server waits forever */
+        tv.tv_sec = 0;
+        tv.tv_usec = 0;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    }
 
     /* wait INIT */
     for (;;) {
-        ssize_t n = icsp_recv(fd, frame, &payload, &plen, &from);
+        ssize_t n = icsp_recv(fd, frame, &payload, &plen, &from,
+                              a->peer_mac);
         if (n < 0) { perror("icsp: INIT"); return -1; }
+        a->has_peer_mac = 1;
         if (payload[ICSP_HEADER_LEN] != ICSP_CHUNK_INIT)
             continue;
         const uint8_t *cd = payload + ICSP_HEADER_LEN + ICSP_CHUNK_HDR;
@@ -328,8 +345,9 @@ int icsp_server_accept(int fd, int ifindex, const uint8_t src_mac[6],
     memcpy(d + 37, a->id_pub, 32);
     ed25519_sign(d + 69, d, 5 + 32 + 32, sk);
     cookie_make(a, d + 69 + 64);
-    if (icsp_send_pkt(fd, ifindex, src_mac, bcast, from, srv_addr, a,
-                      chunk, sizeof(chunk)) < 0) {
+    if (icsp_send_pkt(fd, ifindex, src_mac,
+                      a->has_peer_mac ? a->peer_mac : bcast,
+                      from, srv_addr, a, chunk, sizeof(chunk)) < 0) {
         perror("icsp: send INIT-ACK");
         return -1;
     }
@@ -337,7 +355,8 @@ int icsp_server_accept(int fd, int ifindex, const uint8_t src_mac[6],
 
     /* wait COOKIE-ECHO [cookie][sig] */
     for (;;) {
-        ssize_t n = icsp_recv(fd, frame, &payload, &plen, &from);
+        ssize_t n = icsp_recv(fd, frame, &payload, &plen, &from,
+                              a->peer_mac);
         if (n < 0) { perror("icsp: COOKIE-ECHO"); return -1; }
         if (payload[ICSP_HEADER_LEN] != ICSP_CHUNK_COOKIE_ECHO)
             continue;
@@ -356,8 +375,9 @@ int icsp_server_accept(int fd, int ifindex, const uint8_t src_mac[6],
     /* COOKIE-ACK */
     uint8_t ck[ICSP_CHUNK_HDR];
     icsp_chunk_put(ck, ICSP_CHUNK_COOKIE_ACK, 0);
-    if (icsp_send_pkt(fd, ifindex, src_mac, bcast, from, srv_addr, a,
-                      ck, sizeof(ck)) < 0) {
+    if (icsp_send_pkt(fd, ifindex, src_mac,
+                      a->has_peer_mac ? a->peer_mac : bcast,
+                      from, srv_addr, a, ck, sizeof(ck)) < 0) {
         perror("icsp: send COOKIE-ACK");
         return -1;
     }
