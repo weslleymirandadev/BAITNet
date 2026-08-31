@@ -449,7 +449,7 @@ static void sock_serve(int sfd, const struct transport *t,
 
 /* ---- main ------------------------------------------------------------ */
 
-int main(int argc, char **argv)
+int cmd_tun(int argc, char **argv)
 {
     const char *ifname = NULL, *tapname = "ip69-0", *sockpath = "/tmp/ip69.sock";
     int force_raw = 0;
