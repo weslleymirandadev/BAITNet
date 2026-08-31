@@ -236,9 +236,9 @@ from the identity when using `--remote`. Ports are **hex, glued to the
 address** (`addr:porta_hex`):
 
 ```bash
-# send dgram: dst:porta + src_port, both hex (src is automatic):
+# send dgram: dst:port + src_port, both hex (src is automatic):
 /root/bin/ipv69 send wlan0 00.00.00.00.10:0010 0001 "hi"
-#                          ^dst:porta(16 dec)   ^src_port(1)
+#                          ^dst:port(16 dec)   ^src_port(1)
 #   send: src = lease 0000000000000010 (auto)
 
 # listen on your address and port (hex):
