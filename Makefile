@@ -24,7 +24,7 @@ IPV69_SRC := src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c \
 	src/IPv69/ipv69gw.c src/IPv69/ip69d.c src/IPv69/ip69.c \
 	src/IPv69/keygen.c src/IPv69/keyring.c tests/af69_raw.c tests/af69_test.c \
 	tests/icsp_test.c src/ICSP/icsp.c src/ICSP/icsp_handshake.c \
-	src/ICSP/icsp_data.c src/ICSP/icsp_life.c tests/icsp_chat.c
+	src/ICSP/icsp_data.c src/ICSP/icsp_life.c
 
 ipv69: $(IPV69_SRC) $(ED25519) include/IPv69/af69.h include/IPv69/parse.h \
 	include/IPv69/header.h include/IPv69/l2.h include/ICSP/icsp.h \
@@ -33,6 +33,15 @@ ipv69: $(IPV69_SRC) $(ED25519) include/IPv69/af69.h include/IPv69/parse.h \
 
 af69:
 	$(MAKE) -C kernel/af69 KDIR=$(AF69_KDIR)
+
+# example tool built on the ICSP API (standalone binary, NOT part of ipv69)
+ICSP_SRC := src/ICSP/icsp.c src/ICSP/icsp_handshake.c \
+	src/ICSP/icsp_data.c src/ICSP/icsp_life.c
+CHAT_SRC := examples/icsp_chat.c src/IPv69/keyring.c src/IPv69/parse.c \
+	$(ICSP_SRC) $(ED25519)
+
+chat: $(CHAT_SRC) include/ICSP/icsp.h include/IPv69/keyring.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/icsp_chat $(CHAT_SRC)
 
 # legacy targets -> single binary (kept so old scripts still work)
 af69_test af69d af69_raw keygen ip69d ip69 ipv69gw: ipv69
