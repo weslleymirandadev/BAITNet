@@ -22,7 +22,8 @@ ED25519 := lib/ed25519/src/ed25519.c lib/ed25519/src/tweetnacl.c lib/ed25519/src
 # single binary, git-style subcommands (src/IPv69/main.c dispatches)
 IPV69_SRC := src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c \
 	src/IPv69/ipv69gw.c src/IPv69/ip69d.c src/IPv69/ip69.c \
-	src/IPv69/keygen.c src/IPv69/keyring.c tests/af69_raw.c tests/af69_test.c \
+	src/IPv69/keygen.c src/IPv69/keyring.c src/IPv69/l2.c \
+	tests/af69_raw.c tests/af69_test.c \
 	tests/icsp_test.c src/ICSP/icsp.c src/ICSP/icsp_handshake.c \
 	src/ICSP/icsp_data.c src/ICSP/icsp_life.c
 
@@ -38,7 +39,7 @@ af69:
 ICSP_SRC := src/ICSP/icsp.c src/ICSP/icsp_handshake.c \
 	src/ICSP/icsp_data.c src/ICSP/icsp_life.c
 CHAT_SRC := examples/icsp_chat.c src/IPv69/keyring.c src/IPv69/parse.c \
-	$(ICSP_SRC) $(ED25519)
+	src/IPv69/l2.c $(ICSP_SRC) $(ED25519)
 
 chat: $(CHAT_SRC) include/ICSP/icsp.h include/IPv69/keyring.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $(BUILD)/icsp_chat $(CHAT_SRC)
