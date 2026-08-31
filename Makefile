@@ -31,8 +31,8 @@ af69d: src/IPv69/af69d.c src/IPv69/parse.c $(ED25519) include/IPv69/af69.h inclu
 af69_raw: tests/af69_raw.c src/IPv69/parse.c $(ED25519) include/IPv69/af69.h include/IPv69/parse.h include/IPv69/header.h lib/ed25519/include/ed25519.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $(BUILD)/$@ tests/af69_raw.c src/IPv69/parse.c $(ED25519)
 
-ipv69-keygen: src/IPv69/ipv69-keygen.c $(ED25519) lib/ed25519/include/ed25519.h | $(BUILD)
-	$(CC) $(CFLAGS) -o $(BUILD)/$@ src/IPv69/ipv69-keygen.c $(ED25519)
+keygen: src/IPv69/keygen.c $(ED25519) lib/ed25519/include/ed25519.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/$@ src/IPv69/keygen.c $(ED25519)
 
 ip69d: src/IPv69/ip69d.c src/IPv69/parse.c $(ED25519) include/IPv69/af69.h include/IPv69/parse.h include/IPv69/header.h lib/ed25519/include/ed25519.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $(BUILD)/$@ src/IPv69/ip69d.c src/IPv69/parse.c $(ED25519)
@@ -40,4 +40,7 @@ ip69d: src/IPv69/ip69d.c src/IPv69/parse.c $(ED25519) include/IPv69/af69.h inclu
 ip69: src/IPv69/ip69.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $(BUILD)/$@ src/IPv69/ip69.c
 
-.PHONY: all caps af69 af69_test af69d af69_raw ip69d ip69 ipv69-keygen
+ipv69gw: src/IPv69/ipv69gw.c src/IPv69/parse.c $(ED25519) include/IPv69/af69.h include/IPv69/parse.h include/IPv69/header.h lib/ed25519/include/ed25519.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/$@ src/IPv69/ipv69gw.c src/IPv69/parse.c $(ED25519)
+
+.PHONY: all caps af69 af69_test af69d af69_raw ip69d ip69 keygen ipv69gw
