@@ -376,7 +376,7 @@ static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
     return 0;
 }
 
-int main(int argc, char **argv)
+int cmd_raw(int argc, char **argv)
 {
     const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
     uint8_t src_mac[6], frame[1600];
@@ -417,6 +417,57 @@ int main(int argc, char **argv)
         memmove(&argv[i], &argv[i + 2], sizeof(char *) * (argc - i - 1));
         argc -= 2;
         i--;
+    }
+
+    /* `addr` needs no iface/socket: dispatch before the argc>=3 gate */
+    if (!strcmp(argv[1], "addr")) {
+        uint8_t sk[64], pub[32], derived[5];
+        char kpath[256];
+        int do_dad = 0;
+        for (int i = 2; i < argc; i++)
+            if (!strcmp(argv[i], "--dad"))
+                do_dad = 1;
+        ed25519_keyfile_default_path(kpath, sizeof(kpath));
+        if (ed25519_keyfile_load_or_create(kpath, sk, pub) < 0) {
+            fprintf(stderr, "addr: nao foi possivel carregar/criar chave em %s\n", kpath);
+            return 1;
+        }
+        ipv69_addr_derive(derived, pub);
+        printf("addr: %02x.%02x.%02x.%02x.%02x (derivado da identidade)\n",
+               derived[0], derived[1], derived[2], derived[3], derived[4]);
+        if (do_dad) {
+            if (argc < 3) {
+                fprintf(stderr, "addr --dad: precisa <ifname>\n");
+                return 1;
+            }
+            /* DAD: ND request pro proprio endereco; reply = colisao */
+            uint8_t req[1 + 5] = { IPV69_CTRL_ND_REQUEST };
+            struct timeval tv = { 1, 0 };
+            memcpy(req + 1, derived, 5);
+            int dfd = raw_socket(argv[2], &ifindex, src_mac);
+            if (dfd < 0)
+                return 1;
+            size_t len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
+                                     IPV69_NEXT_CONTROL, 64, 0, 0, req, sizeof(req));
+            if (send_frame(dfd, ifindex, bcast, frame, len) < 0) {
+                perror("sendto(DAD)"); return 1;
+            }
+            setsockopt(dfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            int collision = 0;
+            for (;;) {
+                ssize_t n = recv(dfd, frame, sizeof(frame), 0);
+                if (n < 0) break;
+                if (n >= 14 + IPV69_HEADER_LEN + 1) {
+                    const struct ipv69_header *h =
+                        (const struct ipv69_header *)(frame + 14);
+                    if (h->next_header == IPV69_NEXT_CONTROL &&
+                        frame[14 + IPV69_HEADER_LEN] == IPV69_CTRL_ND_REPLY)
+                        collision = 1;
+                }
+            }
+            printf("dad: %s\n", collision ? "COLISAO - endereco em uso" : "endereco livre");
+        }
+        return 0;
     }
 
     if (argc < 3) {
@@ -576,50 +627,6 @@ int main(int argc, char **argv)
                 }
             }
         }
-    }
-
-    if (!strcmp(argv[1], "addr")) {
-        /* identity-derived address: af69_raw addr [ifname] [--dad] */
-        uint8_t sk[64], pub[32], derived[5];
-        char kpath[256];
-        int do_dad = 0;
-        for (int i = 3; i < argc; i++)
-            if (!strcmp(argv[i], "--dad"))
-                do_dad = 1;
-        ed25519_keyfile_default_path(kpath, sizeof(kpath));
-        if (ed25519_keyfile_load_or_create(kpath, sk, pub) < 0) {
-            fprintf(stderr, "addr: nao foi possivel carregar/criar chave em %s\n", kpath);
-            return 1;
-        }
-        ipv69_addr_derive(derived, pub);
-        printf("addr: %02x.%02x.%02x.%02x.%02x (derivado da identidade)\n",
-               derived[0], derived[1], derived[2], derived[3], derived[4]);
-        if (do_dad) {
-            /* DAD: ND request pro proprio endereco; reply = colisao */
-            uint8_t req[1 + 5] = { IPV69_CTRL_ND_REQUEST };
-            struct timeval tv = { 1, 0 };
-            memcpy(req + 1, derived, 5);
-            size_t len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
-                                     IPV69_NEXT_CONTROL, 64, 0, 0, req, sizeof(req));
-            if (send_frame(fd, ifindex, bcast, frame, len) < 0) {
-                perror("sendto(DAD)"); return 1;
-            }
-            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-            int collision = 0;
-            for (;;) {
-                ssize_t n = recv(fd, frame, sizeof(frame), 0);
-                if (n < 0) break;
-                if (n >= 14 + IPV69_HEADER_LEN + 1) {
-                    const struct ipv69_header *h =
-                        (const struct ipv69_header *)(frame + 14);
-                    if (h->next_header == IPV69_NEXT_CONTROL &&
-                        frame[14 + IPV69_HEADER_LEN] == IPV69_CTRL_ND_REPLY)
-                        collision = 1;
-                }
-            }
-            printf("dad: %s\n", collision ? "COLISAO - endereco em uso" : "endereco livre");
-        }
-        return 0;
     }
 
     if (!strcmp(argv[1], "dhcp")) {
