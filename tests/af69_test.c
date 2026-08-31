@@ -285,7 +285,7 @@ int cmd_test(int argc, char **argv)
             fprintf(stderr, "invalid dst address: %s\n", argv[3]);
             return 1;
         }
-        sa.src_port = (uint16_t)strtoul(argv[4], NULL, 16);
+        sa.src_port = (uint16_t)strtoul(argv[4], NULL, 10);
         sa.next_header = IPV69_NEXT_DGRAM;
         const char *payload = argc > 5 ? argv[5] : "hello af69";
         if (argc > 6)
