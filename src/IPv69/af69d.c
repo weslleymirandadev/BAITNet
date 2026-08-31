@@ -49,6 +49,7 @@
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
 #include "ed25519.h"
+#include "IPv69/keyring.h"
 
 #define MAX_LEASES 256
 #define MAX_PEERS 64
@@ -542,6 +543,23 @@ int cmd_dhcpd(int argc, char **argv)
             memcpy(c.sk, seed, 32);
             ed25519_seed_to_pub(c.sk + 32, seed);
             c.has_sk = 1;
+        }
+    }
+
+    /* no --key: auto-load (or generate) the SSH-style keyring
+       (~/.hosts69/key, optional passphrase via IPV69_PASSPHRASE) */
+    if (!c.has_sk) {
+        char kdir[256], kpath[512], kpub[512], comment[128];
+        keyring_paths(kdir, sizeof(kdir), kpath, sizeof(kpath),
+                      kpub, sizeof(kpub));
+        if (keyring_load_or_create(kpath, kpub, c.sk, c.sk + 32,
+                                   comment, sizeof(comment)) == 0) {
+            c.has_sk = 1;
+            printf("af69d: keyring %s (%s)\n", kpath, comment);
+        } else {
+            fprintf(stderr, "af69d: aviso: sem chave do servidor "
+                    "(OFFER/ACK nao assinados); use --key ou crie com "
+                    "'ipv69 keygen'\n");
         }
     }
 
