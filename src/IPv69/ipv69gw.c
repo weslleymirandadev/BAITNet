@@ -118,7 +118,7 @@ static int udp_fd_from(const struct sockaddr_storage *ss, socklen_t slen,
     return 0;
 }
 
-int main(int argc, char **argv)
+int cmd_gw(int argc, char **argv)
 {
     int port = 6969;
     const char *iface = NULL;
