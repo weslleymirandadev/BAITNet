@@ -410,3 +410,31 @@ Notes:
   derived from it.
 - `tweetnacl.c` is CC0/public domain (TweetNaCl 20140427); `ed25519.c`
   is the wrapper with the clean API (separate sig, independent buffers).
+
+---
+
+## 10. Example tool: ICSP chat (`make chat`)
+
+`build/icsp_chat` is a **standalone example** (NOT part of the `ipv69`
+binary) showing how to build a tool on the ICSP API — authenticated
+handshake, encrypted messages, multi-stream, heartbeat, graceful
+close. Port syntax is `addr:porta` (decimal), like send/recv:
+
+```bash
+make chat        # builds build/icsp_chat separately
+
+# server (address-less; :porta or plain port):
+./build/icsp_chat server eth0 :6969 --peer <client_pub_hex>
+./build/icsp_chat server eth0 6969
+
+# client:
+./build/icsp_chat client wlan0 00.00.00.00.01:6969
+
+# after connecting: type + Enter to send (stream 1); Ctrl-D closes
+# gracefully. Both sides print the session key — identical on both =
+# the authenticated ECDH handshake worked (nobody in the middle can
+# read: each message is secretbox-encrypted with a TSN-derived nonce).
+```
+
+The example links only the ICSP core + keyring + ed25519 + l2.c —
+read `examples/icsp_chat.c` as the template for your own ICSP tool.
