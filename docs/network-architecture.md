@@ -39,12 +39,16 @@ from its Ed25519 public key. **IPv4-style classes** organize the 40-bit
 space into private/public worlds:
 
 ```
-00.xx.xx.xx.xx   class A — private local      (LAN, DHCP pool)
-01.xx.xx.xx.xx   class B — private extended   (VPN / multi-site)
-10.xx.xx.xx.xx   class C — public             (internet, via gateway)
-110.xx.xx.xx.xx  class D — multicast
-111.xx.xx.xx.xx  class E — reserved           (broadcast ff.ff.ff.ff.ff)
+00.xx.xx.xx.xx – 3f.xx.xx.xx.xx   class A — private local      (LAN, DHCP pool)
+40.xx.xx.xx.xx – 7f.xx.xx.xx.xx   class B — private extended   (VPN / multi-site)
+80.xx.xx.xx.xx – bf.xx.xx.xx.xx   class C — public             (internet, via gateway)
+c0.xx.xx.xx.xx – df.xx.xx.xx.xx   class D — multicast
+e0.xx.xx.xx.xx – ff.xx.xx.xx.xx   class E — reserved           (broadcast ff.ff.ff.ff.ff)
 ```
+
+The class is the first octet of the 40-bit address (first bits of byte
+0): `00xxxxxx` A, `01xxxxxx` B, `10xxxxxx` C, `110xxxxx` D, `111xxxxx`
+E. In the dotted-hex notation that maps to the ranges above.
 
 The derived address prefixes 4 hash bytes with the class byte:
 

@@ -51,15 +51,16 @@ It depends on nothing from IPv69 — reusable in any project (your future
 
 ## Addresses and ports
 
-- Addresses: 40-bit, format `00.00.00.00.10` (5 octets), IPv4-style classes:
-  - `00.xx.xx.xx.xx` **class A** — private local (LAN, DHCP pool)
-  - `01.xx.xx.xx.xx` **class B** — private extended (VPN / multi-site)
-  - `10.xx.xx.xx.xx` **class C** — public (internet, via gateway)
-  - `110.xx.xx.xx.xx` **class D** — multicast
-  - `111.xx.xx.xx.xx` **class E** — reserved (broadcast `ff.ff.ff.ff.ff`)
-  - `00.00.00.00.01` = DHCP server (reserved)
+- Addresses: 40-bit, format `00.00.00.00.10` (5 octets), IPv4-style classes
+  (first octet ranges; the rest `xx` is any value):
+  - `00.xx.xx.xx.xx`–`3f.xx.xx.xx.xx` **class A** — private local (LAN, DHCP pool)
+  - `40.xx.xx.xx.xx`–`7f.xx.xx.xx.xx` **class B** — private extended (VPN / multi-site)
+  - `80.xx.xx.xx.xx`–`bf.xx.xx.xx.xx` **class C** — public (internet, via gateway)
+  - `c0.xx.xx.xx.xx`–`df.xx.xx.xx.xx` **class D** — multicast
+  - `e0.xx.xx.xx.xx`–`ff.xx.xx.xx.xx` **class E** — reserved (broadcast `ff.ff.ff.ff.ff`)
+  - `00.00.00.00.01` = DHCP server (reserved, class A)
   - `00.00.00.00.10`–`00.00.00.00.fe` = DHCP pool (default, class A)
-  - identity-derived: `ipv69 addr [--class A|B|C]` (default C = public)
+  - identity-derived: `ipv69 addr [--class A|B|C]` (default C = public, first octet 80–bf)
 - Ports: **hexadecimal** on the CLI (`10` = 16 decimal)
 - `next_header`: `0` control (DHCP/ND/echo), `1` dgram, `2` stream (reserved)
 
