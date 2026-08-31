@@ -56,11 +56,6 @@ struct peer {
 
 static struct peer peers[MAX_PEERS];
 
-static uint64_t get_addr40(const uint8_t *s)
-{
-    return ((uint64_t)s[0] << 32) | ((uint64_t)s[1] << 24) |
-           ((uint64_t)s[2] << 16) | ((uint64_t)s[3] << 8) | s[4];
-}
 
 static struct peer *peer_find_addr(uint64_t addr)
 {

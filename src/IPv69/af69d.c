@@ -73,17 +73,7 @@ static int hex_decode(const char *hex, uint8_t *out, size_t max)
     return (int)(hl / 2);
 }
 
-static void put_addr40(uint8_t *d, uint64_t v)
-{
-    d[0] = (v >> 32) & 0xff; d[1] = (v >> 24) & 0xff;
-    d[2] = (v >> 16) & 0xff; d[3] = (v >> 8) & 0xff; d[4] = v & 0xff;
-}
 
-static uint64_t get_addr40(const uint8_t *s)
-{
-    return ((uint64_t)s[0] << 32) | ((uint64_t)s[1] << 24) |
-           ((uint64_t)s[2] << 16) | ((uint64_t)s[3] << 8) | s[4];
-}
 
 struct lease {
     uint8_t mac[6];
@@ -147,10 +137,6 @@ static void peer_file_load(struct ctx *c, const char *path)
     printf("af69d: peer-file %s: %d pubkey(s)\n", path, c->n_peers);
 }
 
-static void put_be32(uint8_t *d, uint32_t v)
-{
-    d[0] = v >> 24; d[1] = v >> 16; d[2] = v >> 8; d[3] = v;
-}
 
 static void mac_str(const uint8_t *m, char out[18])
 {

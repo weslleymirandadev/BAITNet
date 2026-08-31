@@ -45,17 +45,7 @@ static volatile int g_renew = 0;
 
 static void on_sigusr1(int sig) { (void)sig; g_renew = 1; }
 
-static void put_addr40(uint8_t *d, uint64_t v)
-{
-    d[0] = (v >> 32) & 0xff; d[1] = (v >> 24) & 0xff;
-    d[2] = (v >> 16) & 0xff; d[3] = (v >> 8) & 0xff; d[4] = v & 0xff;
-}
 
-static uint64_t get_addr40(const uint8_t *s)
-{
-    return ((uint64_t)s[0] << 32) | ((uint64_t)s[1] << 24) |
-           ((uint64_t)s[2] << 16) | ((uint64_t)s[3] << 8) | s[4];
-}
 
 /* ---- TAP ------------------------------------------------------------ */
 
