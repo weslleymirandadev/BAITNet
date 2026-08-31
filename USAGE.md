@@ -14,15 +14,30 @@ internet.
 
 ## What is what
 
-| Binary | Role | Where it runs |
+**One binary, git-style subcommands.** `ipv69` dispatches by the first
+argument; the legacy binary names still work as aliases:
+
+```
+ipv69 gw       tunnel gateway (was ipv69gw)      [--port N] [--iface eth0]
+ipv69 tun      interface daemon: TAP + address   (was ip69d)
+ipv69 addr     identity-derived address          [--dad]
+ipv69 keygen   generate Ed25519 key pairs        (was ipv69-keygen)
+ipv69 dhcpd    DHCP69 server (private networks)  (was af69d)
+ipv69 dhcp     DHCP69 client                     (was af69_raw dhcp)
+ipv69 send/recv/ping                             (was af69_raw)
+ipv69 lease/renew/status                         (was ip69)
+ipv69 test     AF_69 socket client               (was af69_test)
+```
+
+| Subcommand | Role | Where it runs |
 |---|---|---|
-| `af69d` | **DHCP69 server** (private networks only: pool, allowlist, leases, kernel binding) | VM |
-| `af69_raw` | Generic client (recv/send/ping/dhcp) over AF_PACKET, **no module** | phone (arm64) and VM |
-| `af69_test` | Generic client over the `AF_69` socket (**requires module**) | VM |
-| `ipv69-keygen` | Generates Ed25519 key pairs | any host |
-| `ip69d` | Interface daemon: holds a DHCP address and creates the `ip69-0` TAP | phone/VM |
-| `ip69` | Queries `ip69d` (like `ip addr` for IPv69) | same host as ip69d |
-| `ipv69gw` | **Tunnel gateway**: bridges IPv69 frames over UDP so clients behind NAT can join through any host with a public IP (multi-gateway, P2P) | any host with a public IP |
+| `ipv69 dhcpd` | **DHCP69 server** (private networks only: pool, allowlist, leases, kernel binding) | VM |
+| `ipv69 recv/send/ping/dhcp` | Generic client over AF_PACKET, **no module** | phone (arm64) and VM |
+| `ipv69 test` | Generic client over the `AF_69` socket (**requires module**) | VM |
+| `ipv69 keygen` | Generates Ed25519 key pairs | any host |
+| `ipv69 tun` | Interface daemon: holds a DHCP address and creates the `ip69-0` TAP | phone/VM |
+| `ipv69 lease/renew/status` | Queries `ip69d` (like `ip addr` for IPv69) | same host as ip69d |
+| `ipv69 gw` | **Tunnel gateway**: bridges IPv69 frames over UDP so clients behind NAT can join through any host with a public IP (multi-gateway, P2P) | any host with a public IP |
 
 Besides the binaries, the project has a **separate crypto library**:
 
@@ -40,7 +55,7 @@ It depends on nothing from IPv69 — reusable in any project (your future
   - `00.00.00.00.01` = DHCP server (reserved)
   - `00.00.00.00.10`–`00.00.00.00.fe` = DHCP pool (default)
   - `ff.ff.ff.ff.ff` = broadcast
-  - identity-derived: `af69_raw addr` (SLAAC-style, no DHCP)
+  - identity-derived: `ipv69 addr` (SLAAC-style, no DHCP)
 - Ports: **hexadecimal** on the CLI (`10` = 16 decimal)
 - `next_header`: `0` control (DHCP/ND/echo), `1` dgram, `2` stream (reserved)
 
@@ -59,7 +74,7 @@ copy the PUBKEY it prints:
 
 ```bash
 export HOME=/root          # important in the phone chroot!
-/root/bin/af69_raw dhcp wlan0    # first run: generates the key and prints:
+/root/bin/ipv69 dhcp wlan0    # first run: generates the key and prints:
 #   key generated at /root/.ipv69/key
 #   register this PUBKEY on the server:
 #   616833cf40e2708d42db3626c1a8e7f7434dc5bfcd2f004c5b6d4ec541379822
@@ -71,7 +86,7 @@ identity — similar to the SSH model (`~/.ssh/id_ed25519`).
 ### Manual (optional)
 
 ```bash
-./ipv69-keygen 2
+./ipv69 keygen 2
 <privkey_hex> <pubkey_hex>      # line 1: device A (e.g. phone)
 <privkey_hex> <pubkey_hex>      # line 2: device B (e.g. server/VM)
 ```
@@ -88,7 +103,7 @@ on clients) — auto-key is bypassed when `--key` is given.
 ```bash
 # the server accepts any pubkey with a valid signature and registers
 # it by itself (append to --peer-file, if given):
-sudo ./af69d eth0 --raw --peer-file /home/kali/peers.txt --learn \
+sudo ./ipv69 dhcpd eth0 --raw --peer-file /home/kali/peers.txt --learn \
      --key <server_privkey_hex>   # optional: signs OFFER/ACK
 
 # log:
@@ -109,7 +124,7 @@ MACs only.
 echo '616833cf40e2708d42db3626c1a8e7f7434dc5bfcd2f004c5b6d4ec541379822' > /home/kali/peers.txt
 
 # 2) start the server pointing at it:
-sudo ./af69d eth0 --raw --peer-file /home/kali/peers.txt \
+sudo ./ipv69 dhcpd eth0 --raw --peer-file /home/kali/peers.txt \
      --key <server_privkey_hex>
 ```
 
@@ -124,7 +139,7 @@ echo 'another_pubkey_hex' >> /home/kali/peers.txt   # takes effect right away
 ### With a single key on the command line
 
 ```bash
-sudo ./af69d eth0 --raw \
+sudo ./ipv69 dhcpd eth0 --raw \
      --allow 00:08:22:9c:03:fc \        # (optional) allowed MACs
      --peer  <phone_pubkey_hex> \       # only this pub gets in
      --key   <server_privkey_hex>       # signs OFFER/ACK (anti rogue)
@@ -161,7 +176,7 @@ export PATH=/usr/bin:/bin
 export HOME=/root
 
 # 1) request an address (uses the automatic key from ~/.ipv69/key):
-/root/bin/af69_raw dhcp wlan0 --server-pub <server_pubkey_hex>
+/root/bin/ipv69 dhcp wlan0 --server-pub <server_pubkey_hex>
 
 # output:
 #   dhcp: OFFER 0000000000000010 lease 3600s
@@ -175,17 +190,17 @@ To keep the address alive, use the daemon:
 
 ```bash
 # holds the address + creates the TAP interface ip69-0 (auto-key):
-sudo /root/bin/ip69d wlan0 --raw --tap ip69-0 \
+sudo /root/bin/ipv69 tun wlan0 --raw --tap ip69-0 \
     --server-pub <server_pubkey_hex>
 
 # in another terminal, query like `ip addr`:
-/root/bin/ip69 addr show
+/root/bin/ipv69 status
 #   1: ip69-0: <BROADCAST,UP,LOWER_UP> mtu 1500 state UP
 #       inet69 0000000000000010/40 brd ffffffffff scope global dynamic
 #          valid_lft 3599sec preferred_lft 3599sec
 
-/root/bin/ip69 lease       # seconds remaining
-/root/bin/ip69 renew       # renew (or SIGUSR1 to ip69d)
+/root/bin/ipv69 lease       # seconds remaining
+/root/bin/ipv69 renew       # renew (or SIGUSR1 to ip69d)
 ```
 
 Sending and receiving data (with the lease address as `src` — the
@@ -193,14 +208,14 @@ receiver's module drops anyone not using their own address):
 
 ```bash
 # send dgram (ports in HEX, src = your address):
-/root/bin/af69_raw send wlan0 00.00.00.00.10 1 16 "hi" 00.00.00.00.10
+/root/bin/ipv69 send wlan0 00.00.00.00.10 1 16 "hi" 00.00.00.00.10
 #                          ^dst               ^dst_port ^payload  ^src (your lease)
 
 # listen on the address (filters only what is yours):
-/root/bin/af69_raw recv wlan0 00.00.00.00.10 10
+/root/bin/ipv69 recv wlan0 00.00.00.00.10 10
 
 # ping (echo request → reply from the VM module):
-/root/bin/af69_raw ping wlan0 00.00.00.00.02 "hi"
+/root/bin/ipv69 ping wlan0 00.00.00.00.02 "hi"
 ```
 
 ---
@@ -209,13 +224,13 @@ receiver's module drops anyone not using their own address):
 
 ```bash
 # on the VM, with the module loaded:
-./af69_test recv 2 00.00.00.00.10 10     # listen on the phone's address (port 16 dec)
-./af69_test send 2 00.00.00.00.10 1 10 "hi phone"   # dst=phone, hex ports
-./af69_test ping 2 00.00.00.00.10 "hi"   # echo request
+./ipv69 test recv 2 00.00.00.00.10 10     # listen on the phone's address (port 16 dec)
+./ipv69 test send 2 00.00.00.00.10 1 10 "hi phone"   # dst=phone, hex ports
+./ipv69 test ping 2 00.00.00.00.10 "hi"   # echo request
 
 # without the module (raw, like the phone):
-./af69_raw recv eth0 00.00.00.00.10 10
-./af69_raw send eth0 00.00.00.00.10 1 10 "hi" 00.00.00.00.02
+./ipv69 recv eth0 00.00.00.00.10 10
+./ipv69 send eth0 00.00.00.00.10 1 10 "hi" 00.00.00.00.02
 ```
 
 > `ifindex`: `2` = eth0 (check with `ip -o link`). In af69_test the
@@ -264,15 +279,15 @@ Details and wire format: `docs/security.md`.
 
 ## 7. Internet: tunnel gateway (multi-gateway, P2P)
 
-`ipv69gw` bridges IPv69 L2 frames over UDP, so devices behind NAT can
+`ipv69 gw` bridges IPv69 L2 frames over UDP, so devices behind NAT can
 join through any host with a public IP. No single gateway is required —
 clients keep a list and fail over. See `docs/network-architecture.md`.
 
 ```bash
 # on the gateway (any host with a public IP):
-./ipv69gw --port 6969
-# optional: bridge to a local L2 interface (e.g. where af69d runs):
-sudo ./ipv69gw --port 6969 --iface eth0
+./ipv69 gw --port 6969
+# optional: bridge to a local L2 interface (e.g. where dhcpd runs):
+sudo ./ipv69 gw --port 6969 --iface eth0
 ```
 
 Clients use `--remote` with one or more gateways (numeric IPs; static
@@ -281,19 +296,19 @@ binary has no DNS):
 ```bash
 # listen via the tunnel (address derived from the identity, announced
 # to the gateway so it can be reached):
-./af69_raw recv wlan0 --remote 203.0.113.10:6969
+./ipv69 recv wlan0 --remote 203.0.113.10:6969
 
 # send via the tunnel: the gateway relays it, or answers QUERY with the
 # peer's endpoint and the frame goes direct (P2P, gateway leaves path):
-./af69_raw send wlan0 <dst_addr> 1 10 "hi" <src_addr> \
+./ipv69 send wlan0 <dst_addr> 1 10 "hi" <src_addr> \
     --remote 203.0.113.10:6969,203.0.113.11:6969
 ```
 
 Identity-derived address (no DHCP):
 
 ```bash
-./af69_raw addr                 # print the address derived from your key
-./af69_raw addr --dad           # ... and check for collision (ND request)
+./ipv69 addr                 # print the address derived from your key
+./ipv69 addr --dad           # ... and check for collision (ND request)
 ```
 
 The gateway learns `addr/MAC -> endpoint` from traffic (like a switch),
@@ -305,11 +320,13 @@ and acts as a last-resort relay when P2P is not possible.
 ## 8. Build
 
 ```bash
-make af69_raw af69_test af69d ipv69-keygen ip69 ip69d ipv69gw   # x64
+make ipv69                                   # single binary (all subcommands)
 make -C kernel/af69 KDIR=/home/bacal/wsl-kernel         # module (WSL)
 # arm64 (phone):
 aarch64-linux-gnu-gcc -O2 -static -Iinclude -Ilib/ed25519/include \
-    -o af69_raw_arm64 tests/af69_raw.c src/IPv69/parse.c \
+    -o ipv69_arm64 src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c \
+    src/IPv69/ipv69gw.c src/IPv69/ip69d.c src/IPv69/ip69.c src/IPv69/keygen.c \
+    tests/af69_raw.c tests/af69_test.c \
     lib/ed25519/src/ed25519.c lib/ed25519/src/tweetnacl.c lib/ed25519/src/randombytes.c
 ```
 
