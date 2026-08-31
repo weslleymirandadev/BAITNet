@@ -1,18 +1,17 @@
 /* l2.h - shared L2 helpers for IPv69 tools (frame build, raw socket).
  * Extracted from af69_raw.c so ICSP (and future tools) reuse the same
  * wire plumbing: Ethernet + 32B IPv69 header over AF_PACKET.
+ * Byte-order helpers (ipv69_addr_get/put, be16/32/64) come from
+ * endian.h (via header.h) — no local copies needed.
  */
 #ifndef IPV69_L2_H
 #define IPV69_L2_H
 
 #include <stdint.h>
 #include <stddef.h>
+#include "endian.h"
 
 #define IPV69_BCAST_ADDR 0xFFFFFFFFFFULL
-
-void put_addr40(uint8_t *d, uint64_t v);
-uint64_t get_addr40(const uint8_t *s);
-uint32_t get_be32(const uint8_t *s);
 
 int hex_decode(const char *hex, uint8_t *out, size_t max);
 
