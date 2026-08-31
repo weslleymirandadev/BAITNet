@@ -429,7 +429,7 @@ static size_t recv_ctrl(struct ctx *c, uint8_t *buf, size_t bufsz)
 
 /* ---- main ------------------------------------------------------------ */
 
-int main(int argc, char **argv)
+int cmd_dhcpd(int argc, char **argv)
 {
     struct ctx c;
     uint8_t buf[1500], offer[1 + 6 + 5 + 4 + PUB_LEN + SIG_LEN],
