@@ -26,6 +26,8 @@ int cmd_raw(int argc, char **argv);
 int cmd_ip69(int argc, char **argv);
 int cmd_test(int argc, char **argv);
 int cmd_icsp(int argc, char **argv);
+int cmd_help(int argc, char **argv);
+int help_for(const char *cmd);
 
 static void usage(void)
 {
@@ -63,6 +65,12 @@ int main(int argc, char **argv)
     }
     cmd = argv[1];
 
+    /* `help` and `<cmd> --help|-h` */
+    if (!strcmp(cmd, "help") || !strcmp(cmd, "--help") || !strcmp(cmd, "-h"))
+        return cmd_help(argc - 1, argv + 1);
+    if (argc > 2 && (!strcmp(argv[2], "--help") || !strcmp(argv[2], "-h")))
+        return help_for(cmd);
+
     /* canonical subcommands. cmd_raw/cmd_ip69 expect argv[1] = the
        sub-subcommand (recv/send/...), so pass argv undislocated */
     if (!strcmp(cmd, "gw"))        return cmd_gw(argc - 1, argv + 1);
@@ -78,6 +86,7 @@ int main(int argc, char **argv)
         !strcmp(cmd, "status"))    return cmd_ip69(argc, argv);
     if (!strcmp(cmd, "test"))      return cmd_test(argc - 1, argv + 1);
     if (!strcmp(cmd, "icsp"))      return cmd_icsp(argc - 1, argv + 1);
+    if (!strcmp(cmd, "chat"))      return help_for("icsp");
 
     /* legacy aliases: ipv69 af69_raw recv ... = ipv69 recv ... */
     if (!strcmp(cmd, "af69_raw"))  return cmd_raw(argc - 1, argv + 1);
