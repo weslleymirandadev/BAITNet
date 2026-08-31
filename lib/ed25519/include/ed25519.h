@@ -48,4 +48,7 @@ int ed25519_keyfile_load_or_create(const char *path,
 /* Default key path: $HOME/.ipv69/key (fallback /root/.ipv69/key). */
 void ed25519_keyfile_default_path(char *out, size_t outsz);
 
+/* SHA-512 (TweetNaCl crypto_hash). 64-byte digest. */
+void ed25519_sha512(uint8_t out[64], const uint8_t *msg, size_t n);
+
 #endif

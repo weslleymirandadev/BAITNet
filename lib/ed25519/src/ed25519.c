@@ -128,3 +128,8 @@ void ed25519_keyfile_default_path(char *out, size_t outsz)
         home = "/root";
     snprintf(out, outsz, "%s/.ipv69/key", home);
 }
+
+void ed25519_sha512(uint8_t out[64], const uint8_t *msg, size_t n)
+{
+    crypto_hash(out, msg, n);
+}
