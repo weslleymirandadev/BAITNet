@@ -154,6 +154,15 @@ int keyring_create(const char *key, const char *pub,
     char buf[512], hex[256];
     size_t n;
 
+    /* ensure the parent dir exists (~/.hosts69) */
+    char dir[512];
+    snprintf(dir, sizeof(dir), "%s", key);
+    char *slash = strrchr(dir, '/');
+    if (slash && slash != dir) {
+        *slash = 0;
+        mkdir(dir, 0700);
+    }
+
     if (ed25519_keypair(sk, pk) < 0)
         return -1;
     /* private key: seed only */
