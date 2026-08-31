@@ -26,6 +26,7 @@ int cmd_raw(int argc, char **argv);
 int cmd_ip69(int argc, char **argv);
 int cmd_test(int argc, char **argv);
 int cmd_icsp(int argc, char **argv);
+int cmd_chat(int argc, char **argv);
 
 static void usage(void)
 {
@@ -48,6 +49,7 @@ static void usage(void)
         "  lease | renew | status [-s PATH]     query the tun daemon (ip69)\n"
         "  test   <ifindex> <recv|send|ping|dhcp> ...   AF_69 socket client\n"
         "  icsp   <server|client> <ifname> [dst] [port]   stream handshake (nh=2)\n"
+        "  chat   <server|client> <ifname> [dst] [port]   terminal chat over ICSP\n"
         "\n"
         "Legacy binary names also work as aliases (af69_raw, af69d, ip69d,\n"
         "ip69, ipv69gw, ipv69-keygen, af69_test). Ports are hex.\n");
@@ -78,6 +80,7 @@ int main(int argc, char **argv)
         !strcmp(cmd, "status"))    return cmd_ip69(argc, argv);
     if (!strcmp(cmd, "test"))      return cmd_test(argc - 1, argv + 1);
     if (!strcmp(cmd, "icsp"))      return cmd_icsp(argc - 1, argv + 1);
+    if (!strcmp(cmd, "chat"))      return cmd_chat(argc - 1, argv + 1);
 
     /* legacy aliases: ipv69 af69_raw recv ... = ipv69 recv ... */
     if (!strcmp(cmd, "af69_raw"))  return cmd_raw(argc - 1, argv + 1);

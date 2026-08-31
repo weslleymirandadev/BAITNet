@@ -24,7 +24,7 @@ IPV69_SRC := src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c \
 	src/IPv69/ipv69gw.c src/IPv69/ip69d.c src/IPv69/ip69.c \
 	src/IPv69/keygen.c src/IPv69/keyring.c tests/af69_raw.c tests/af69_test.c \
 	tests/icsp_test.c src/ICSP/icsp.c src/ICSP/icsp_handshake.c \
-	src/ICSP/icsp_data.c src/ICSP/icsp_life.c
+	src/ICSP/icsp_data.c src/ICSP/icsp_life.c tests/icsp_chat.c
 
 ipv69: $(IPV69_SRC) $(ED25519) include/IPv69/af69.h include/IPv69/parse.h \
 	include/IPv69/header.h include/IPv69/l2.h include/ICSP/icsp.h \
