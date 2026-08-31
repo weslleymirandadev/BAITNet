@@ -35,6 +35,7 @@ int cmd_keygen(int argc, char **argv)
     char comment[128];
     char pass[256];
     int count = 0;                  /* explicit count arg -> stdout mode */
+    int force = 0;
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-f") && i + 1 < argc)
@@ -43,6 +44,8 @@ int cmd_keygen(int argc, char **argv)
             comment_arg = argv[++i];
         else if (!strcmp(argv[i], "-N") && i + 1 < argc)
             pass_arg = argv[++i];
+        else if (!strcmp(argv[i], "--force"))
+            force = 1;
         else
             count = atoi(argv[i]);
     }
@@ -111,6 +114,22 @@ int cmd_keygen(int argc, char **argv)
         *slash = 0;
         if (*dir)
             mkdir(dir, 0700);
+    }
+    /* never clobber an existing key without explicit approval
+       (ssh-keygen style: prompt y/N). */
+    if (access(key, F_OK) == 0) {
+        fprintf(stderr, "keygen: %s ja existe\n", key);
+        if (!force) {
+            fprintf(stderr, "sobrescrever? (y/N) ");
+            fflush(stderr);
+            char ans[8] = { 0 };
+            if (!fgets(ans, sizeof(ans), stdin))
+                return 1;
+            if (ans[0] != 'y' && ans[0] != 'Y') {
+                fprintf(stderr, "keygen: abortado (nada foi alterado)\n");
+                return 1;
+            }
+        }
     }
     if (keyring_create(key, pub, pass, comment) < 0) {
         fprintf(stderr, "keygen: nao foi possivel salvar a chave em %s\n", key);
