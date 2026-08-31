@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "IPv69/parse.h"
+#include "ed25519.h"
 
 #define ERR_SHORT     1
 #define ERR_ETHERTYPE 2
@@ -99,6 +100,13 @@ int parse_ipv69_addr(const char *s, uint64_t *out) {
         return -1;
     *out = v;
     return 0;
+}
+
+void ipv69_addr_derive(uint8_t out[5], const uint8_t pub[32])
+{
+    uint8_t d[64];
+    ed25519_sha512(d, pub, 32);
+    memcpy(out, d, 5);
 }
 
 void print_payload(const uint8_t *payload, size_t len) {
