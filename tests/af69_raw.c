@@ -531,15 +531,13 @@ int cmd_raw(int argc, char **argv)
            src_mac[3], src_mac[4], src_mac[5]);
 
     if (!strcmp(argv[1], "recv")) {
-        /* optional bind: recv <ifname> [src_addr] [src_port_hex] */
+        /* optional bind: recv <ifname> [src_addr[:porta_hex]] */
         uint64_t my_addr = 0;
         uint16_t my_port = 0;
-        if (argc > 3 && parse_ipv69_addr(argv[3], &my_addr) < 0) {
-            fprintf(stderr, "recv: src_addr invalido\n");
+        if (argc > 3 && parse_ipv69_addr_port(argv[3], &my_addr, &my_port) < 0) {
+            fprintf(stderr, "recv: src_addr[:porta_hex] invalido\n");
             return 1;
         }
-        if (argc > 4)
-            my_port = (uint16_t)strtoul(argv[4], NULL, 16);
         /* tunnel mode: derive the address from the identity when none
            given, and announce periodically so the gateway learns us */
         if (g_ngw > 0 && !my_addr) {
@@ -595,16 +593,16 @@ int cmd_raw(int argc, char **argv)
 
     if (!strcmp(argv[1], "send")) {
         uint64_t dst, src = 0;
+        uint16_t dp = 0;
         size_t plen;
-        if (argc < 6 || parse_ipv69_addr(argv[3], &dst) < 0) {
-            fprintf(stderr, "send: precisa <dst> <src_port> <dst_port> [payload] [src_addr]\n");
+        if (argc < 5 || parse_ipv69_addr_port(argv[3], &dst, &dp) < 0) {
+            fprintf(stderr, "send: precisa <dst[:porta_hex]> <src_port_hex> [payload]\n");
             return 1;
         }
-        const char *data = argc > 6 ? argv[6] : "hello ipv69";
+        const char *data = argc > 5 ? argv[5] : "hello ipv69";
         size_t dlen = strlen(data);
         uint16_t sp = (uint16_t)strtoul(argv[4], NULL, 16);
-        uint16_t dp = (uint16_t)strtoul(argv[5], NULL, 16);
-        if (argc > 7) {
+        if (argc > 6) {
             fprintf(stderr, "send: src manual removido (anti-spoofing) - "
                     "o src agora e descoberto automaticamente\n");
             return 1;

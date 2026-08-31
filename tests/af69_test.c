@@ -241,12 +241,10 @@ int cmd_test(int argc, char **argv)
     }
 
     if (!strcmp(argv[1], "recv")) {
-        if (argc > 3 && parse_ipv69_addr(argv[3], &sa.src) < 0) {
-            fprintf(stderr, "invalid src_addr: %s\n", argv[3]);
+        if (argc > 3 && parse_ipv69_addr_port(argv[3], &sa.src, &sa.dst_port) < 0) {
+            fprintf(stderr, "invalid src_addr[:porta_hex]: %s\n", argv[3]);
             return 1;
         }
-        if (argc > 4)
-            sa.dst_port = (uint16_t)strtoul(argv[4], NULL, 16);
         if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
             perror("bind");
             return 1;
@@ -279,20 +277,19 @@ int cmd_test(int argc, char **argv)
     }
 
     if (!strcmp(argv[1], "send")) {
-        if (argc < 6) {
+        if (argc < 5) {
             usage(argv[0]);
             return 1;
         }
-        if (parse_ipv69_addr(argv[3], &sa.dst) < 0) {
+        if (parse_ipv69_addr_port(argv[3], &sa.dst, &sa.dst_port) < 0) {
             fprintf(stderr, "invalid dst address: %s\n", argv[3]);
             return 1;
         }
         sa.src_port = (uint16_t)strtoul(argv[4], NULL, 16);
-        sa.dst_port = (uint16_t)strtoul(argv[5], NULL, 16);
         sa.next_header = IPV69_NEXT_DGRAM;
-        const char *payload = argc > 6 ? argv[6] : "hello af69";
-        if (argc > 7)
-            sa.hop_limit = (uint8_t)atoi(argv[7]);
+        const char *payload = argc > 5 ? argv[5] : "hello af69";
+        if (argc > 6)
+            sa.hop_limit = (uint8_t)atoi(argv[6]);
         if (sendto(fd, payload, strlen(payload), 0,
                    (struct sockaddr *)&sa, sizeof(sa)) < 0) {
             perror("sendto(AF_69)");
