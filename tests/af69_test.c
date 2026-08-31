@@ -393,10 +393,13 @@ int cmd_test(int argc, char **argv)
             }
         }
         if (!has_sk) {
-            /* auto: load ~/.ipv69/key or generate + register it */
+            /* auto: load ~/.ipv69/key or generate + register it.
+               NOTE: separate buffer for our own pub — server_pub still
+               holds the server key from --server-pub. */
             char kpath[256];
+            uint8_t my_pub[32];
             ed25519_keyfile_default_path(kpath, sizeof(kpath));
-            if (ed25519_keyfile_load_or_create(kpath, sk, server_pub) < 0) {
+            if (ed25519_keyfile_load_or_create(kpath, sk, my_pub) < 0) {
                 fprintf(stderr, "dhcp: nao foi possivel carregar/criar chave em %s\n", kpath);
                 return 1;
             }
