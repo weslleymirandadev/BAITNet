@@ -228,13 +228,16 @@ sudo /root/bin/ipv69 tun wlan0 --raw --tap ip69-0 \
 /root/bin/ipv69 renew       # renew (or SIGUSR1 to ip69d)
 ```
 
-Sending and receiving data (with the lease address as `src` — the
-receiver's module drops anyone not using their own address):
+Sending data — the `src` is **automatic** (anti-spoofing): the send
+discovers your real address via a silent DHCP before transmitting
+(it also registers the kernel binding for your MAC), or derives it
+from the identity when using `--remote`:
 
 ```bash
-# send dgram (ports in HEX, src = your address):
-/root/bin/ipv69 send wlan0 00.00.00.00.10 1 16 "hi" 00.00.00.00.10
-#                          ^dst               ^dst_port ^payload  ^src (your lease)
+# send dgram (ports in HEX; src is discovered automatically):
+/root/bin/ipv69 send wlan0 00.00.00.00.10 1 16 "hi"
+#                          ^dst               ^dst_port ^payload
+#   send: src = lease 0000000000000010 (auto)
 
 # listen on the address (filters only what is yours):
 /root/bin/ipv69 recv wlan0 00.00.00.00.10 10
@@ -255,7 +258,7 @@ receiver's module drops anyone not using their own address):
 
 # without the module (raw, like the phone):
 ./ipv69 recv eth0 00.00.00.00.10 10
-./ipv69 send eth0 00.00.00.00.10 1 10 "hi" 00.00.00.00.02
+./ipv69 send eth0 00.00.00.00.10 1 10 "hi"
 ```
 
 > `ifindex`: `2` = eth0 (check with `ip -o link`). In af69_test the
@@ -288,8 +291,10 @@ Details and wire format: `docs/security.md`.
   in `~/.ipv69/key`; without HOME it goes somewhere unexpected.
 - **Ports are hex**: `recv ... 10` = port 16 decimal; the frame shows
   `ports=1/16` in decimal.
-- **src on send**: with binding active on the receiver, sending dgram
-  with a `src` that is not your lease = silent drop.
+- **src on send**: automatic now (anti-spoofing) — `send` discovers the
+  real lease via silent DHCP (local) or derives it from the identity
+  (`--remote`); passing a manual src is rejected. With binding active on
+  the receiver, a forged src would be a silent drop anyway.
 - **Wired→wireless broadcast**: many APs filter it; use `--raw` on the
   server (unicast) or test VM↔phone through the same router port.
 - **Ethernet padding**: short frames arrive with padding (60B minimum)
@@ -324,8 +329,9 @@ binary has no DNS):
 ./ipv69 recv wlan0 --remote 203.0.113.10:6969
 
 # send via the tunnel: the gateway relays it, or answers QUERY with the
-# peer's endpoint and the frame goes direct (P2P, gateway leaves path):
-./ipv69 send wlan0 <dst_addr> 1 10 "hi" <src_addr> \
+# peer's endpoint and the frame goes direct (P2P, gateway leaves path).
+# src is derived from the identity automatically:
+./ipv69 send wlan0 <dst_addr> 1 10 "hi" \
     --remote 203.0.113.10:6969,203.0.113.11:6969
 ```
 
