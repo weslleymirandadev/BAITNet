@@ -12,6 +12,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <time.h>
 
 #define ICSP_VERSION       1
 #define ICSP_HEADER_LEN    12
@@ -55,6 +56,16 @@ enum {
 };
 
 /* one association: the transport-level connection */
+#define ICSP_MAX_STREAMS 8
+#define ICSP_SENDQ       16
+#define ICSP_RCVQ        16
+
+struct icsp_stream {
+    uint16_t id;
+    uint16_t next_send_seq;   /* next stream_seq to send */
+    uint16_t next_recv_seq;   /* next stream_seq expected (ordered) */
+};
+
 struct icsp_assoc {
     uint16_t src_port, dst_port;
     uint32_t assoc_id;
@@ -67,6 +78,29 @@ struct icsp_assoc {
     uint8_t  session_key[32];   /* secretbox key, derived from ECDH */
     int      has_key;
     uint16_t streams_in, streams_out;
+
+    /* Phase 2: data path */
+    int      n_streams;
+    struct icsp_stream streams[ICSP_MAX_STREAMS];
+    uint32_t next_tsn;          /* next TSN to assign (sender) */
+    uint32_t cum_tsn;           /* cumulative TSN received (delivered) */
+    struct {
+        uint32_t tsn;
+        uint16_t stream_id, seq;
+        uint8_t  data[ICSP_MAX_PAYLOAD];
+        uint16_t len;
+        uint8_t  acked;
+        time_t   sent_at;
+    } sendq[ICSP_SENDQ];
+    int n_sendq;
+    struct {
+        uint32_t tsn;
+        uint16_t stream_id, seq;
+        uint8_t  data[ICSP_MAX_PAYLOAD];
+        uint16_t len;
+        uint8_t  valid;
+    } rcvq[ICSP_RCVQ];
+    int n_rcvq;
 };
 
 /* --- public API (Phase 1: handshake) --- */
@@ -103,5 +137,60 @@ int icsp_server_accept(int fd, int ifindex, const uint8_t src_mac[6],
                        const uint8_t sk[64],
                        const uint8_t (*peers)[32], int n_peers,
                        struct icsp_assoc *a);
+
+/* --- Phase 2: data path --- */
+
+/* send one message on a stream (encrypted with the session key).
+ * Returns the TSN used, or -1. */
+int icsp_data_send(struct icsp_assoc *a, int fd, int ifindex,
+                   const uint8_t src_mac[6], const uint8_t *dst_mac,
+                   uint64_t dst_addr, uint64_t src_addr,
+                   uint16_t stream_id, const uint8_t *data, size_t len);
+
+/* handle one received ICSP payload: DATA chunks are decrypted,
+ * validated (TSN window, stream ordering) and queued; SACK chunks mark
+ * our sendq acked. Returns the number of bytes of *one* message
+ * delivered in order into `out` (0 = none), or -1 on bad MAC. */
+int icsp_data_handle(struct icsp_assoc *a, const uint8_t *payload,
+                     size_t plen, uint8_t *out, size_t *outlen,
+                     uint16_t *out_stream);
+
+/* retransmit unacked sendq entries older than `timeout_s`;
+ * returns how many were resent. */
+int icsp_data_retransmit(struct icsp_assoc *a, int fd, int ifindex,
+                         const uint8_t src_mac[6], const uint8_t *dst_mac,
+                         uint64_t dst_addr, uint64_t src_addr,
+                         int timeout_s);
+
+/* send a SACK for everything received up to cum_tsn. */
+int icsp_sack_send(struct icsp_assoc *a, int fd, int ifindex,
+                   const uint8_t src_mac[6], const uint8_t *dst_mac,
+                   uint64_t dst_addr, uint64_t src_addr);
+
+/* --- Phase 3: lifecycle --- */
+
+/* liveness probe: send HEARTBEAT / answer with HEARTBEAT-ACK */
+int icsp_heartbeat_send(struct icsp_assoc *a, int fd, int ifindex,
+                        const uint8_t src_mac[6], const uint8_t *dst_mac,
+                        uint64_t dst_addr, uint64_t src_addr);
+int icsp_heartbeat_ack(struct icsp_assoc *a, int fd, int ifindex,
+                       const uint8_t src_mac[6], const uint8_t *dst_mac,
+                       uint64_t dst_addr, uint64_t src_addr);
+
+/* graceful close: send SHUTDOWN, state -> SHUTDOWN */
+int icsp_shutdown_send(struct icsp_assoc *a, int fd, int ifindex,
+                       const uint8_t src_mac[6], const uint8_t *dst_mac,
+                       uint64_t dst_addr, uint64_t src_addr);
+
+/* dynamic stream renegotiation (mode: 0=reset, 1=add, 2=close) */
+int icsp_stream_reset(struct icsp_assoc *a, int fd, int ifindex,
+                      const uint8_t src_mac[6], const uint8_t *dst_mac,
+                      uint64_t dst_addr, uint64_t src_addr,
+                      uint16_t stream_id, uint8_t mode);
+
+/* process lifecycle chunks (SHUTDOWN/STREAM-RESET/HEARTBEAT) in a
+ * received payload; returns 1 when the association should close. */
+int icsp_life_handle(struct icsp_assoc *a, const uint8_t *payload,
+                     size_t plen);
 
 #endif
