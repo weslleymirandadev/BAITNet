@@ -17,7 +17,7 @@ static void print_hex(const unsigned char *b, int n)
         printf("%02x", b[i]);
 }
 
-int main(int argc, char **argv)
+int cmd_keygen(int argc, char **argv)
 {
     int count = argc > 1 ? atoi(argv[1]) : 1;
 
