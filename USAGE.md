@@ -66,27 +66,45 @@ It depends on nothing from IPv69 — reusable in any project (your future
 
 ---
 
-## 1. Keys (almost automatic)
+## 1. Keys (SSH-style, automatic)
 
-Each device has ITS OWN key. **The private key never leaves the
-device**; the server only knows **public** ones (not a secret).
+Each device has ITS OWN key in `~/.hosts69/` (like `~/.ssh`). **The
+private key never leaves the device**; the server only knows
+**public** ones (not a secret).
 
 ### Auto-key (recommended)
 
-All clients (`af69_raw`, `af69_test`, `ip69d`) generate the key on
-first run and store the seed in `~/.ipv69/key` (0600). Run once and
-copy the PUBKEY it prints:
+All clients and the server generate the key on first run and store it
+in `~/.hosts69/key` (+ `~/.hosts69/key.pub`). Run once and copy the
+PUBKEY it prints:
 
 ```bash
 export HOME=/root          # important in the phone chroot!
-/root/bin/ipv69 dhcp wlan0    # first run: generates the key and prints:
-#   key generated at /root/.ipv69/key
+/root/bin/ipv69 dhcp wlan0      # first run: generates the key and prints:
+#   key generated at /root/.hosts69/key
 #   register this PUBKEY on the server:
 #   616833cf40e2708d42db3626c1a8e7f7434dc5bfcd2f004c5b6d4ec541379822
 ```
 
-From the second run on it loads `~/.ipv69/key` and uses the same
-identity — similar to the SSH model (`~/.ssh/id_ed25519`).
+From the second run on it loads `~/.hosts69/key` and uses the same
+identity — like `~/.ssh/id_ed25519`.
+
+### ssh-keygen style (name + passphrase)
+
+```bash
+# create a key with a comment (name) and a passphrase, like ssh-keygen:
+./ipv69 keygen -f ~/.hosts69/key -C "meu-servidor" -N "minha-senha"
+#   Enter passphrase (empty for no passphrase):   ← prompted if -N omitted
+#   Enter same passphrase again:                  ← typed with NO echo
+
+# without -N and with a tty, the passphrase is prompted twice (no echo),
+# retrying until they match — identical to ssh-keygen.
+```
+
+The private key file starts with `H69E1` when encrypted (XSalsa20-
+Poly1305, key derived from the passphrase); `key.pub` holds
+`<pubkey_hex> <comment>`. `--key <privkey_hex>` on the CLI still works
+for the legacy/manual flow — but no longer needed.
 
 ### Manual (optional)
 
@@ -107,11 +125,13 @@ on clients) — auto-key is bypassed when `--key` is given.
 
 ```bash
 # the server accepts any pubkey with a valid signature and registers
-# it by itself (append to --peer-file, if given):
-sudo ./ipv69 dhcpd eth0 --raw --peer-file /home/kali/peers.txt --learn \
-     --key <server_privkey_hex>   # optional: signs OFFER/ACK
+# it by itself (append to --peer-file, if given). Its own key comes
+# from ~/.hosts69/key automatically (passphrase via IPV69_PASSPHRASE
+# or prompted on the tty) — no --key needed:
+sudo ./ipv69 dhcpd eth0 --raw --peer-file /home/kali/peers.txt --learn
 
 # log:
+#   af69d: keyring /root/.hosts69/key (servidor)
 #   af69d: learned pub 8566295b... from MAC 00:08:22:9c:03:fc -> registered in peer-file
 #   af69d: DISCOVER 00:08:22:9c:03:fc -> OFFER 0000000000000010
 #   af69d: REQUEST 00:08:22:9c:03:fc -> ACK 0000000000000010
@@ -338,7 +358,7 @@ make -C kernel/af69 KDIR=/home/bacal/wsl-kernel         # module (WSL)
 aarch64-linux-gnu-gcc -O2 -static -Iinclude -Ilib/ed25519/include \
     -o ipv69_arm64 src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c \
     src/IPv69/ipv69gw.c src/IPv69/ip69d.c src/IPv69/ip69.c src/IPv69/keygen.c \
-    tests/af69_raw.c tests/af69_test.c \
+    src/IPv69/keyring.c tests/af69_raw.c tests/af69_test.c \
     lib/ed25519/src/ed25519.c lib/ed25519/src/tweetnacl.c lib/ed25519/src/randombytes.c
 ```
 
