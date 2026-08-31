@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "endian.h"
 
 #define ETHERTYPE_IPV69      0x6969
 #define IPV69_VERSION        6
@@ -46,50 +47,6 @@ struct ipv69_header {
 _Static_assert(sizeof(struct ethernet_header) == 14, "ethernet header must be 14 bytes");
 _Static_assert(sizeof(struct ipv69_header) == 32, "ipv69 header must be 32 bytes");
 
-/* big-endian (network order) read/write, architecture independent */
-static inline uint16_t rd_be16(const void *p) {
-    const uint8_t *b = p;
-    return (uint16_t)((b[0] << 8) | b[1]);
-}
-static inline uint32_t rd_be32(const void *p) {
-    const uint8_t *b = p;
-    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
-           ((uint32_t)b[2] << 8) | b[3];
-}
-static inline uint64_t rd_be64(const void *p) {
-    const uint8_t *b = p;
-    return ((uint64_t)rd_be32(b) << 32) | rd_be32(b + 4);
-}
-/* IPv69 address (40 bits, 5 octets) */
-static inline uint64_t rd_be40(const void *p) {
-    const uint8_t *b = p;
-    return ((uint64_t)b[0] << 32) | ((uint64_t)b[1] << 24) |
-           ((uint64_t)b[2] << 16) | ((uint64_t)b[3] << 8) | b[4];
-}
-static inline void wr_be16(void *p, uint16_t v) {
-    uint8_t *b = p;
-    b[0] = v >> 8;
-    b[1] = v;
-}
-static inline void wr_be32(void *p, uint32_t v) {
-    uint8_t *b = p;
-    b[0] = v >> 24;
-    b[1] = v >> 16;
-    b[2] = v >> 8;
-    b[3] = v;
-}
-static inline void wr_be64(void *p, uint64_t v) {
-    uint8_t *b = p;
-    wr_be32(b, v >> 32);
-    wr_be32(b + 4, v);
-}
-static inline void wr_be40(void *p, uint64_t v) {
-    uint8_t *b = p;
-    b[0] = (v >> 32) & 0xff;
-    b[1] = (v >> 24) & 0xff;
-    b[2] = (v >> 16) & 0xff;
-    b[3] = (v >> 8) & 0xff;
-    b[4] = v & 0xff;
-}
+/* byte order helpers live in endian.h (ipv69_addr_get/put, be16/32/64) */
 
 #endif
