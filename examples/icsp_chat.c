@@ -78,6 +78,7 @@ static int chat_loop(struct icsp_assoc *a, int fd, int ifindex,
     uint8_t buf[ICSP_MAX_PAYLOAD];
     char line[ICSP_MAX_PAYLOAD];
     int last_heartbeat = 0;
+    time_t last_rx = time(NULL);    /* any frame from the peer */
 
     printf("chat: conectado! digite mensagens (Ctrl-D sai)\n");
     fflush(stdout);
@@ -97,10 +98,17 @@ static int chat_loop(struct icsp_assoc *a, int fd, int ifindex,
             perror("chat: select");
             return 1;
         }
-        if (r == 0 && time(NULL) - last_heartbeat >= 6) {
-            icsp_heartbeat_send(a, fd, ifindex, src_mac, peer_dst(a, bcast),
-                                dst_addr, 0);
-            last_heartbeat = (int)time(NULL);
+        if (r == 0) {
+            /* dead peer: no frame at all for 3 heartbeats (~18s) */
+            if (time(NULL) - last_rx >= 18) {
+                printf("chat: sem resposta do peer ha 18s — encerrando\n");
+                break;
+            }
+            if (time(NULL) - last_heartbeat >= 6) {
+                icsp_heartbeat_send(a, fd, ifindex, src_mac,
+                                    peer_dst(a, bcast), dst_addr, 0);
+                last_heartbeat = (int)time(NULL);
+            }
             continue;
         }
 
@@ -135,6 +143,7 @@ static int chat_loop(struct icsp_assoc *a, int fd, int ifindex,
             uint8_t ctype = payload[ICSP_HEADER_LEN];
             memcpy(a->peer_mac, buf + 6, 6);   /* reply unicast */
             a->has_peer_mac = 1;
+            last_rx = time(NULL);   /* peer is alive */
 
             if (ctype == ICSP_CHUNK_HEARTBEAT) {
                 icsp_heartbeat_ack(a, fd, ifindex, src_mac,
