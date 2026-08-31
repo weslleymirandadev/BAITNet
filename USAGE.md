@@ -61,7 +61,8 @@ It depends on nothing from IPv69 — reusable in any project (your future
   - `00.00.00.00.01` = DHCP server (reserved, class A)
   - `00.00.00.00.10`–`00.00.00.00.fe` = DHCP pool (default, class A)
   - identity-derived: `ipv69 addr [--class A|B|C]` (default C = public, first octet 80–bf)
-- Ports: **hexadecimal** on the CLI (`10` = 16 decimal)
+- Ports: **hexadecimal**, glued to the address as `addr:porta_hex`
+  (e.g. `00.00.00.00.10:0010` = address `.10`, port 16 decimal)
 - `next_header`: `0` control (DHCP/ND/echo), `1` dgram, `2` stream (reserved)
 
 ---
@@ -231,16 +232,17 @@ sudo /root/bin/ipv69 tun wlan0 --raw --tap ip69-0 \
 Sending data — the `src` is **automatic** (anti-spoofing): the send
 discovers your real address via a silent DHCP before transmitting
 (it also registers the kernel binding for your MAC), or derives it
-from the identity when using `--remote`:
+from the identity when using `--remote`. Ports are **hex, glued to the
+address** (`addr:porta_hex`):
 
 ```bash
-# send dgram (ports in HEX; src is discovered automatically):
-/root/bin/ipv69 send wlan0 00.00.00.00.10 1 16 "hi"
-#                          ^dst               ^dst_port ^payload
+# send dgram: dst:porta + src_port, both hex (src is automatic):
+/root/bin/ipv69 send wlan0 00.00.00.00.10:0010 0001 "hi"
+#                          ^dst:porta(16 dec)   ^src_port(1)
 #   send: src = lease 0000000000000010 (auto)
 
-# listen on the address (filters only what is yours):
-/root/bin/ipv69 recv wlan0 00.00.00.00.10 10
+# listen on your address and port (hex):
+/root/bin/ipv69 recv wlan0 00.00.00.00.10:0010
 
 # ping (echo request → reply from the VM module):
 /root/bin/ipv69 ping wlan0 00.00.00.00.02 "hi"
@@ -252,13 +254,13 @@ from the identity when using `--remote`:
 
 ```bash
 # on the VM, with the module loaded:
-./ipv69 test recv 2 00.00.00.00.10 10     # listen on the phone's address (port 16 dec)
-./ipv69 test send 2 00.00.00.00.10 1 10 "hi phone"   # dst=phone, hex ports
+./ipv69 test recv 2 00.00.00.00.10:0010     # listen on the phone's address, port 16 dec
+./ipv69 test send 2 00.00.00.00.10:0010 0001 "hi phone"   # dst:porta + src_port, hex
 ./ipv69 test ping 2 00.00.00.00.10 "hi"   # echo request
 
 # without the module (raw, like the phone):
-./ipv69 recv eth0 00.00.00.00.10 10
-./ipv69 send eth0 00.00.00.00.10 1 10 "hi"
+./ipv69 recv eth0 00.00.00.00.10:0010
+./ipv69 send eth0 00.00.00.00.10:0010 0001 "hi"
 ```
 
 > `ifindex`: `2` = eth0 (check with `ip -o link`). In af69_test the
@@ -289,8 +291,8 @@ Details and wire format: `docs/security.md`.
   (otherwise Android's `/system/bin` is used).
 - **HOME in the chroot**: `export HOME=/root` — auto-key stores the key
   in `~/.ipv69/key`; without HOME it goes somewhere unexpected.
-- **Ports are hex**: `recv ... 10` = port 16 decimal; the frame shows
-  `ports=1/16` in decimal.
+- **Ports are hex, glued to the address**: `recv wlan0 00.00.00.00.10:0010`
+  = port 16 decimal; the frame shows `ports=1/16` in decimal.
 - **src on send**: automatic now (anti-spoofing) — `send` discovers the
   real lease via silent DHCP (local) or derives it from the identity
   (`--remote`); passing a manual src is rejected. With binding active on
@@ -330,8 +332,8 @@ binary has no DNS):
 
 # send via the tunnel: the gateway relays it, or answers QUERY with the
 # peer's endpoint and the frame goes direct (P2P, gateway leaves path).
-# src is derived from the identity automatically:
-./ipv69 send wlan0 <dst_addr> 1 10 "hi" \
+# src is derived from the identity automatically; dst:porta in hex:
+./ipv69 send wlan0 <dst_addr>:0010 0001 "hi" \
     --remote 203.0.113.10:6969,203.0.113.11:6969
 ```
 
