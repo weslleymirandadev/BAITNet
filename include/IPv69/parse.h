@@ -23,9 +23,15 @@ void print_payload(const uint8_t *payload, size_t len);
    returns 0 on success, -1 on error */
 int parse_ipv69_addr(const char *s, uint64_t *out);
 
-/* identity-derived address (SLAAC-style): first 5 bytes of
-   SHA-512(pubkey) -> 40-bit address. Deterministic: same key, same
-   address, forever. No DHCP needed. */
-void ipv69_addr_derive(uint8_t out[5], const uint8_t pub[32]);
+/* identity-derived address (SLAAC-style): 4 bytes of SHA-512(pubkey)
+   prefixed with the class byte -> 40-bit address. Deterministic: same
+   key, same address, forever. No DHCP needed.
+   cls: 'A' private local / 'B' private extended / 'C' public
+        'D' multicast / 'E' reserved (broadcast). */
+void ipv69_addr_derive(uint8_t out[5], const uint8_t pub[32], char cls);
+
+/* address class (IPv4-style, first bits of byte 0):
+   A 00.x, B 01.x, C 10.x, D 110.x, E 111.x (broadcast ff.ff.ff.ff.ff) */
+char ipv69_addr_class(uint64_t addr);
 
 #endif

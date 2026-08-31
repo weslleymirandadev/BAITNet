@@ -102,11 +102,32 @@ int parse_ipv69_addr(const char *s, uint64_t *out) {
     return 0;
 }
 
-void ipv69_addr_derive(uint8_t out[5], const uint8_t pub[32])
+void ipv69_addr_derive(uint8_t out[5], const uint8_t pub[32], char cls)
 {
     uint8_t d[64];
+    uint8_t b;
     ed25519_sha512(d, pub, 32);
-    memcpy(out, d, 5);
+    switch (cls) {
+    case 'A': b = 0x00 | (d[0] & 0x3f); break;
+    case 'B': b = 0x40 | (d[0] & 0x3f); break;
+    case 'D': b = 0xc0 | (d[0] & 0x1f); break;
+    case 'E': b = 0xe0 | (d[0] & 0x1f); break;
+    case 'C':
+    default:  b = 0x80 | (d[0] & 0x3f); break;
+    }
+    out[0] = b;
+    memcpy(out + 1, d + 1, 4);
+}
+
+char ipv69_addr_class(uint64_t addr)
+{
+    uint8_t b = (uint8_t)(addr >> 32);
+
+    if ((b & 0xc0) == 0x00)      return 'A';      /* 00xxxxxx */
+    if ((b & 0xc0) == 0x40)      return 'B';      /* 01xxxxxx */
+    if ((b & 0xc0) == 0x80)      return 'C';      /* 10xxxxxx */
+    if ((b & 0xe0) == 0xc0)      return 'D';      /* 110xxxxx */
+    return 'E';                                    /* 111xxxxx */
 }
 
 void print_payload(const uint8_t *payload, size_t len) {
