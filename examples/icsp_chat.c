@@ -80,7 +80,7 @@ static int chat_loop(struct icsp_assoc *a, int fd, int ifindex,
     int last_heartbeat = 0;
     time_t last_rx = time(NULL);    /* any frame from the peer */
 
-    printf("chat: conectado! digite mensagens (Ctrl-D sai)\n");
+    printf("chat: conectado! digite e Enter envia (Ctrl-D fecha)\n");
     fflush(stdout);
 
     for (;;) {
@@ -113,8 +113,14 @@ static int chat_loop(struct icsp_assoc *a, int fd, int ifindex,
         }
 
         if (use_stdin && FD_ISSET(0, &rfds)) {
-            if (!fgets(line, sizeof(line), stdin))
-                break;              /* Ctrl-D */
+            if (!fgets(line, sizeof(line), stdin)) {
+                if (isatty(0))
+                    break;          /* Ctrl-D: graceful close */
+                /* non-tty stdin (daemon/pipe): stop reading, keep
+                   receiving — netcat servers must survive EOF */
+                use_stdin = 0;
+                continue;
+            }
             size_t n = strlen(line);
             while (n && (line[n - 1] == '\n' || line[n - 1] == '\r'))
                 line[--n] = 0;
@@ -126,7 +132,6 @@ static int chat_loop(struct icsp_assoc *a, int fd, int ifindex,
                 fprintf(stderr, "chat: falha ao enviar\n");
                 return 1;
             }
-            printf("voce: %s\n", line);
         }
 
         if (FD_ISSET(fd, &rfds)) {
@@ -156,7 +161,9 @@ static int chat_loop(struct icsp_assoc *a, int fd, int ifindex,
                                      (size_t)(n - 14 - IPV69_HEADER_LEN),
                                      buf, &olen, &ostream);
             if (m > 0) {
-                printf("eles (%u): %.*s\n", ostream, m, (char *)buf);
+                fwrite(buf, 1, (size_t)m, stdout);
+                fputc('\n', stdout);
+                fflush(stdout);
                 if (echo_mode)
                     icsp_data_send(a, fd, ifindex, src_mac,
                                    peer_dst(a, bcast), dst_addr, 0,
@@ -234,7 +241,7 @@ int main(int argc, char **argv)
             printf("chat: session_key == %02x%02x..%02x%02x\n",
                    a.session_key[0], a.session_key[1],
                    a.session_key[30], a.session_key[31]);
-            chat_loop(&a, fd, ifindex, src_mac, 0, echo_mode, 0);
+            chat_loop(&a, fd, ifindex, src_mac, 0, echo_mode, 1);
             printf("chat: aguardando proxima associacao...\n");
         }
     }
