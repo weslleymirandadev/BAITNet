@@ -26,6 +26,7 @@
 #include "IPv69/parse.h"
 #include "ed25519.h"
 #include "IPv69/l2.h"
+#include "IPv69/keyring.h"
 
 #define IPV69_CTRL_ECHO_REQUEST 3
 #define IPV69_CTRL_ECHO_REPLY   4
@@ -299,17 +300,18 @@ static int dhcp_discover(int fd, int ifindex, const uint8_t src_mac[6],
     return 0;
 }
 
-/* load ~/.ipv69/key (auto-key) into sk, or generate + print the pub.
- * Returns 0 with has_sk=1 on success. Needed so silent DHCP (send/recv)
- * signs its DISCOVER — the server rejects unsigned ones when it has an
- * allowlist (--peer/--peer-file). */
+/* load the ~/.hosts69 keyring (auto-key) into sk, or generate + print
+ * the pub. Returns 0 with has_sk=1 on success. Needed so silent DHCP
+ * (send/recv) signs its DISCOVER — the server rejects unsigned ones
+ * when it has an allowlist (--peer/--peer-file). */
 static int load_auto_key(uint8_t sk[64])
 {
-    char kpath[256];
-    uint8_t my_pub[32];
-    ed25519_keyfile_default_path(kpath, sizeof(kpath));
-    if (ed25519_keyfile_load_or_create(kpath, sk, my_pub) < 0) {
-        fprintf(stderr, "nao foi possivel carregar/criar chave em %s\n", kpath);
+    char dir[256], key[512], kpub[512], comment[128];
+    uint8_t pub[32];
+    keyring_paths(dir, sizeof(dir), key, sizeof(key), kpub, sizeof(kpub));
+    if (keyring_load_or_create(key, kpub, sk, pub, comment,
+                               sizeof(comment)) < 0) {
+        fprintf(stderr, "nao foi possivel carregar/criar chave em %s\n", key);
         return -1;
     }
     return 0;
@@ -392,7 +394,6 @@ int cmd_raw(int argc, char **argv)
     /* `addr` needs no iface/socket: dispatch before the argc>=3 gate */
     if (!strcmp(argv[1], "addr")) {
         uint8_t sk[64], pub[32], derived[5];
-        char kpath[256];
         char cls = 'C';                 /* public by default */
         int do_dad = 0;
         for (int i = 2; i < argc; i++) {
@@ -408,11 +409,11 @@ int cmd_raw(int argc, char **argv)
             fprintf(stderr, "addr: classe invalida '%c' (A-E)\n", cls);
             return 1;
         }
-        ed25519_keyfile_default_path(kpath, sizeof(kpath));
-        if (ed25519_keyfile_load_or_create(kpath, sk, pub) < 0) {
-            fprintf(stderr, "addr: nao foi possivel carregar/criar chave em %s\n", kpath);
+        if (load_auto_key(sk) < 0) {
+            fprintf(stderr, "addr: sem identidade (ipv69 keygen)\n");
             return 1;
         }
+        memcpy(pub, sk + 32, 32);
         ipv69_addr_derive(derived, pub, cls);
         printf("addr: %02x.%02x.%02x.%02x.%02x (derivado da identidade, classe %c)\n",
                derived[0], derived[1], derived[2], derived[3], derived[4], cls);
@@ -482,11 +483,9 @@ int cmd_raw(int argc, char **argv)
         if (g_ngw > 0 && !my_addr) {
             /* tunnel mode: derive the address from the identity when none
                given, and announce periodically so the gateway learns us */
-            uint8_t sk[64], pub[32], derived[5];
-            char kpath[256];
-            ed25519_keyfile_default_path(kpath, sizeof(kpath));
-            if (ed25519_keyfile_load_or_create(kpath, sk, pub) == 0) {
-                ipv69_addr_derive(derived, pub, 'C');
+            uint8_t sk[64], derived[5];
+            if (load_auto_key(sk) == 0) {
+                ipv69_addr_derive(derived, sk + 32, 'C');
                 my_addr = get_addr40(derived);
                 printf("recv: addr derivado da identidade: %016llx (classe C)\n",
                        (unsigned long long)my_addr);
@@ -568,11 +567,9 @@ int cmd_raw(int argc, char **argv)
            the kernel binding for this MAC);
            tunnel: derived from the identity (class C). */
         if (g_ngw > 0) {
-            uint8_t sk[64], pub[32], derived[5];
-            char kpath[256];
-            ed25519_keyfile_default_path(kpath, sizeof(kpath));
-            if (ed25519_keyfile_load_or_create(kpath, sk, pub) == 0) {
-                ipv69_addr_derive(derived, pub, 'C');
+            uint8_t sk[64], derived[5];
+            if (load_auto_key(sk) == 0) {
+                ipv69_addr_derive(derived, sk + 32, 'C');
                 src = get_addr40(derived);
                 printf("send: src derivado da identidade: %016llx\n",
                        (unsigned long long)src);
@@ -667,16 +664,9 @@ int cmd_raw(int argc, char **argv)
 
     if (!strcmp(argv[1], "dhcp")) {
         if (!has_sk) {
-            /* auto: load ~/.ipv69/key or generate + register it.
-               NOTE: separate buffer for our own pub — server_pub still
-               holds the server key from --server-pub. */
-            char kpath[256];
-            uint8_t my_pub[32];
-            ed25519_keyfile_default_path(kpath, sizeof(kpath));
-            if (ed25519_keyfile_load_or_create(kpath, sk, my_pub) < 0) {
-                fprintf(stderr, "dhcp: nao foi possivel carregar/criar chave em %s\n", kpath);
+            /* auto: load the keyring or generate + register it */
+            if (load_auto_key(sk) < 0)
                 return 1;
-            }
             has_sk = 1;
         }
         return dhcp_client(fd, ifindex, src_mac, sk, has_sk, server_pub, has_server_pub);

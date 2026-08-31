@@ -34,7 +34,7 @@ int cmd_keygen(int argc, char **argv)
     const char *pass_arg = NULL;
     char comment[128];
     char pass[256];
-    int count = 1;
+    int count = 0;                  /* explicit count arg -> stdout mode */
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-f") && i + 1 < argc)
@@ -64,9 +64,10 @@ int cmd_keygen(int argc, char **argv)
             pass[0] = 0;
     }
 
-    /* plain stdout mode: N keypairs, one per line */
-    if (!fpath) {
-        if (count < 1 || count > 100) {
+    /* plain stdout mode: N keypairs, one per line (only with an
+       explicit count argument; no -f means the default keyring path) */
+    if (!fpath && count > 0) {
+        if (count > 100) {
             fprintf(stderr, "Usage: %s [-f PATH] [-C COMMENT] [-N PASS] [count]\n",
                     argv[0]);
             return 1;
@@ -80,6 +81,13 @@ int cmd_keygen(int argc, char **argv)
             putchar('\n');
         }
         return 0;
+    }
+
+    /* default path: ~/.hosts69/key (keyring), like every other tool */
+    if (!fpath) {
+        char dir[256], key[512], kpub[512];
+        keyring_paths(dir, sizeof(dir), key, sizeof(key), kpub, sizeof(kpub));
+        fpath = key;
     }
 
     /* file mode: ~/.hosts69/key + key.pub */
