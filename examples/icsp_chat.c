@@ -33,11 +33,7 @@
 #include "ed25519.h"
 #include "ICSP/icsp.h"
 
-/* ---- L2: byte order comes from endian.h (via header.h); the frame
- * plumbing (build_frame/raw_socket/send_frame/hex_decode) is in l2.c,
- * linked from the repo — no local copies. ---- */
-
-/* ---- identity: the ~/.hosts69 keyring (same as DHCP) ---- */
+// the ~/.hosts69 keyring 
 static int load_identity(uint8_t sk[64], uint8_t pub[32])
 {
     char key[512], kpub[512], dir[256], comment[128];
@@ -46,7 +42,6 @@ static int load_identity(uint8_t sk[64], uint8_t pub[32])
                                   sizeof(comment));
 }
 
-/* ---- the chat loop ---- */
 static int chat_loop(struct icsp_assoc *a, int fd, int ifindex,
                      const uint8_t src_mac[6], uint64_t dst_addr,
                      int echo_mode, int use_stdin)
@@ -149,7 +144,8 @@ int main(int argc, char **argv)
 
     if (argc < 3) {
         fprintf(stderr, "usage: icsp_chat <server|client> <ifname> "
-                "[dst] [port] [--peer HEX] [--echo]\n");
+                "[port|:port] [--peer HEX] [--echo]\n"
+                "       icsp_chat client <ifname> <dst:porta> [--peer HEX] [--echo]\n");
         return 1;
     }
     for (int i = 3; i < argc; i++) {
@@ -173,9 +169,15 @@ int main(int argc, char **argv)
 
     if (!strcmp(argv[1], "server")) {
         uint16_t port = 6969;
+        for (int i = 3; i < argc; i++) {
+            if (argv[i][0] == '-' || strchr(argv[i], ':'))
+                continue;
+            port = (uint16_t)atoi(argv[i]);
+            break;
+        }
         for (int i = 3; i < argc; i++)
-            if (argv[i][0] != '-') {
-                port = (uint16_t)atoi(argv[i]);
+            if (argv[i][0] == ':' && argv[i][1]) {
+                port = (uint16_t)atoi(argv[i] + 1);
                 break;
             }
         printf("chat: servidor em %s:%u (peers=%d)\n", argv[2], port, n_peers);
@@ -191,11 +193,10 @@ int main(int argc, char **argv)
     if (!strcmp(argv[1], "client")) {
         uint64_t dst;
         uint16_t port;
-        if (argc < 5 || parse_ipv69_addr(argv[3], &dst) < 0) {
-            fprintf(stderr, "chat client: precisa <dst> <port>\n");
+        if (argc < 4 || parse_ipv69_addr_port(argv[3], &dst, &port) < 0) {
+            fprintf(stderr, "chat client: precisa <dst:porta>\n");
             return 1;
         }
-        port = (uint16_t)atoi(argv[4]);
         printf("chat: cliente -> %016llx:%u\n", (unsigned long long)dst, port);
         if (icsp_client_handshake(fd, ifindex, src_mac, dst,
                                   50000 + (uint16_t)getpid() % 1000,
