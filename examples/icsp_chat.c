@@ -27,101 +27,15 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include "IPv69/header.h"
+#include "IPv69/l2.h"
 #include "IPv69/parse.h"
 #include "IPv69/keyring.h"
 #include "ed25519.h"
 #include "ICSP/icsp.h"
 
-/* ---- minimal L2 helpers (same as include/IPv69/l2.h).
- * build_frame/send_frame are non-static: the ICSP core links them. ---- */
-static void put_addr40(uint8_t *d, uint64_t v)
-{
-    d[0] = (uint8_t)(v >> 32); d[1] = (uint8_t)(v >> 24);
-    d[2] = (uint8_t)(v >> 16); d[3] = (uint8_t)(v >> 8);
-    d[4] = (uint8_t)v;
-}
-
-uint64_t get_addr40(const uint8_t *s)
-{
-    return ((uint64_t)s[0] << 32) | ((uint64_t)s[1] << 24) |
-           ((uint64_t)s[2] << 16) | ((uint64_t)s[3] << 8) | s[4];
-}
-
-static int hex_decode(const char *hex, uint8_t *out, size_t max)
-{
-    size_t hl = strlen(hex);
-    if (hl % 2 || hl / 2 > max)
-        return -1;
-    for (size_t i = 0; i < hl; i += 2) {
-        unsigned int b;
-        if (sscanf(hex + i, "%2x", &b) != 1)
-            return -1;
-        out[i / 2] = (uint8_t)b;
-    }
-    return (int)(hl / 2);
-}
-
-size_t build_frame(uint8_t *frame, const uint8_t *dst_mac,
-                   const uint8_t src_mac[6], uint64_t src,
-                   uint64_t dst, uint8_t next_header,
-                   uint8_t hop_limit, uint16_t src_port,
-                   uint16_t dst_port, const uint8_t *payload,
-                   size_t plen)
-{
-    struct ethernet_header *eth = (struct ethernet_header *)frame;
-    struct ipv69_header *h = (struct ipv69_header *)(frame + 14);
-
-    memcpy(eth->dst_mac, dst_mac, 6);
-    memcpy(eth->src_mac, src_mac, 6);
-    eth->ethertype = htons(ETHERTYPE_IPV69);
-    memset(h, 0, IPV69_HEADER_LEN);
-    h->ver_traffic = (IPV69_VERSION << 4) | IPV69_TRAFFIC_CLASS;
-    wr_be16(&h->payload_len, plen);
-    wr_be16(&h->flow_id, 1);
-    h->next_header = next_header;
-    h->hop_limit = hop_limit ? hop_limit : 64;
-    h->flags = IPV69_FLAG_NOFRAG;
-    wr_be16(&h->src_port, src_port);
-    wr_be16(&h->dst_port, dst_port);
-    put_addr40(h->source, src);
-    put_addr40(h->dest, dst);
-    memcpy(frame + 14 + IPV69_HEADER_LEN, payload, plen);
-    return 14 + IPV69_HEADER_LEN + plen;
-}
-
-static int raw_socket(const char *ifname, int *ifindex, uint8_t *src_mac)
-{
-    int fd = socket(AF_PACKET, SOCK_RAW, htons(ETHERTYPE_IPV69));
-    struct ifreq ifr;
-
-    if (fd < 0) { perror("socket(AF_PACKET)"); return -1; }
-    memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
-    if (ioctl(fd, SIOCGIFINDEX, &ifr) < 0) { perror("SIOCGIFINDEX"); return -1; }
-    *ifindex = ifr.ifr_ifindex;
-    if (ioctl(fd, SIOCGIFHWADDR, &ifr) < 0) { perror("SIOCGIFHWADDR"); return -1; }
-    memcpy(src_mac, ifr.ifr_hwaddr.sa_data, 6);
-    struct sockaddr_ll sll = {
-        .sll_family = AF_PACKET, .sll_protocol = htons(ETHERTYPE_IPV69),
-        .sll_ifindex = *ifindex,
-    };
-    if (bind(fd, (struct sockaddr *)&sll, sizeof(sll)) < 0) {
-        perror("bind(AF_PACKET)");
-        return -1;
-    }
-    return fd;
-}
-
-int send_frame(int fd, int ifindex, const uint8_t *dst_mac,
-               const uint8_t *frame, size_t len)
-{
-    struct sockaddr_ll sll = {
-        .sll_family = AF_PACKET, .sll_protocol = htons(ETHERTYPE_IPV69),
-        .sll_ifindex = ifindex, .sll_halen = 6,
-    };
-    memcpy(sll.sll_addr, dst_mac, 6);
-    return sendto(fd, frame, len, 0, (struct sockaddr *)&sll, sizeof(sll));
-}
+/* ---- L2: byte order comes from endian.h (via header.h); the frame
+ * plumbing (build_frame/raw_socket/send_frame/hex_decode) is in l2.c,
+ * linked from the repo — no local copies. ---- */
 
 /* ---- identity: the ~/.hosts69 keyring (same as DHCP) ---- */
 static int load_identity(uint8_t sk[64], uint8_t pub[32])
