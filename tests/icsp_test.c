@@ -194,6 +194,7 @@ static int run_server(int argc, char **argv, uint8_t sk[64],
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     printf("icsp: servidor escutando (ctrl-C para sair)\n");
 
+    /* serve this association, then accept the next one */
     for (;;) {
         ssize_t n = recv(fd, buf, sizeof(buf), 0);
         if (n < 0) {
@@ -236,8 +237,17 @@ static int run_server(int argc, char **argv, uint8_t sk[64],
         }
         if (icsp_life_handle(&a, payload,
                              (size_t)(n - 14 - IPV69_HEADER_LEN))) {
-            printf("icsp: SHUTDOWN recebido — associação fechada\n");
-            return 0;
+            printf("icsp: SHUTDOWN recebido — associação fechada, "
+                   "aguardando proxima...\n");
+            /* accept a fresh association on the same port */
+            if (icsp_server_accept(fd, ifindex, src_mac, 0, port, sk,
+                                   peers, n_peers, &a) < 0)
+                return 1;
+            printf("icsp: nova associação aceita — session_key == "
+                   "%02x%02x..%02x%02x\n",
+                   a.session_key[0], a.session_key[1],
+                   a.session_key[30], a.session_key[31]);
+            continue;
         }
     }
 }

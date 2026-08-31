@@ -258,7 +258,7 @@ int icsp_server_accept(int fd, int ifindex, const uint8_t src_mac[6],
     uint8_t *payload;
     size_t plen;
     uint64_t from;
-    struct timeval tv = { 10, 0 };
+    struct timeval tv = { 30, 0 };
 
     memset(a, 0, sizeof(*a));
     a->src_port = port;
