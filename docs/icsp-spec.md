@@ -1,141 +1,140 @@
 # ICSP — Improved Connection and Streaming Protocol
 
-Transporte stream do IPv69 (next_header 2, reservado desde a v0.4).
-SCTP melhorado: rouba o que o SCTP tem de bom e corrige as lacunas que
-o impediram de virar padrão. Roda sobre o L2 do IPv69 (endereços 40-bit,
-binding addr↔MAC no kernel, cripto Ed25519 já existente).
+IPv69 stream transport (next_header 2, reserved since v0.4).
+An improved SCTP: takes everything SCTP does well and fixes the gaps
+that kept it from becoming a standard. Runs over IPv69 L2 (40-bit
+addresses, addr↔MAC binding in the kernel, existing Ed25519 crypto).
 
-O objetivo é ser o "HTTPS próprio": um transporte confiável, ordenado,
-multi-stream e **criptografado por padrão**, pronto para serviços
-construídos sobre o IPv69.
+The goal is the "own HTTPS": a reliable, ordered, multi-stream and
+**encrypted by default** transport, ready for services built on IPv69.
 
 ---
 
-## 1. O que roubar do SCTP (o bom)
+## 1. What to take from SCTP (the good)
 
-| Feature | Por que manter |
+| Feature | Why keep it |
 |---|---|
-| **Multi-streaming** | Uma associação com N streams independentes; evita head-of-line blocking do TCP (um dado lento não segura os outros) |
-| **Message-oriented** | Preserva fronteiras de mensagem — não é byte-stream como TCP |
-| **Handshake 4-way com cookie** | INIT → INIT-ACK(cookie) → COOKIE-ECHO → COOKIE-ACK; o servidor fica stateless até o cookie voltar (anti-flood de conexão) |
-| **SACK seletivo + retransmissão** | Reenvia só o que faltou, não a janela inteira |
-| **Heartbeat** | Detecta caminho morto e faz failover |
-| **CRC32c** | Checksum forte por pacote |
-| **Multi-homing** | Um endpoint com vários endereços (failover transparente) |
+| **Multi-streaming** | One association with N independent streams; avoids TCP head-of-line blocking (one slow message does not hold the others) |
+| **Message-oriented** | Preserves message boundaries — not a byte-stream like TCP |
+| **4-way cookie handshake** | INIT → INIT-ACK(cookie) → COOKIE-ECHO → COOKIE-ACK; the server stays stateless until the cookie comes back (anti connection flood) |
+| **Selective SACK + retransmission** | Re-sends only what was lost, not the whole window |
+| **Heartbeat** | Detects dead paths and fails over |
+| **CRC32c** | Strong per-packet checksum |
+| **Multi-homing** | One endpoint with several addresses (transparent failover) |
 
-## 2. As lacunas do SCTP e como o ICSP resolve
+## 2. SCTP gaps and how ICSP fixes them
 
-| Problema do SCTP | Solução ICSP |
+| SCTP problem | ICSP solution |
 |---|---|
-| **Sem criptografia nativa** — DTLS-over-SCTP é um patch posterior | Handshake autenticado + fluxo criptografado embutido: identidade Ed25519 (auto-key `~/.ipv69/key`) + X25519 efêmera (ECDH) + XSalsa20-Poly1305 (secretbox). Estilo mini-Noise: assina 1x, deriva chave simétrica de sessão |
-| **Complexidade absurda** — RFC 4960 ≈ 150 páginas + dezenas de extensões | Subset essencial: ~10 tipos de chunk, sem extensões opcionais. Estados: CLOSED → COOKIE_WAIT → ESTABLISHED → SHUTDOWN. Só |
-| **NAT/middlebox quebra tudo** | Não existe no IPv69: L2 puro, endereço 40-bit global na rede. Lacuna eliminada por design |
-| **Cookie fraco / sem segredo** | Cookie = chave secreta efêmera do servidor (rotacionada) + hash dos parâmetros; cliente não consegue forjar |
-| **Streams fixos na associação** | STREAM-RESET nativo (renegociação dinâmica, como RFC 6525) |
-| **Sem sessão reutilizável** | 0-RTT opcional: COOKIE-ECHO pode carregar dados já criptografados quando há sessão reutilizável |
+| **No native crypto** — DTLS-over-SCTP is a later patch | Built-in authenticated handshake + encrypted data path: Ed25519 identity (auto-key `~/.ipv69/key`) + ephemeral X25519 (ECDH) + XSalsa20-Poly1305 (secretbox). Mini-Noise style: sign once, derive a symmetric session key |
+| **Absurd complexity** — RFC 4960 ≈ 150 pages + dozens of extensions | Essential subset: ~10 chunk types, no optional extensions. States: CLOSED → COOKIE_WAIT → ESTABLISHED → SHUTDOWN. That's it |
+| **NAT/middlebox breaks everything** | Does not exist in IPv69: pure L2, 40-bit address global on the network. Gap eliminated by design |
+| **Weak / secret-less cookie** | Cookie = ephemeral server secret (rotated) + hash of the parameters; clients cannot forge it |
+| **Fixed streams per association** | Native STREAM-RESET (dynamic renegotiation, like RFC 6525) |
+| **No reusable session** | Optional 0-RTT: COOKIE-ECHO can carry already-encrypted data when a session is reusable |
 
-## 3. Arquitetura
+## 3. Architecture
 
 ```
 ┌──────────────────────────────────────────────┐
-│  Serviço / app (mensagens por stream)         │
+│  Service / app (messages per stream)          │
 ├──────────────────────────────────────────────┤
 │  ICSP (next_header 2)                        │
-│  associação, streams, TSN/SACK, cripto AEAD  │
+│  association, streams, TSN/SACK, AEAD crypto │
 ├──────────────────────────────────────────────┤
 │  IPv69 L2 (next_header 0/1/2, 40-bit,        │
-│  binding addr↔MAC, Ed25519 p/ bootstrap)     │
+│  addr↔MAC binding, Ed25519 for bootstrap)    │
 └──────────────────────────────────────────────┘
 ```
 
-O IPv69 entrega **datagramas** (nh=1) e **controle** (nh=0). O ICSP
-consome o mesmo L2 mas com semântica de **fluxo confiável**: o que o
-dgram não garante (ordem, entrega, conexão) é responsabilidade do ICSP.
+IPv69 delivers **datagrams** (nh=1) and **control** (nh=0). ICSP
+consumes the same L2 but with **reliable-flow** semantics: what dgram
+does not guarantee (order, delivery, connection) is ICSP's job.
 
-## 4. Wire format (rascunho)
+## 4. Wire format (draft)
 
 ```
-Frame IPv69 (nh=2): [header 38B] + payload ICSP
+IPv69 frame (nh=2): [header 38B] + ICSP payload
 
-Header ICSP (12B):
-  src_port  (2)  dst_port (2)
-  ver       (1)  flags    (1)
-  assoc_id  (4)
-  crc32c    (2)   ← checksum da associação (forte, como SCTP)
+ICSP header (12B):
+  src_port (2)  dst_port (2)
+  ver      (1)  flags    (1)
+  assoc_id (4)
+  crc32c   (2)   ← association checksum (strong, like SCTP)
 
-Chunks (todos): [type 1][flags 1][len 2][dados...]
+Chunks (all): [type 1][flags 1][len 2][data...]
 ```
 
-Tipos de chunk (numeração limpa 0–9):
+Chunk types (clean numbering 0–9):
 
 ```
 0  DATA          [tsn 4][stream_id 2][stream_seq 2][payload]
 1  INIT          [ver][streams_in 2][streams_out 2][eph_pub 32][id_pub 32][sig 64]
 2  INIT-ACK      [ver][streams][eph_pub 32][id_pub 32][sig 64][cookie]
-3  COOKIE-ECHO   [cookie][dados 0-RTT opcionais]
+3  COOKIE-ECHO   [cookie][optional 0-RTT data]
 4  COOKIE-ACK
-5  SACK          [tsn_cumulativo 4][gaps...]
+5  SACK          [cumulative_tsn 4][gaps...]
 6  HEARTBEAT
 7  HEARTBEAT-ACK
 8  SHUTDOWN
-9  STREAM-RESET  [stream_id 2][modo 1]
+9  STREAM-RESET  [stream_id 2][mode 1]
 ```
 
-Cripto por chunk DATA: `secretbox(tsn|stream|seq|payload)` com nonce
-derivado de (assoc_id, tsn) — autenticado por pacote, replay protegido
-por janela deslizante.
+Per-DATA-chunk crypto: `secretbox(tsn|stream|seq|payload)` with nonce
+derived from (assoc_id, tsn) — per-packet authenticated, replay
+protected by a sliding window.
 
-## 5. Handshake (Fase 1)
+## 5. Handshake (Phase 1)
 
-1. **Cliente → INIT**: pub identidade (Ed25519, do auto-key) + pub efêmera X25519 + streams desejados, assinado.
-2. **Servidor → INIT-ACK**: pub do servidor + pub efêmera + cookie (chave secreta + hash) + streams aceitos, assinado.
-3. **Cliente → COOKIE-ECHO**: devolve o cookie (prova que o INIT-ACK veio do servidor legítimo) + assinatura.
-4. **Servidor → COOKIE-ACK**: valida o cookie, associação ESTABLISHED.
+1. **Client → INIT**: identity pub (Ed25519, from auto-key) + ephemeral X25519 pub + desired streams, signed.
+2. **Server → INIT-ACK**: server pub + ephemeral pub + cookie (server secret + hash) + accepted streams, signed.
+3. **Client → COOKIE-ECHO**: returns the cookie (proof the INIT-ACK came from the legitimate server) + signature.
+4. **Server → COOKIE-ACK**: validates the cookie, association ESTABLISHED.
 
-Derivação de chave: `shared = X25519(eph_priv, peer_eph_pub)` →
-`session_key = SHA-512(shared || assoc_id || nonces)` → secretbox com
-`key[0..31]` e nonces derivados por pacote. As identidades Ed25519
-autenticam quem está do outro lado (mesma allowlist de pubkeys do DHCP).
+Key derivation: `shared = X25519(eph_priv, peer_eph_pub)` →
+`session_key = SHA-512(shared || assoc_id || nonces)` → secretbox with
+`key[0..31]` and per-packet derived nonces. The Ed25519 identities
+authenticate the peer (same pubkey allowlist as DHCP).
 
-## 6. Estrutura de pastas
+## 6. Folder structure
 
 ```
-include/ICSP/icsp.h          — API pública + constantes de wire
-include/ICSP/icsp_internal.h — estruturas internas (associação, streams)
-src/ICSP/icsp.c              — núcleo: associação, estados, chunk RX/TX
-src/ICSP/icsp_handshake.c    — INIT/cookie/derivação de chave
-src/ICSP/icsp_data.c         — streams, TSN, SACK, retransmissão
+include/ICSP/icsp.h          — public API + wire constants
+include/ICSP/icsp_internal.h — internal structures (association, streams)
+src/ICSP/icsp.c              — core: association, states, chunk RX/TX
+src/ICSP/icsp_handshake.c    — INIT/cookie/key derivation
+src/ICSP/icsp_data.c         — streams, TSN, SACK, retransmission
 src/ICSP/icsp_heartbeat.c    — heartbeat + failover
-tests/icsp_test.c            — par servidor/cliente de teste
-docs/icsp-spec.md            — este documento
+tests/icsp_test.c            — test server/client pair
+docs/icsp-spec.md            — this document
 ```
 
-A lib `lib/ed25519` ganha wrappers expostos: `nacl_scalarmult` (X25519)
-e `nacl_secretbox_*` (AEAD) — já existem no tweetnacl.c, só expor com
-API limpa.
+The `lib/ed25519` library gains exposed wrappers: `nacl_scalarmult`
+(X25519) and `nacl_secretbox_*` (AEAD) — already in tweetnacl.c, just
+exposed with a clean API.
 
-## 7. Fases (cada uma testável)
+## 7. Phases (each testable)
 
-| Fase | Escopo | Critério de aceite |
+| Phase | Scope | Acceptance criteria |
 |---|---|---|
-| **1 — Infra + handshake** | pastas, Makefile, header/chunks, INIT→COOKIE-ACK autenticado (Ed25519 + X25519 → chave de sessão) | `icsp_test client/server` no veth completa o handshake; chave derivada igual nos dois lados; assinatura inválida = recusa |
-| **2 — Dados** | DATA criptografado, TSN/SACK, retransmissão, streams múltiplos | entrega ordenada; perda sintética é recuperada; stream A não segura stream B |
-| **3 — Vida** | heartbeat, shutdown gracioso, STREAM-RESET | caminho cai → failover; shutdown limpa associação; streams renegociados em runtime |
-| **4 — Host→host** | celular ↔ VM, auto-key, binding | mesma experiência do veth, mas pela rede real (Wi-Fi ↔ bridge) |
+| **1 — Infra + handshake** | folders, Makefile, header/chunks, authenticated INIT→COOKIE-ACK (Ed25519 + X25519 → session key) | `icsp_test client/server` completes the handshake over veth; derived key identical on both sides; invalid signature = refused |
+| **2 — Data** | encrypted DATA, TSN/SACK, retransmission, multiple streams | ordered delivery; synthetic loss is recovered; stream A does not block stream B |
+| **3 — Life** | heartbeat, graceful shutdown, STREAM-RESET | path dies → failover; shutdown cleans the association; streams renegotiated at runtime |
+| **4 — Host-to-host** | phone ↔ VM, auto-key, binding | same experience as veth, but over the real network (Wi-Fi ↔ bridge) |
 
-## 8. Fora de escopo (de propósito)
+## 8. Out of scope (on purpose)
 
-- Controle de congestionamento complexo (CUBIC etc.) — rede L2 privada,
-  janela simples; evolui depois se necessário.
-- MTU discovery / fragmentação de associação — IPv69 tem flag NOFRAG;
-  payload ≤ 1400.
-- Extensões exóticas do SCTP (ADDIP, PR-SCTP, ASCONF) — só STREAM-RESET.
+- Complex congestion control (CUBIC etc.) — private L2 network, simple
+  window; can evolve later if needed.
+- MTU discovery / association fragmentation — IPv69 has the NOFRAG
+  flag; payload ≤ 1400.
+- Exotic SCTP extensions (ADDIP, PR-SCTP, ASCONF) — only STREAM-RESET.
 
-## 9. Dependências
+## 9. Dependencies
 
-Nenhuma nova. Tudo o que o ICSP precisa já existe no repo:
+None new. Everything ICSP needs already exists in the repo:
 
-- `lib/ed25519` (TweetNaCl + wrapper): sign/verify p/ handshake,
-  scalarmult p/ ECDH, secretbox p/ AEAD (a expor).
-- IPv69 L2: entrega de frames com endereçamento 40-bit e binding.
-- auto-key `~/.ipv69/key`: identidade do device, mesma do DHCP.
+- `lib/ed25519` (TweetNaCl + wrapper): sign/verify for the handshake,
+  scalarmult for ECDH, secretbox for AEAD (to be exposed).
+- IPv69 L2: frame delivery with 40-bit addressing and binding.
+- auto-key `~/.ipv69/key`: device identity, same as DHCP.
