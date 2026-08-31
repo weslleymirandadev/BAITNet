@@ -25,30 +25,31 @@
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
 #include "ed25519.h"
+#include "IPv69/l2.h"
 
 #define IPV69_CTRL_ECHO_REQUEST 3
 #define IPV69_CTRL_ECHO_REPLY   4
 #define IPV69_BCAST_ADDR        0xFFFFFFFFFFULL
 
-static void put_addr40(uint8_t *d, uint64_t v)
+void put_addr40(uint8_t *d, uint64_t v)
 {
     d[0] = (v >> 32) & 0xff; d[1] = (v >> 24) & 0xff;
     d[2] = (v >> 16) & 0xff; d[3] = (v >> 8) & 0xff; d[4] = v & 0xff;
 }
 
-static uint64_t get_addr40(const uint8_t *s)
+uint64_t get_addr40(const uint8_t *s)
 {
     return ((uint64_t)s[0] << 32) | ((uint64_t)s[1] << 24) |
            ((uint64_t)s[2] << 16) | ((uint64_t)s[3] << 8) | s[4];
 }
 
-static uint32_t get_be32(const uint8_t *s)
+uint32_t get_be32(const uint8_t *s)
 {
     return ((uint32_t)s[0] << 24) | ((uint32_t)s[1] << 16) |
            ((uint32_t)s[2] << 8) | s[3];
 }
 
-static int hex_decode(const char *hex, uint8_t *out, size_t max)
+int hex_decode(const char *hex, uint8_t *out, size_t max)
 {
     size_t hl = strlen(hex);
 
@@ -167,11 +168,11 @@ static int gw_query(uint64_t addr, struct sockaddr_storage *ep,
 }
 
 /* build an Ethernet frame: [eth 14][ipv69 32][payload]; returns total len */
-static size_t build_frame(uint8_t *frame, const uint8_t *dst_mac,
-                          const uint8_t *src_mac, uint64_t src, uint64_t dst,
-                          uint8_t next_header, uint8_t hop_limit,
-                          uint16_t src_port, uint16_t dst_port,
-                          const uint8_t *payload, size_t plen)
+size_t build_frame(uint8_t *frame, const uint8_t *dst_mac,
+                   const uint8_t src_mac[6], uint64_t src, uint64_t dst,
+                   uint8_t next_header, uint8_t hop_limit,
+                   uint16_t src_port, uint16_t dst_port,
+                   const uint8_t *payload, size_t plen)
 {
     struct ethernet_header *eth = (struct ethernet_header *)frame;
     struct ipv69_header *h = (struct ipv69_header *)(frame + 14);
@@ -196,7 +197,7 @@ static size_t build_frame(uint8_t *frame, const uint8_t *dst_mac,
     return 14 + IPV69_HEADER_LEN + plen;
 }
 
-static int raw_socket(const char *ifname, int *ifindex, uint8_t *src_mac)
+int raw_socket(const char *ifname, int *ifindex, uint8_t *src_mac)
 {
     if (g_ngw > 0) {
         /* UDP tunnel mode: one socket, any local port, family of gw[0] */
@@ -232,7 +233,7 @@ static int raw_socket(const char *ifname, int *ifindex, uint8_t *src_mac)
     return fd;
 }
 
-static int send_frame(int fd, int ifindex, const uint8_t *dst_mac,
+int send_frame(int fd, int ifindex, const uint8_t *dst_mac,
                       const uint8_t *frame, size_t len)
 {
     if (g_ngw > 0) {
