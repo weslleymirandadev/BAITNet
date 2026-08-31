@@ -153,13 +153,23 @@ void ed25519_secretbox(uint8_t *c, const uint8_t *m, size_t n,
 int ed25519_secretbox_open(uint8_t *m, const uint8_t *c, size_t n,
                            const uint8_t nonce[24], const uint8_t key[32])
 {
-    uint8_t buf[32 + 2048];
-    int r;
+    uint8_t buf[1024 + 32];
+    uint8_t *b = buf;
 
     if (n > sizeof(buf) - 32)
         return -1;
-    r = crypto_secretbox_open(buf, c, n + 32, nonce, key);
-    if (r == 0)
-        memcpy(m, buf + 32, n);
-    return r;
+    if (crypto_secretbox_open(b, c, n + 32, nonce, key) != 0)
+        return -1;
+    memcpy(m, b + 32, n);
+    return 0;
+}
+
+int ed25519_scalarmult(uint8_t q[32], const uint8_t n[32], const uint8_t p[32])
+{
+    return crypto_scalarmult(q, n, p);
+}
+
+int ed25519_scalarmult_base(uint8_t q[32], const uint8_t n[32])
+{
+    return crypto_scalarmult_base(q, n);
 }
