@@ -18,6 +18,8 @@
 #include <net/ethernet.h>
 #include <arpa/inet.h>
 #include <sys/time.h>
+#include <netdb.h>
+#include <errno.h>
 #include "IPv69/af69.h"
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
@@ -60,6 +62,99 @@ static int hex_decode(const char *hex, uint8_t *out, size_t max)
     return (int)(hl / 2);
 }
 
+/* ---- UDP tunnel backend (--remote gw1,gw2:port) ---------------------- */
+#define MAX_GW 4
+
+static int g_udp_fd = -1;               /* UDP socket (tunnel) */
+static struct sockaddr_storage g_gw[MAX_GW];
+static socklen_t g_gwlen[MAX_GW];
+static int g_ngw = 0;
+
+/* resolve "host:port[,host:port...]" into the gateway list.
+ * Hosts must be numeric IPs (static binary: no DNS at runtime). */
+static int gw_parse(const char *list)
+{
+    char buf[512];
+    strncpy(buf, list, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = 0;
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, ",", &save);
+         tok && g_ngw < MAX_GW; tok = strtok_r(NULL, ",", &save)) {
+        char *colon = strrchr(tok, ':');
+        if (!colon)
+            return -1;
+        *colon = 0;
+        const char *host = tok;
+        int port = atoi(colon + 1);
+        struct sockaddr_in sa4;
+        struct sockaddr_in6 sa6;
+        if (inet_pton(AF_INET, host, &sa4.sin_addr) == 1) {
+            sa4.sin_family = AF_INET;
+            sa4.sin_port = htons(port);
+            memcpy(&g_gw[g_ngw], &sa4, sizeof(sa4));
+            g_gwlen[g_ngw] = sizeof(sa4);
+        } else if (inet_pton(AF_INET6, host, &sa6.sin6_addr) == 1) {
+            sa6.sin6_family = AF_INET6;
+            sa6.sin6_port = htons(port);
+            memcpy(&g_gw[g_ngw], &sa6, sizeof(sa6));
+            g_gwlen[g_ngw] = sizeof(sa6);
+        } else {
+            return -1;
+        }
+        g_ngw++;
+    }
+    return g_ngw > 0 ? 0 : -1;
+}
+
+/* QUERY the gateway: where is addr? fills ep on success (P2P direct) */
+static int gw_query(uint64_t addr, struct sockaddr_storage *ep,
+                    socklen_t *eplen)
+{
+    uint8_t q[8] = { 'Q', '6', '9' };
+    uint8_t ans[128];
+    struct timeval tv = { 1, 0 };
+
+    q[3] = (addr >> 32) & 0xff; q[4] = (addr >> 24) & 0xff;
+    q[5] = (addr >> 16) & 0xff; q[6] = (addr >> 8) & 0xff; q[7] = addr & 0xff;
+    for (int i = 0; i < g_ngw; i++) {
+        sendto(g_udp_fd, q, sizeof(q), 0,
+               (struct sockaddr *)&g_gw[i], g_gwlen[i]);
+        setsockopt(g_udp_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        ssize_t n = recvfrom(g_udp_fd, ans, sizeof(ans), 0,
+                             (struct sockaddr *)ep, eplen);
+        if (n > 8 && !memcmp(ans, "E69", 3) &&
+            !memcmp(ans + 3, q + 3, 5) && ans[8] != '-') {
+            /* endpoint as "ip:port" text after the addr */
+            char *hostport = (char *)ans + 8;
+            char *colon = strrchr(hostport, ':');
+            if (!colon)
+                continue;
+            *colon = 0;
+            int port = atoi(colon + 1);
+            struct sockaddr_in sa4;
+            struct sockaddr_in6 sa6;
+            /* unwrap IPv4-mapped (::ffff:a.b.c.d) from dual-stack gw */
+            if (!strncmp(hostport, "::ffff:", 7))
+                hostport += 7;
+            if (inet_pton(AF_INET, hostport, &sa4.sin_addr) == 1) {
+                sa4.sin_family = AF_INET;
+                sa4.sin_port = htons(port);
+                memcpy(ep, &sa4, sizeof(sa4));
+                *eplen = sizeof(sa4);
+                return 1;
+            }
+            if (inet_pton(AF_INET6, hostport, &sa6.sin6_addr) == 1) {
+                sa6.sin6_family = AF_INET6;
+                sa6.sin6_port = htons(port);
+                memcpy(ep, &sa6, sizeof(sa6));
+                *eplen = sizeof(sa6);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 /* build an Ethernet frame: [eth 14][ipv69 32][payload]; returns total len */
 static size_t build_frame(uint8_t *frame, const uint8_t *dst_mac,
                           const uint8_t *src_mac, uint64_t src, uint64_t dst,
@@ -92,6 +187,22 @@ static size_t build_frame(uint8_t *frame, const uint8_t *dst_mac,
 
 static int raw_socket(const char *ifname, int *ifindex, uint8_t *src_mac)
 {
+    if (g_ngw > 0) {
+        /* UDP tunnel mode: one socket, any local port, family of gw[0] */
+        g_udp_fd = socket(g_gw[0].ss_family, SOCK_DGRAM, 0);
+        if (g_udp_fd < 0) { perror("socket(UDP)"); return -1; }
+        struct ifreq ifr;
+        int probe = socket(AF_INET, SOCK_DGRAM, 0);
+        if (probe >= 0) {
+            memset(&ifr, 0, sizeof(ifr));
+            strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+            if (ioctl(probe, SIOCGIFHWADDR, &ifr) == 0)
+                memcpy(src_mac, ifr.ifr_hwaddr.sa_data, 6);
+            close(probe);
+        }
+        *ifindex = 0;
+        return g_udp_fd;
+    }
     int fd = socket(AF_PACKET, SOCK_RAW, htons(ETHERTYPE_IPV69));
     struct ifreq ifr;
     int err;
@@ -113,6 +224,15 @@ static int raw_socket(const char *ifname, int *ifindex, uint8_t *src_mac)
 static int send_frame(int fd, int ifindex, const uint8_t *dst_mac,
                       const uint8_t *frame, size_t len)
 {
+    if (g_ngw > 0) {
+        /* UDP tunnel: send to every gateway (failover) */
+        int sent = 0;
+        for (int i = 0; i < g_ngw; i++)
+            if (sendto(g_udp_fd, frame, len, 0,
+                       (struct sockaddr *)&g_gw[i], g_gwlen[i]) >= 0)
+                sent++;
+        return sent > 0 ? (int)len : -1;
+    }
     struct sockaddr_ll sll = {
         .sll_family = AF_PACKET, .sll_protocol = htons(ETHERTYPE_IPV69),
         .sll_ifindex = ifindex, .sll_halen = 6,
@@ -266,7 +386,8 @@ int main(int argc, char **argv)
 
     setvbuf(stdout, NULL, _IONBF, 0);
 
-    /* global options (any position): --key PRIV_HEX --server-pub PUB_HEX */
+    /* global options (any position):
+       --key PRIV_HEX --server-pub PUB_HEX --remote gw1,gw2:port */
     for (int i = 1; i < argc - 1; i++) {
         if (!strcmp(argv[i], "--key")) {
             uint8_t seed[32];
@@ -283,6 +404,12 @@ int main(int argc, char **argv)
                 return 1;
             }
             has_server_pub = 1;
+        } else if (!strcmp(argv[i], "--remote")) {
+            if (gw_parse(argv[i + 1]) < 0) {
+                fprintf(stderr, "remote: lista de gateways invalida (%s)\n",
+                        argv[i + 1]);
+                return 1;
+            }
         } else {
             continue;
         }
@@ -320,12 +447,43 @@ int main(int argc, char **argv)
         }
         if (argc > 4)
             my_port = (uint16_t)strtoul(argv[4], NULL, 16);
+        /* tunnel mode: derive the address from the identity when none
+           given, and announce periodically so the gateway learns us */
+        if (g_ngw > 0 && !my_addr) {
+            uint8_t sk[64], pub[32], derived[5];
+            char kpath[256];
+            ed25519_keyfile_default_path(kpath, sizeof(kpath));
+            if (ed25519_keyfile_load_or_create(kpath, sk, pub) == 0) {
+                ipv69_addr_derive(derived, pub);
+                my_addr = get_addr40(derived);
+                printf("recv: addr derivado da identidade: %016llx\n",
+                       (unsigned long long)my_addr);
+            }
+        }
         if (my_addr)
             printf("bound src=%016llx port=%04x (filtrando)\n",
                    (unsigned long long)my_addr, my_port);
+        struct timeval atv = { 2, 0 };
+        if (g_ngw > 0)
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &atv, sizeof(atv));
+        time_t last_ann = 0;
         for (;;) {
+            /* announce: ND request for ourselves -> gateway learns us */
+            if (g_ngw > 0 && my_addr && time(NULL) - last_ann >= 2) {
+                uint8_t req[1 + 5] = { IPV69_CTRL_ND_REQUEST };
+                put_addr40(req + 1, my_addr);
+                size_t l = build_frame(frame, bcast, src_mac, my_addr,
+                                       0xFFFFFFFFFFULL, IPV69_NEXT_CONTROL,
+                                       64, 0, 0, req, sizeof(req));
+                send_frame(fd, ifindex, bcast, frame, l);
+                last_ann = time(NULL);
+            }
             ssize_t n = recv(fd, frame, sizeof(frame), 0);
-            if (n < 0) { perror("recv"); return 1; }
+            if (n < 0) {
+                if (g_ngw > 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+                    continue;       /* announce tick */
+                perror("recv"); return 1;
+            }
             if (n < 14 + IPV69_HEADER_LEN)
                 continue;
             const struct ipv69_header *h =
@@ -361,6 +519,20 @@ int main(int argc, char **argv)
         plen = dlen;
         size_t len = build_frame(frame, bcast, src_mac, src, dst, IPV69_NEXT_DGRAM,
                                  64, sp, dp, (const uint8_t *)data, plen);
+        if (g_ngw > 0 && dst != 0xFFFFFFFFFFULL) {
+            /* P2P: ask the gateway where dst lives; send direct if known */
+            struct sockaddr_storage ep;
+            socklen_t eplen = sizeof(ep);
+            if (gw_query(dst, &ep, &eplen) > 0) {
+                if (sendto(g_udp_fd, frame, len, 0,
+                           (struct sockaddr *)&ep, eplen) >= 0) {
+                    printf("sent %zu bytes (dgram P2P, dst=%016llx src=%016llx)\n",
+                           dlen, (unsigned long long)dst, (unsigned long long)src);
+                    return 0;
+                }
+            }
+            /* fallback: relay through the gateway */
+        }
         if (send_frame(fd, ifindex, bcast, frame, len) < 0) { perror("sendto"); return 1; }
         printf("sent %zu bytes (dgram, dst=%016llx src=%016llx)\n",
                dlen, (unsigned long long)dst, (unsigned long long)src);
@@ -404,6 +576,50 @@ int main(int argc, char **argv)
                 }
             }
         }
+    }
+
+    if (!strcmp(argv[1], "addr")) {
+        /* identity-derived address: af69_raw addr [ifname] [--dad] */
+        uint8_t sk[64], pub[32], derived[5];
+        char kpath[256];
+        int do_dad = 0;
+        for (int i = 3; i < argc; i++)
+            if (!strcmp(argv[i], "--dad"))
+                do_dad = 1;
+        ed25519_keyfile_default_path(kpath, sizeof(kpath));
+        if (ed25519_keyfile_load_or_create(kpath, sk, pub) < 0) {
+            fprintf(stderr, "addr: nao foi possivel carregar/criar chave em %s\n", kpath);
+            return 1;
+        }
+        ipv69_addr_derive(derived, pub);
+        printf("addr: %02x.%02x.%02x.%02x.%02x (derivado da identidade)\n",
+               derived[0], derived[1], derived[2], derived[3], derived[4]);
+        if (do_dad) {
+            /* DAD: ND request pro proprio endereco; reply = colisao */
+            uint8_t req[1 + 5] = { IPV69_CTRL_ND_REQUEST };
+            struct timeval tv = { 1, 0 };
+            memcpy(req + 1, derived, 5);
+            size_t len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
+                                     IPV69_NEXT_CONTROL, 64, 0, 0, req, sizeof(req));
+            if (send_frame(fd, ifindex, bcast, frame, len) < 0) {
+                perror("sendto(DAD)"); return 1;
+            }
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            int collision = 0;
+            for (;;) {
+                ssize_t n = recv(fd, frame, sizeof(frame), 0);
+                if (n < 0) break;
+                if (n >= 14 + IPV69_HEADER_LEN + 1) {
+                    const struct ipv69_header *h =
+                        (const struct ipv69_header *)(frame + 14);
+                    if (h->next_header == IPV69_NEXT_CONTROL &&
+                        frame[14 + IPV69_HEADER_LEN] == IPV69_CTRL_ND_REPLY)
+                        collision = 1;
+                }
+            }
+            printf("dad: %s\n", collision ? "COLISAO - endereco em uso" : "endereco livre");
+        }
+        return 0;
     }
 
     if (!strcmp(argv[1], "dhcp")) {
