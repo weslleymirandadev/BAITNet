@@ -133,3 +133,33 @@ void ed25519_sha512(uint8_t out[64], const uint8_t *msg, size_t n)
 {
     crypto_hash(out, msg, n);
 }
+
+void ed25519_secretbox(uint8_t *c, const uint8_t *m, size_t n,
+                       const uint8_t nonce[24], const uint8_t key[32])
+{
+    /* TweetNaCl secretbox pads 32 zeros in front of the message:
+       d = n + 32, plaintext lives at m[32..]. */
+    uint8_t buf[32 + 2048];
+    if (n > sizeof(buf) - 32) {
+        /* callers use small keys; refuse oversized input */
+        memset(c, 0, n + 32);
+        return;
+    }
+    memset(buf, 0, 32);
+    memcpy(buf + 32, m, n);
+    crypto_secretbox(c, buf, n + 32, nonce, key);
+}
+
+int ed25519_secretbox_open(uint8_t *m, const uint8_t *c, size_t n,
+                           const uint8_t nonce[24], const uint8_t key[32])
+{
+    uint8_t buf[32 + 2048];
+    int r;
+
+    if (n > sizeof(buf) - 32)
+        return -1;
+    r = crypto_secretbox_open(buf, c, n + 32, nonce, key);
+    if (r == 0)
+        memcpy(m, buf + 32, n);
+    return r;
+}

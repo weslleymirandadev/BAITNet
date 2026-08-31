@@ -51,4 +51,14 @@ void ed25519_keyfile_default_path(char *out, size_t outsz);
 /* SHA-512 (TweetNaCl crypto_hash). 64-byte digest. */
 void ed25519_sha512(uint8_t out[64], const uint8_t *msg, size_t n);
 
+/* XSalsa20-Poly1305 secretbox (TweetNaCl crypto_secretbox): encrypts
+   `n` bytes to `c`, authenticated. key[32], nonce[24]. open returns
+   0 on success, -1 on auth failure.
+   NOTE: c must hold n + 32 bytes (TweetNaCl pads 32 zeros in front of
+   the message; the MAC lives in c[16..31]). */
+void ed25519_secretbox(uint8_t *c, const uint8_t *m, size_t n,
+                       const uint8_t nonce[24], const uint8_t key[32]);
+int ed25519_secretbox_open(uint8_t *m, const uint8_t *c, size_t n,
+                           const uint8_t nonce[24], const uint8_t key[32]);
+
 #endif
