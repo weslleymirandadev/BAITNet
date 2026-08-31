@@ -217,7 +217,7 @@ static void usage(const char *prog)
             prog, prog, prog, prog);
 }
 
-int main(int argc, char **argv)
+int cmd_test(int argc, char **argv)
 {
     struct sockaddr_69 sa;
     int fd;
