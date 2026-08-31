@@ -16,7 +16,7 @@ internet.
 
 | Binary | Role | Where it runs |
 |---|---|---|
-| `af69d` | **DHCP69 server** (allocates pool addresses, validates keys, registers kernel binding) | VM |
+| `af69d` | **DHCP69 server** (private networks only: pool, allowlist, leases, kernel binding) | VM |
 | `af69_raw` | Generic client (recv/send/ping/dhcp) over AF_PACKET, **no module** | phone (arm64) and VM |
 | `af69_test` | Generic client over the `AF_69` socket (**requires module**) | VM |
 | `ipv69-keygen` | Generates Ed25519 key pairs | any host |

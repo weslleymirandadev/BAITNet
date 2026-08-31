@@ -48,13 +48,17 @@ addr = first 5 bytes of SHA-512(pubkey)   →  40-bit IPv69 address
   collisions are detected by **DAD** (duplicate address detection):
   send an ND request for your own address; a reply means collision.
 
-DHCP69 remains **optional**: it is for networks that want centrally
-assigned pool addresses (with allowlists, leases, binding). A
-self-hosted network can skip it entirely:
+DHCP69 remains **optional** and is **private-network oriented**:
+it is for closed networks that want centrally assigned pool addresses
+(with allowlists, leases, binding). Public/open networks use the
+identity-derived address — no server at all. The two models are
+explicit alternatives:
 
 ```
 dhcp-based:     af69_raw dhcp wlan0            → address from the pool
+                (private networks: allowlist, leases, binding)
 identity-based: af69_raw addr wlan0            → address from your key
+                (open/public networks: no server, no lease)
 ```
 
 The kernel binding (addr↔MAC) still applies to both: whoever owns the
