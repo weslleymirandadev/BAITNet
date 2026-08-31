@@ -283,9 +283,15 @@ static void dump_frame(const uint8_t *frame, size_t len)
  *   DISCOVER [7][mac][pub 32][sig 64]  REQUEST [9][mac][addr][pub][sig]
  *   OFFER/ACK [8|10][mac][addr][lease][pub][sig] signed by the server;
  *   --server-pub validates them (rogue-server protection). */
-static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
-                       const uint8_t *sk, int has_sk,
-                       const uint8_t *server_pub, int has_server_pub)
+/* silent DHCP69 lease acquisition: DISCOVER -> OFFER -> REQUEST -> ACK.
+ * Used by `send` to discover the real src address (anti-spoofing: the
+ * src is never user-chosen; it is the lease the server actually gave
+ * this MAC, which also registers the kernel binding). Returns 0 with
+ * *out_addr set, -1 on timeout/failure. */
+static int dhcp_discover(int fd, int ifindex, const uint8_t src_mac[6],
+                         const uint8_t *sk, int has_sk,
+                         const uint8_t *server_pub, int has_server_pub,
+                         uint64_t *out_addr)
 {
     const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
     uint8_t frame[1600], pkt[1 + 6 + 5 + 4 + 32 + 64];
@@ -293,11 +299,8 @@ static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
     uint64_t addr = 0;
     ssize_t n;
     size_t len;
-    const size_t SIGSZ = has_server_pub ? (32 + 64) : 0;   /* pub + sig tail */
+    const size_t SIGSZ = has_server_pub ? (32 + 64) : 0;
 
-    printf("dhcp: MAC %02x:%02x:%02x:%02x:%02x:%02x%s\n",
-           src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5],
-           has_sk ? " (Ed25519)" : "");
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     /* DISCOVER [7][mac] + pub + sig */
@@ -311,13 +314,13 @@ static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
     }
     len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
                       IPV69_NEXT_CONTROL, 64, 0, 0, pkt, dlen);
-    if (send_frame(fd, ifindex, bcast, frame, len) < 0) { perror("sendto(DISCOVER)"); return 1; }
-    printf("dhcp: DISCOVER enviado\n");
+    if (send_frame(fd, ifindex, bcast, frame, len) < 0)
+        return -1;
 
     /* wait OFFER [8][mac][addr5][lease4] + pub + sig */
     for (;;) {
         n = recv(fd, frame, sizeof(frame), 0);
-        if (n < 0) { perror("recvfrom(OFFER): timeout?"); return 1; }
+        if (n < 0) return -1;                   /* timeout */
         if (n < 14 + IPV69_HEADER_LEN + 16 + (ssize_t)SIGSZ) continue;
         const struct ipv69_header *h = (const struct ipv69_header *)(frame + 14);
         const uint8_t *p = frame + 14 + IPV69_HEADER_LEN;
@@ -327,14 +330,10 @@ static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
         if (has_server_pub) {
             const uint8_t *spub = p + 16, *ssig = p + 16 + 32;
             if (memcmp(spub, server_pub, 32) ||
-                ed25519_verify(p, 16, ssig, server_pub) != 0) {
-                printf("dhcp: OFFER assinatura invalida\n");
-                return 1;
-            }
+                ed25519_verify(p, 16, ssig, server_pub) != 0)
+                return -1;
         }
         addr = get_addr40(p + 7);
-        printf("dhcp: OFFER %016llx lease %us\n",
-               (unsigned long long)addr, get_be32(p + 12));
         break;
     }
 
@@ -350,13 +349,13 @@ static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
     }
     len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
                       IPV69_NEXT_CONTROL, 64, 0, 0, pkt, rlen);
-    if (send_frame(fd, ifindex, bcast, frame, len) < 0) { perror("sendto(REQUEST)"); return 1; }
-    printf("dhcp: REQUEST %016llx\n", (unsigned long long)addr);
+    if (send_frame(fd, ifindex, bcast, frame, len) < 0)
+        return -1;
 
     /* wait ACK [10][mac][addr5][lease4] + pub + sig */
     for (;;) {
         n = recv(fd, frame, sizeof(frame), 0);
-        if (n < 0) { perror("recvfrom(ACK): timeout?"); return 1; }
+        if (n < 0) return -1;                   /* timeout */
         if (n < 14 + IPV69_HEADER_LEN + 16 + (ssize_t)SIGSZ) continue;
         const struct ipv69_header *h = (const struct ipv69_header *)(frame + 14);
         const uint8_t *p = frame + 14 + IPV69_HEADER_LEN;
@@ -366,17 +365,38 @@ static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
         if (has_server_pub) {
             const uint8_t *spub = p + 16, *ssig = p + 16 + 32;
             if (memcmp(spub, server_pub, 32) ||
-                ed25519_verify(p, 16, ssig, server_pub) != 0) {
-                printf("dhcp: ACK assinatura invalida\n");
-                return 1;
-            }
+                ed25519_verify(p, 16, ssig, server_pub) != 0)
+                return -1;
         }
-        printf("dhcp: ACK %016llx — configurado!\n", (unsigned long long)addr);
         break;
     }
+    *out_addr = addr;
+    return 0;
+}
+
+/* interactive DHCP69 client: runs dhcp_discover, prints the flow and
+ * holds the address for a few seconds. */
+static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
+                       const uint8_t *sk, int has_sk,
+                       const uint8_t *server_pub, int has_server_pub)
+{
+    const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+    uint8_t frame[1600];
+    struct timeval tv = { 5, 0 };
+    uint64_t addr;
+    ssize_t n;
+
+    printf("dhcp: MAC %02x:%02x:%02x:%02x:%02x:%02x%s\n",
+           src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5],
+           has_sk ? " (Ed25519)" : "");
+    if (dhcp_discover(fd, ifindex, src_mac, sk, has_sk,
+                      server_pub, has_server_pub, &addr) < 0) {
+        printf("dhcp: nao foi possivel obter lease (timeout/recusado)\n");
+        return 1;
+    }
+    printf("dhcp: ACK %016llx — configurado!\n", (unsigned long long)addr);
 
     /* keep receiving for a few seconds to show it works */
-    tv.tv_sec = 5;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     printf("dhcp: bound src=%016llx, ouvindo 5s...\n", (unsigned long long)addr);
     for (;;) {
@@ -584,13 +604,16 @@ int cmd_raw(int argc, char **argv)
         size_t dlen = strlen(data);
         uint16_t sp = (uint16_t)strtoul(argv[4], NULL, 16);
         uint16_t dp = (uint16_t)strtoul(argv[5], NULL, 16);
-        /* optional trailing src_addr (leased address) */
-        if (argc > 7 && parse_ipv69_addr(argv[7], &src) < 0) {
-            fprintf(stderr, "send: src_addr invalido\n");
+        if (argc > 7) {
+            fprintf(stderr, "send: src manual removido (anti-spoofing) - "
+                    "o src agora e descoberto automaticamente\n");
             return 1;
         }
-        /* tunnel mode: derive src from the identity when not given */
-        if (g_ngw > 0 && !src) {
+        /* src automatico (anti-spoofing): never user-chosen.
+           local: silent DHCP discovers the real lease (and registers
+           the kernel binding for this MAC);
+           tunnel: derived from the identity (class C). */
+        if (g_ngw > 0) {
             uint8_t sk[64], pub[32], derived[5];
             char kpath[256];
             ed25519_keyfile_default_path(kpath, sizeof(kpath));
@@ -600,6 +623,14 @@ int cmd_raw(int argc, char **argv)
                 printf("send: src derivado da identidade: %016llx\n",
                        (unsigned long long)src);
             }
+        } else if (dhcp_discover(fd, ifindex, src_mac, sk, has_sk,
+                                 server_pub, has_server_pub, &src) < 0) {
+            fprintf(stderr, "send: sem servidor DHCP na rede local; "
+                    "suba um dhcpd ou use --remote\n");
+            return 1;
+        } else {
+            printf("send: src = lease %016llx (auto)\n",
+                   (unsigned long long)src);
         }
         plen = dlen;
         if (g_ngw > 0 && dst != 0xFFFFFFFFFFULL) {
