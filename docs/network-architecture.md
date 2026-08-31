@@ -1,15 +1,27 @@
-# IPv69 — Network architecture (bootstrap + gateway)
+# IPv69 — Network architecture (bootstrap, addressing, P2P)
 
-How DHCP69 becomes the "father of connections" and brand-new users on
-the internet get their first IPv69. Defines the **hub-and-spoke** model
-with a central server (VPS) and UDP tunnels.
+How IPv69 reaches the internet without depending on a single server.
+Three independent mechanisms, each optional:
+
+1. **Addressing**: derive the 40-bit address from the Ed25519 identity
+   (SLAAC-style) — no DHCP server required to "get" an address.
+2. **Bootstrap**: any gateway with a public IP (multi-gateway, seed
+   nodes) bridges UDP tunnels to the IPv69 L2 network.
+3. **Traffic**: P2P direct between peers after bootstrap — the gateway
+   introduces them and steps out of the data path (hole punching;
+   relay only as fallback).
+
+The protocol itself is pure L2 and fully independent on a local
+network (Wi-Fi, cable, veth): ND, echo, dgram and binding all work
+directly, no server anywhere. This document is about crossing the
+internet boundary.
 
 ## 1. The bootstrap paradox
 
-To get an IPv69, the user must talk to the DHCP69 server. But DHCP69
-runs on L2 frames (EtherType 0x6969) — which do not cross the internet.
-Therefore: **nobody gets a first IPv69 without already having a
-connection to the server through some other means**.
+To get an IPv69, a new user must talk to a server — but DHCP69 runs on
+L2 frames (EtherType 0x6969) that do not cross the internet. So the
+first contact always happens over the existing internet (plain IP)
+through a UDP tunnel. IPv69 is born inside the tunnel.
 
 This holds for every new protocol ever born:
 
@@ -17,116 +29,124 @@ This holds for every new protocol ever born:
 - ZeroTier/Tailscale build the virtual network inside an IP tunnel
 - Bitcoin bootstraps via DNS/seed nodes
 
-**Design consequence:** the bootstrap connection is the existing
-internet (plain IP) through a tunnel. IPv69 is born INSIDE the tunnel.
-DHCP69 never needs to "know" it is on the internet — to it, the
-DISCOVER arrives as a regular frame on the gateway interface.
+**Design consequence:** bootstrap needs a gateway, but nothing else
+does. Addressing and traffic are server-free.
 
-## 2. Hub-and-spoke model
+## 2. Addressing: identity-derived (no DHCP needed)
+
+Instead of asking a server for an address, a device derives its own
+from its Ed25519 public key:
+
+```
+addr = first 5 bytes of SHA-512(pubkey)   →  40-bit IPv69 address
+```
+
+- Deterministic: same key, same address, forever.
+- No server, no lease, no renewal, no broadcast — the address is a
+  property of the identity, like IPv6 SLAAC privacy addresses.
+- 40 bits → ~2^20 devices before meaningful birthday collision risk;
+  collisions are detected by **DAD** (duplicate address detection):
+  send an ND request for your own address; a reply means collision.
+
+DHCP69 remains **optional**: it is for networks that want centrally
+assigned pool addresses (with allowlists, leases, binding). A
+self-hosted network can skip it entirely:
+
+```
+dhcp-based:     af69_raw dhcp wlan0            → address from the pool
+identity-based: af69_raw addr wlan0            → address from your key
+```
+
+The kernel binding (addr↔MAC) still applies to both: whoever owns the
+address is whoever owns the MAC that claimed it.
+
+## 3. Bootstrap: multi-gateway (seed nodes)
+
+Any host with a public IP can run `ipv69gw` — the tunnel gateway. There
+is no single required gateway: clients keep a **list** of gateways and
+fail over between them (like DNS resolvers / Bitcoin seeds).
 
 ```
         User A (phone)                       User B (PC)
-        ┌────────────────┐                 ┌────────────────┐
-        │ ip69d app      │                 │ ip69d app      │
-        │ TAP ip69-0     │                 │ TAP ip69-0     │
-        │ UDP/IP tunnel ─┼──┐          ┌──┼── UDP/IP tunnel│
-        └────────────────┘  │          │  └────────────────┘
-                            ▼          ▼
-                    ┌───────────────────────┐
-                    │  VPS on the internet   │
-                    │  public IP             │
-                    │  ┌───────────────────┐ │
-                    │  │ ipv69gw (gateway) │ │
-                    │  │  UDP listener     │ │
-                    │  │  addr↔tunnel table│ │
-                    │  │  virtual L2 switch│ │
-                    │  └───────────────────┘ │
-                    │  ┌───────────────────┐ │
-                    │  │ af69d (DHCP69)    │ │
-                    │  │  global pool      │ │
-                    │  └───────────────────┘ │
-                    └───────────────────────┘
+        ┌────────────────┐                   ┌────────────────┐
+        │ ip69d app      │                   │ ip69d app      │
+        │ TAP ip69-0     │                   │ TAP ip69-0     │
+        │ UDP tunnel ────┼──┐            ┌──┼─── UDP tunnel  │
+        └────────────────┘  │            │  └────────────────┘
+                            ▼            ▼
+                ┌────────────────────────────┐
+                │  ipv69gw (any public IP)   │
+                │  UDP listener              │
+                │  table addr/mac↔endpoint   │
+                │  forwarding + QUERY        │
+                └────────────────────────────┘
+                ┌────────────────────────────┐
+                │  ipv69gw (another seed)    │  ← optional, same role
+                └────────────────────────────┘
 ```
 
-The "father" server is a VPS with a public IP running:
+The gateway keeps a learned table `40-bit address ↔ UDP endpoint` and
+`MAC ↔ endpoint` (learned from traffic, like an Ethernet switch), and:
 
-1. **`ipv69gw` (tunnel gateway)** — receives 0x6969 frames encapsulated
-   in UDP from clients; keeps the `40-bit address ↔ tunnel` table;
-   forwards frames between tunnels (virtual L2 switch).
-2. **`af69d` (DHCP69)** — the same one from the VM, **zero changes**:
-   allocates addresses from the global pool, validates Ed25519 keys,
-   registers addr↔MAC binding in the kernel.
-3. **Virtual L2 switch** — when A sends a frame to B, the gateway
-   forwards it through B's tunnel.
+- **forwards** frames between tunnels (and to a local L2 interface
+  when present, e.g. where the DHCP69 server lives);
+- **replicates** broadcast frames to every tunnel;
+- **answers QUERY** — "which endpoint has address X?" — so peers can
+  talk directly (section 4).
 
-## 3. New-user flow (zero prior knowledge)
-
-1. Downloads the app (ip69d client + tunnel), types the server address
-   (e.g. `gw.ipv69.net`).
-2. The app connects the UDP tunnel to the server — here it is still
-   using plain IP (the regular internet).
-3. Inside the tunnel, it runs the DHCP69 client → DISCOVER → the server
-   allocates an IPv69 from the pool → **done, it has an address**.
-4. The auto-key (`~/.ipv69/key`) handles identity: the server with
-   `--learn` registers the pub automatically and persists it in the
-   peer-file.
-
-The user never sees IP, never configures routing — the app does it all.
-
-## 4. How A talks to B
-
-The gateway learns the `40-bit address ↔ tunnel` table from traffic
-itself (like an Ethernet switch learns MACs). Frame from A to B:
-
-1. A encapsulates the 0x6969 frame in a UDP datagram → sends to the
-   server.
-2. The gateway decapsulates, reads the 40-bit dest, finds B's tunnel.
-3. Re-encapsulates and sends through B's tunnel.
-4. Kernel binding still applies (the server registered addr↔MAC for
-   each client on the DHCP ACK).
-
-All traffic passes through the server — simple, predictable, and how
-commercial VPNs start (ZeroTier, Hamachi, Tailscale DERP).
-
-## 5. Tunnel encapsulation (wire format)
+Wire format of the tunnel (minimalist, VXLAN-like without extra
+headers):
 
 ```
 UDP datagram: [full IPv69 frame: eth 14 + header 38 + payload]
-
-UDP dest port: fixed (e.g. 6969) — the port identifies the service on
-the server; the IPv69 address still lives in the frame header.
+UDP control (same socket, magic-prefixed):
+  "Q" + addr40(5)         → "E" + addr40(5) + endpoint(ip:port)
 ```
 
-Minimalist on purpose (VXLAN-like without an extra header): the whole
-IPv69 frame inside one UDP datagram. The gateway only needs to read the
-0x6969 header to decide the destination.
+The DHCP69 server (`af69d`) is unchanged: DISCOVER arrives as a normal
+frame on the gateway's local interface (or is forwarded to the tunnel
+of the server when the gateway has no local L2).
 
-## 6. What changes and what does NOT change in the code
+## 4. Traffic: P2P after bootstrap
+
+The gateway introduces peers and steps out of the data path:
+
+1. A asks the gateway: `QUERY B`.
+2. Gateway answers: `B is at ip:port` (the endpoint B's tunnel is
+   using — its public NAT mapping).
+3. A sends a probe directly to that endpoint; B does the same to A's
+   endpoint (simultaneous hole punching, both behind NAT).
+4. When the direct path works, A and B exchange frames directly —
+   the gateway is no longer in the data path, just a directory.
+
+The direct path is retried; on failure traffic falls back through the
+gateway (relay). The gateway therefore doubles as a **last-resort
+relay** — which is exactly the Tailscale DERP model: direct when
+possible, relayed when not.
+
+P2P works only when at least one side is reachable (public IP, port
+forwarding, or hole punching success). When neither is reachable, the
+relay still works — the network degrades gracefully instead of dying.
+
+## 5. What changes and what does NOT change
 
 | Component | Change |
 |---|---|
-| `af69d` (DHCP69) | **None** — the DISCOVER arrives as a regular frame on the gateway interface |
-| `af69_raw` / `ip69d` (client) | Gains a `--remote server:port` mode: instead of AF_PACKET on wlan0, sends frames over UDP |
-| `ipv69gw` (new, server) | Multi-client UDP listener + addr↔tunnel table + forwarding (~200 lines) |
-| Encapsulation | 0x6969 frame inside UDP, fixed port |
-| Tunnel crypto | Ed25519 identity authenticates the client (already exists); encrypt the tunnel with secretbox once ICSP exists |
+| `af69d` (DHCP69) | **None** — still runs on L2; still optional |
+| `af69_raw` / `ip69d` (client) | `--remote gw1,gw2:port` → UDP tunnel backend; `addr` command for identity-derived addresses; DAD |
+| `ipv69gw` (new) | UDP listener + addr/mac↔endpoint tables + forwarding + QUERY + relay |
+| `lib/ed25519` | Exposes SHA-512 for address derivation |
+| Kernel module, wire format, DHCP, binding | **Nothing changes** |
 
-Wire format, DHCP, binding, protocol: **nothing changes**. Only a new
-transport between client and server appears.
+## 6. Deployment modes
 
-## 7. Future variations
+| Mode | Addressing | Bootstrap | Traffic |
+|---|---|---|---|
+| Local network | DHCP or identity | none | direct |
+| Internet, single gateway | DHCP or identity | one `ipv69gw` | relayed (hub) or P2P |
+| Internet, seeds | identity (or DHCP on each seed) | any of N gateways | P2P with relay fallback |
 
-- **P2P after bootstrap**: the server introduces peers (Tailscale/DERP
-  style) and clients talk directly via hole punching — the server
-  becomes just a coordinator, spending almost no bandwidth. Natural
-  phase 2.
-- **Home server**: port forwarding + DDNS works, but router NAT +
-  dynamic IP = less stable than a VPS.
-- **Multi-tenant**: the same gateway runs N isolated networks (each
-  with its own pool and allowlist) — a per-network/per-device
-  subscription model.
-
-## 8. Relationship with ICSP
+## 7. Relationship with ICSP
 
 ICSP (docs/icsp-spec.md) is the stream transport **inside** the IPv69
 network. The gateway/tunnel is the transport that **connects the IPv69
@@ -134,4 +154,5 @@ network to the internet**. They are independent:
 
 - Without ICSP: dgram (nh=1) works through the gateway normally.
 - Without gateway: ICSP works on local L2 (veth, Wi-Fi, bridge).
-- Together: reliable, encrypted streams between users on the internet.
+- Together: reliable, encrypted streams between users on the internet,
+  direct (P2P) or relayed.
