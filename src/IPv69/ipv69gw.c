@@ -78,6 +78,27 @@ static struct peer *peer_find_mac(const uint8_t *mac)
     return NULL;
 }
 
+static struct peer *peer_find_endpoint(const struct endpoint *ep)
+{
+    const struct sockaddr_in *si = (const struct sockaddr_in *)&ep->ss;
+    const struct sockaddr_in6 *si6 = (const struct sockaddr_in6 *)&ep->ss;
+
+    for (int i = 0; i < MAX_PEERS; i++) {
+        if (!peers[i].addr)
+            continue;
+        if (ep->ss.ss_family == AF_INET && peers[i].ep.ss.ss_family == AF_INET) {
+            if (si->sin_port == ((const struct sockaddr_in *)&peers[i].ep)->sin_port &&
+                !memcmp(&si->sin_addr, &((const struct sockaddr_in *)&peers[i].ep)->sin_addr, 4))
+                return &peers[i];
+        } else if (ep->ss.ss_family == AF_INET6 && peers[i].ep.ss.ss_family == AF_INET6) {
+            if (si6->sin6_port == ((const struct sockaddr_in6 *)&peers[i].ep)->sin6_port &&
+                !memcmp(&si6->sin6_addr, &((const struct sockaddr_in6 *)&peers[i].ep)->sin6_addr, 16))
+                return &peers[i];
+        }
+    }
+    return NULL;
+}
+
 static struct peer *peer_learn(uint64_t addr, const uint8_t *mac,
                                const struct endpoint *ep)
 {
@@ -123,6 +144,7 @@ int cmd_gw(int argc, char **argv)
     int port = 6969;
     const char *iface = NULL;
     int ifindex = 0, l2fd = -1;
+    int allow_private = 0;          /* --private: route class A/B too */
     uint8_t l2mac[6];
 
     for (int i = 1; i < argc; i++) {
@@ -130,12 +152,16 @@ int cmd_gw(int argc, char **argv)
             port = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--iface") && i + 1 < argc)
             iface = argv[++i];
+        else if (!strcmp(argv[i], "--private"))
+            allow_private = 1;
         else {
             fprintf(stderr,
-                    "Usage: %s [--port N] [--iface eth0]\n"
-                    "  --port:   UDP port (default 6969)\n"
-                    "  --iface:  optional local L2 interface to bridge\n"
-                    "            (e.g. where af69d runs; needs root)\n",
+                    "Usage: %s [--port N] [--iface eth0] [--private]\n"
+                    "  --port:    UDP port (default 6969)\n"
+                    "  --iface:   optional local L2 interface to bridge\n"
+                    "             (e.g. where dhcpd runs; needs root)\n"
+                    "  --private: also route class A/B addresses (private\n"
+                    "             VPN). Default: public class C only.\n",
                     argv[0]);
             return 1;
         }
@@ -212,13 +238,18 @@ int cmd_gw(int argc, char **argv)
             struct endpoint ep;
             udp_fd_from(&ss, slen, &ep);
 
-            /* query: "Q69" + addr40 */
+            /* query: "Q69" + addr40. Only answer peers we know, with a
+               compatible class (no --private = public C only). */
             if (n >= 8 && !memcmp(buf, QMAGIC, 3)) {
                 uint64_t qaddr = get_addr40(buf + 3);
+                struct peer *asker = peer_find_endpoint(&ep);
                 struct peer *q = peer_find_addr(qaddr);
                 char ans[128] = EMAGIC;
                 memcpy(ans + 3, buf + 3, 5);
-                if (q) {
+                char qcls = ipv69_addr_class(qaddr);
+                char acls = asker ? ipv69_addr_class(asker->addr) : '?';
+                if (asker && q && (allow_private ||
+                                   (qcls == 'C' && acls == 'C'))) {
                     char host[64];
                     uint16_t qport = 0;
                     if (q->ep.ss.ss_family == AF_INET) {
@@ -255,6 +286,19 @@ int cmd_gw(int argc, char **argv)
             uint64_t dst = get_addr40(h->dest);
 
             peer_learn(src, eth->src_mac, &ep);
+
+            /* class filter: without --private, class A/B frames never
+               cross the gateway — neither as source (private leaking
+               out) nor as destination (public reaching private).
+               Broadcast (class E, L2 control) always passes. */
+            char scls = ipv69_addr_class(src);
+            char dcls = ipv69_addr_class(dst);
+            if (!allow_private &&
+                (scls != 'C' || (dcls != 'C' && dcls != 'E'))) {
+                fprintf(stderr, "ipv69gw: classe src=%c dst=%c nao roteada (--private ausente)\n",
+                        scls, dcls);
+                continue;
+            }
 
             /* broadcast: replicate to all other tunnels + local */
             const uint8_t bcast_mac[6] = BCAST_MAC;
@@ -295,7 +339,13 @@ int cmd_gw(int argc, char **argv)
                 (const struct ipv69_header *)(buf + 14);
             if (rd_be16(&eth->ethertype) != ETHERTYPE_IPV69)
                 continue;
+            uint64_t src = get_addr40(h->source);
             uint64_t dst = get_addr40(h->dest);
+            char scls = ipv69_addr_class(src);
+            char dcls = ipv69_addr_class(dst);
+            if (!allow_private &&
+                (scls != 'C' || (dcls != 'C' && dcls != 'E')))
+                continue;       /* private frames never reach tunnels */
             const uint8_t bcast_mac[6] = BCAST_MAC;
             if (!memcmp(eth->dst_mac, bcast_mac, 6) ||
                 !peer_find_mac(eth->dst_mac)) {
