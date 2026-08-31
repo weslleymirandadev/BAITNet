@@ -374,18 +374,32 @@ static int dhcp_discover(int fd, int ifindex, const uint8_t src_mac[6],
     return 0;
 }
 
+/* load ~/.ipv69/key (auto-key) into sk, or generate + print the pub.
+ * Returns 0 with has_sk=1 on success. Needed so silent DHCP (send/recv)
+ * signs its DISCOVER — the server rejects unsigned ones when it has an
+ * allowlist (--peer/--peer-file). */
+static int load_auto_key(uint8_t sk[64])
+{
+    char kpath[256];
+    uint8_t my_pub[32];
+    ed25519_keyfile_default_path(kpath, sizeof(kpath));
+    if (ed25519_keyfile_load_or_create(kpath, sk, my_pub) < 0) {
+        fprintf(stderr, "nao foi possivel carregar/criar chave em %s\n", kpath);
+        return -1;
+    }
+    return 0;
+}
+
 /* interactive DHCP69 client: runs dhcp_discover, prints the flow and
  * holds the address for a few seconds. */
 static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
                        const uint8_t *sk, int has_sk,
                        const uint8_t *server_pub, int has_server_pub)
 {
-    const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
     uint8_t frame[1600];
     struct timeval tv = { 5, 0 };
     uint64_t addr;
     ssize_t n;
-
     printf("dhcp: MAC %02x:%02x:%02x:%02x:%02x:%02x%s\n",
            src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5],
            has_sk ? " (Ed25519)" : "");
@@ -531,16 +545,18 @@ int cmd_raw(int argc, char **argv)
            src_mac[3], src_mac[4], src_mac[5]);
 
     if (!strcmp(argv[1], "recv")) {
-        /* optional bind: recv <ifname> [src_addr[:porta_hex]] */
+        /* optional bind: recv [ifname] [src_addr[:porta_hex]] — without
+           an address, it discovers the lease via silent DHCP (local) or
+           derives it from the identity (tunnel). */
         uint64_t my_addr = 0;
         uint16_t my_port = 0;
         if (argc > 3 && parse_ipv69_addr_port(argv[3], &my_addr, &my_port) < 0) {
-            fprintf(stderr, "recv: src_addr[:porta_hex] invalido\n");
+            fprintf(stderr, "recv: src_addr[:porta] invalido\n");
             return 1;
         }
-        /* tunnel mode: derive the address from the identity when none
-           given, and announce periodically so the gateway learns us */
         if (g_ngw > 0 && !my_addr) {
+            /* tunnel mode: derive the address from the identity when none
+               given, and announce periodically so the gateway learns us */
             uint8_t sk[64], pub[32], derived[5];
             char kpath[256];
             ed25519_keyfile_default_path(kpath, sizeof(kpath));
@@ -550,13 +566,28 @@ int cmd_raw(int argc, char **argv)
                 printf("recv: addr derivado da identidade: %016llx (classe C)\n",
                        (unsigned long long)my_addr);
             }
+        } else if (!my_addr) {
+            /* local: discover the lease silently (registers the kernel
+               binding for this MAC) — the address is never user-chosen.
+               Load the auto-key so the DISCOVER is signed (servers with
+               an allowlist reject unsigned ones). */
+            if (!has_sk && load_auto_key(sk) < 0)
+                return 1;
+            has_sk = 1;
+            if (dhcp_discover(fd, ifindex, src_mac, sk, has_sk,
+                              server_pub, has_server_pub, &my_addr) < 0) {
+                fprintf(stderr, "recv: sem servidor DHCP na rede local; "
+                        "suba um dhcpd ou use --remote\n");
+                return 1;
+            }
+            printf("recv: addr = lease %016llx (auto)\n",
+                   (unsigned long long)my_addr);
         }
         if (my_addr)
             printf("bound src=%016llx port=%04x (filtrando)\n",
                    (unsigned long long)my_addr, my_port);
         struct timeval atv = { 2, 0 };
-        if (g_ngw > 0)
-            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &atv, sizeof(atv));
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &atv, sizeof(atv));
         time_t last_ann = 0;
         for (;;) {
             /* announce: ND request for ourselves -> gateway learns us */
@@ -571,8 +602,8 @@ int cmd_raw(int argc, char **argv)
             }
             ssize_t n = recv(fd, frame, sizeof(frame), 0);
             if (n < 0) {
-                if (g_ngw > 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
-                    continue;       /* announce tick */
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    continue;       /* timeout tick: announce or keep waiting */
                 perror("recv"); return 1;
             }
             if (n < 14 + IPV69_HEADER_LEN)
@@ -596,12 +627,12 @@ int cmd_raw(int argc, char **argv)
         uint16_t dp = 0;
         size_t plen;
         if (argc < 5 || parse_ipv69_addr_port(argv[3], &dst, &dp) < 0) {
-            fprintf(stderr, "send: precisa <dst[:porta_hex]> <src_port_hex> [payload]\n");
+            fprintf(stderr, "send: precisa <dst[:porta]> <src_port> [payload]\n");
             return 1;
         }
         const char *data = argc > 5 ? argv[5] : "hello ipv69";
         size_t dlen = strlen(data);
-        uint16_t sp = (uint16_t)strtoul(argv[4], NULL, 16);
+        uint16_t sp = (uint16_t)strtoul(argv[4], NULL, 10);
         if (argc > 6) {
             fprintf(stderr, "send: src manual removido (anti-spoofing) - "
                     "o src agora e descoberto automaticamente\n");
@@ -621,12 +652,16 @@ int cmd_raw(int argc, char **argv)
                 printf("send: src derivado da identidade: %016llx\n",
                        (unsigned long long)src);
             }
-        } else if (dhcp_discover(fd, ifindex, src_mac, sk, has_sk,
-                                 server_pub, has_server_pub, &src) < 0) {
-            fprintf(stderr, "send: sem servidor DHCP na rede local; "
-                    "suba um dhcpd ou use --remote\n");
-            return 1;
         } else {
+            if (!has_sk && load_auto_key(sk) < 0)
+                return 1;
+            has_sk = 1;
+            if (dhcp_discover(fd, ifindex, src_mac, sk, has_sk,
+                              server_pub, has_server_pub, &src) < 0) {
+                fprintf(stderr, "send: sem servidor DHCP na rede local; "
+                        "suba um dhcpd ou use --remote\n");
+                return 1;
+            }
             printf("send: src = lease %016llx (auto)\n",
                    (unsigned long long)src);
         }
