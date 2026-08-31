@@ -115,12 +115,12 @@ exposed with a clean API.
 
 ## 7. Phases (each testable)
 
-| Phase | Scope | Acceptance criteria |
-|---|---|---|
-| **1 — Infra + handshake** | folders, Makefile, header/chunks, authenticated INIT→COOKIE-ACK (Ed25519 + X25519 → session key) | `icsp_test client/server` completes the handshake over veth; derived key identical on both sides; invalid signature = refused |
-| **2 — Data** | encrypted DATA, TSN/SACK, retransmission, multiple streams | ordered delivery; synthetic loss is recovered; stream A does not block stream B |
-| **3 — Life** | heartbeat, graceful shutdown, STREAM-RESET | path dies → failover; shutdown cleans the association; streams renegotiated at runtime |
-| **4 — Host-to-host** | phone ↔ VM, auto-key, binding | same experience as veth, but over the real network (Wi-Fi ↔ bridge) |
+| Phase | Scope | Acceptance criteria | Status |
+|---|---|---|---|
+| **1 — Infra + handshake** | folders, Makefile, header/chunks, authenticated INIT→COOKIE-ACK (Ed25519 + X25519 → session key) | `icsp_test client/server` completes the handshake over veth; derived key identical on both sides; invalid signature = refused | ✅ done |
+| **2 — Data** | encrypted DATA, TSN/SACK, retransmission, multiple streams | ordered delivery; synthetic loss is recovered; stream A does not block stream B | ✅ done |
+| **3 — Life** | heartbeat, graceful shutdown, STREAM-RESET | path dies → failover; shutdown cleans the association; streams renegotiated at runtime | ✅ done |
+| **4 — Host-to-host** | phone ↔ VM, auto-key, binding | same experience as veth, but over the real network (Wi-Fi ↔ bridge) | ✅ done (Wi-Fi real, session key identical both sides) |
 
 ## 8. Out of scope (on purpose)
 
