@@ -22,6 +22,7 @@ internet.
 | `ipv69-keygen` | Generates Ed25519 key pairs | any host |
 | `ip69d` | Interface daemon: holds a DHCP address and creates the `ip69-0` TAP | phone/VM |
 | `ip69` | Queries `ip69d` (like `ip addr` for IPv69) | same host as ip69d |
+| `ipv69gw` | **Tunnel gateway**: bridges IPv69 frames over UDP so clients behind NAT can join through any host with a public IP (multi-gateway, P2P) | any host with a public IP |
 
 Besides the binaries, the project has a **separate crypto library**:
 
@@ -39,6 +40,7 @@ It depends on nothing from IPv69 — reusable in any project (your future
   - `00.00.00.00.01` = DHCP server (reserved)
   - `00.00.00.00.10`–`00.00.00.00.fe` = DHCP pool (default)
   - `ff.ff.ff.ff.ff` = broadcast
+  - identity-derived: `af69_raw addr` (SLAAC-style, no DHCP)
 - Ports: **hexadecimal** on the CLI (`10` = 16 decimal)
 - `next_header`: `0` control (DHCP/ND/echo), `1` dgram, `2` stream (reserved)
 
@@ -260,10 +262,50 @@ Details and wire format: `docs/security.md`.
 
 ---
 
-## 7. Build
+## 7. Internet: tunnel gateway (multi-gateway, P2P)
+
+`ipv69gw` bridges IPv69 L2 frames over UDP, so devices behind NAT can
+join through any host with a public IP. No single gateway is required —
+clients keep a list and fail over. See `docs/network-architecture.md`.
 
 ```bash
-make af69_raw af69_test af69d ipv69-keygen ip69 ip69d   # x64
+# on the gateway (any host with a public IP):
+./ipv69gw --port 6969
+# optional: bridge to a local L2 interface (e.g. where af69d runs):
+sudo ./ipv69gw --port 6969 --iface eth0
+```
+
+Clients use `--remote` with one or more gateways (numeric IPs; static
+binary has no DNS):
+
+```bash
+# listen via the tunnel (address derived from the identity, announced
+# to the gateway so it can be reached):
+./af69_raw recv wlan0 --remote 203.0.113.10:6969
+
+# send via the tunnel: the gateway relays it, or answers QUERY with the
+# peer's endpoint and the frame goes direct (P2P, gateway leaves path):
+./af69_raw send wlan0 <dst_addr> 1 10 "hi" <src_addr> \
+    --remote 203.0.113.10:6969,203.0.113.11:6969
+```
+
+Identity-derived address (no DHCP):
+
+```bash
+./af69_raw addr                 # print the address derived from your key
+./af69_raw addr --dad           # ... and check for collision (ND request)
+```
+
+The gateway learns `addr/MAC -> endpoint` from traffic (like a switch),
+forwards unicast, replicates broadcast, answers QUERY ("where is addr?")
+and acts as a last-resort relay when P2P is not possible.
+
+---
+
+## 8. Build
+
+```bash
+make af69_raw af69_test af69d ipv69-keygen ip69 ip69d ipv69gw   # x64
 make -C kernel/af69 KDIR=/home/bacal/wsl-kernel         # module (WSL)
 # arm64 (phone):
 aarch64-linux-gnu-gcc -O2 -static -Iinclude -Ilib/ed25519/include \
@@ -273,7 +315,7 @@ aarch64-linux-gnu-gcc -O2 -static -Iinclude -Ilib/ed25519/include \
 
 ---
 
-## 8. The `ed25519` library (for other projects)
+## 9. The `ed25519` library (for other projects)
 
 The crypto lives in `lib/ed25519/` **separate from the protocol** —
 IPv69 consumes the same API you would use in your "own HTTPS". Nothing
