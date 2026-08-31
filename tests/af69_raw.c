@@ -20,6 +20,7 @@
 #include <sys/time.h>
 #include <netdb.h>
 #include <errno.h>
+#include <time.h>
 #include "IPv69/af69.h"
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
@@ -106,7 +107,9 @@ static int gw_parse(const char *list)
     return g_ngw > 0 ? 0 : -1;
 }
 
-/* QUERY the gateway: where is addr? fills ep on success (P2P direct) */
+/* QUERY the gateway: where is addr? fills ep on success (P2P direct).
+ * Keeps receiving until the matching E69 answer arrives (the socket
+ * also sees replicated broadcasts), or the 1s timeout expires. */
 static int gw_query(uint64_t addr, struct sockaddr_storage *ep,
                     socklen_t *eplen)
 {
@@ -119,11 +122,19 @@ static int gw_query(uint64_t addr, struct sockaddr_storage *ep,
     for (int i = 0; i < g_ngw; i++) {
         sendto(g_udp_fd, q, sizeof(q), 0,
                (struct sockaddr *)&g_gw[i], g_gwlen[i]);
-        setsockopt(g_udp_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    }
+    setsockopt(g_udp_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    for (;;) {
         ssize_t n = recvfrom(g_udp_fd, ans, sizeof(ans), 0,
                              (struct sockaddr *)ep, eplen);
-        if (n > 8 && !memcmp(ans, "E69", 3) &&
-            !memcmp(ans + 3, q + 3, 5) && ans[8] != '-') {
+        if (n < 0)
+            break;              /* timeout: no answer */
+        if (n <= 8 || memcmp(ans, "E69", 3) ||
+            memcmp(ans + 3, q + 3, 5))
+            continue;           /* replicated frame, not our answer */
+        if (ans[8] == '-')
+            break;              /* gateway does not know the peer */
+        {
             /* endpoint as "ip:port" text after the addr */
             char *hostport = (char *)ans + 8;
             char *colon = strrchr(hostport, ':');
@@ -423,18 +434,29 @@ int cmd_raw(int argc, char **argv)
     if (!strcmp(argv[1], "addr")) {
         uint8_t sk[64], pub[32], derived[5];
         char kpath[256];
+        char cls = 'C';                 /* public by default */
         int do_dad = 0;
-        for (int i = 2; i < argc; i++)
+        for (int i = 2; i < argc; i++) {
             if (!strcmp(argv[i], "--dad"))
                 do_dad = 1;
+            else if (!strcmp(argv[i], "--class") && i + 1 < argc) {
+                cls = (char)argv[i + 1][0];
+                i++;
+            }
+        }
+        if (cls != 'A' && cls != 'B' && cls != 'C' &&
+            cls != 'D' && cls != 'E') {
+            fprintf(stderr, "addr: classe invalida '%c' (A-E)\n", cls);
+            return 1;
+        }
         ed25519_keyfile_default_path(kpath, sizeof(kpath));
         if (ed25519_keyfile_load_or_create(kpath, sk, pub) < 0) {
             fprintf(stderr, "addr: nao foi possivel carregar/criar chave em %s\n", kpath);
             return 1;
         }
-        ipv69_addr_derive(derived, pub);
-        printf("addr: %02x.%02x.%02x.%02x.%02x (derivado da identidade)\n",
-               derived[0], derived[1], derived[2], derived[3], derived[4]);
+        ipv69_addr_derive(derived, pub, cls);
+        printf("addr: %02x.%02x.%02x.%02x.%02x (derivado da identidade, classe %c)\n",
+               derived[0], derived[1], derived[2], derived[3], derived[4], cls);
         if (do_dad) {
             if (argc < 3) {
                 fprintf(stderr, "addr --dad: precisa <ifname>\n");
@@ -505,9 +527,9 @@ int cmd_raw(int argc, char **argv)
             char kpath[256];
             ed25519_keyfile_default_path(kpath, sizeof(kpath));
             if (ed25519_keyfile_load_or_create(kpath, sk, pub) == 0) {
-                ipv69_addr_derive(derived, pub);
+                ipv69_addr_derive(derived, pub, 'C');
                 my_addr = get_addr40(derived);
-                printf("recv: addr derivado da identidade: %016llx\n",
+                printf("recv: addr derivado da identidade: %016llx (classe C)\n",
                        (unsigned long long)my_addr);
             }
         }
@@ -567,14 +589,37 @@ int cmd_raw(int argc, char **argv)
             fprintf(stderr, "send: src_addr invalido\n");
             return 1;
         }
+        /* tunnel mode: derive src from the identity when not given */
+        if (g_ngw > 0 && !src) {
+            uint8_t sk[64], pub[32], derived[5];
+            char kpath[256];
+            ed25519_keyfile_default_path(kpath, sizeof(kpath));
+            if (ed25519_keyfile_load_or_create(kpath, sk, pub) == 0) {
+                ipv69_addr_derive(derived, pub, 'C');
+                src = get_addr40(derived);
+                printf("send: src derivado da identidade: %016llx\n",
+                       (unsigned long long)src);
+            }
+        }
         plen = dlen;
-        size_t len = build_frame(frame, bcast, src_mac, src, dst, IPV69_NEXT_DGRAM,
-                                 64, sp, dp, (const uint8_t *)data, plen);
         if (g_ngw > 0 && dst != 0xFFFFFFFFFFULL) {
+            /* announce first so the gateway knows us (QUERY gate).
+               Uses `frame`; the dgram is built AFTER, in its own buffer,
+               so the announce does not clobber it. */
+            uint8_t ann[1 + 5] = { IPV69_CTRL_ND_REQUEST };
+            uint8_t af[1600];
+            put_addr40(ann + 1, src);
+            size_t alen = build_frame(af, bcast, src_mac, src,
+                                      0xFFFFFFFFFFULL, IPV69_NEXT_CONTROL,
+                                      64, 0, 0, ann, sizeof(ann));
+            send_frame(fd, ifindex, bcast, af, alen);
             /* P2P: ask the gateway where dst lives; send direct if known */
             struct sockaddr_storage ep;
             socklen_t eplen = sizeof(ep);
             if (gw_query(dst, &ep, &eplen) > 0) {
+                size_t len = build_frame(frame, bcast, src_mac, src, dst,
+                                         IPV69_NEXT_DGRAM, 64, sp, dp,
+                                         (const uint8_t *)data, plen);
                 if (sendto(g_udp_fd, frame, len, 0,
                            (struct sockaddr *)&ep, eplen) >= 0) {
                     printf("sent %zu bytes (dgram P2P, dst=%016llx src=%016llx)\n",
@@ -584,6 +629,8 @@ int cmd_raw(int argc, char **argv)
             }
             /* fallback: relay through the gateway */
         }
+        size_t len = build_frame(frame, bcast, src_mac, src, dst, IPV69_NEXT_DGRAM,
+                                 64, sp, dp, (const uint8_t *)data, plen);
         if (send_frame(fd, ifindex, bcast, frame, len) < 0) { perror("sendto"); return 1; }
         printf("sent %zu bytes (dgram, dst=%016llx src=%016llx)\n",
                dlen, (unsigned long long)dst, (unsigned long long)src);
