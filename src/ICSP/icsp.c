@@ -3,6 +3,8 @@
  */
 #include <string.h>
 #include "ed25519.h"
+#include "IPv69/header.h"
+#include "IPv69/l2.h"
 #include "ICSP/icsp.h"
 
 /* --- CRC32c (Castagnoli, polynomial 0x1EDC6F41) --- */
@@ -49,6 +51,45 @@ uint8_t *icsp_chunk_put(uint8_t *buf, uint8_t type, size_t datalen)
     buf[2] = (uint8_t)(datalen >> 8);
     buf[3] = (uint8_t)(datalen & 0xff);
     return buf + ICSP_CHUNK_HDR;
+}
+
+/* --- one ICSP packet = header(12) + chunk(s). Build and send on the
+ * association's endpoint. dst_mac = peer when known, else broadcast
+ * (handshake starts broadcast; every reply after the first frame goes
+ * unicast). */
+int icsp_send_pkt(struct icsp_assoc *a, const uint8_t *chunk,
+                  size_t chunklen)
+{
+    const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+    uint8_t pkt[ICSP_MAX_PAYLOAD];
+    size_t off = 0;
+    uint16_t crc;
+
+    pkt[off++] = (uint8_t)(a->src_port >> 8);
+    pkt[off++] = (uint8_t)a->src_port;
+    pkt[off++] = (uint8_t)(a->dst_port >> 8);
+    pkt[off++] = (uint8_t)a->dst_port;
+    pkt[off++] = ICSP_VERSION;
+    pkt[off++] = 0;
+    pkt[off++] = (uint8_t)(a->assoc_id >> 24);
+    pkt[off++] = (uint8_t)(a->assoc_id >> 16);
+    pkt[off++] = (uint8_t)(a->assoc_id >> 8);
+    pkt[off++] = (uint8_t)a->assoc_id;
+    /* crc placeholder at off..off+1, filled after the body */
+    off += 2;
+    memcpy(pkt + off, chunk, chunklen);
+    off += chunklen;
+    crc = (uint16_t)icsp_crc32c(pkt + 2, off - 2);  /* over ports..end */
+    pkt[10] = (uint8_t)(crc >> 8);
+    pkt[11] = (uint8_t)crc;
+
+    uint8_t frame[1600];
+    size_t len = build_frame(frame,
+                             a->has_peer_mac ? a->peer_mac : bcast,
+                             a->src_mac, a->src_addr, a->dst_addr,
+                             IPV69_NEXT_STREAM, 64, 0, 0, pkt, off);
+    return send_frame(a->fd, a->ifindex,
+                      a->has_peer_mac ? a->peer_mac : bcast, frame, len);
 }
 
 /* --- session key derivation (spec §5) ---
