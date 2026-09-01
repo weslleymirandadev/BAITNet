@@ -14,8 +14,6 @@
 #include <string.h>
 #include <time.h>
 #include <sys/socket.h>
-#include "IPv69/header.h"
-#include "IPv69/l2.h"
 #include "ed25519.h"
 #include "ICSP/icsp.h"
 
@@ -57,42 +55,10 @@ static struct icsp_stream *get_stream(struct icsp_assoc *a, uint16_t id)
     return s;
 }
 
-/* ICSP packet builder (same as handshake): header(12) + chunk */
-static int send_pkt(struct icsp_assoc *a, int fd, int ifindex,
-                    const uint8_t src_mac[6], const uint8_t *dst_mac,
-                    uint64_t dst_addr, uint64_t src_addr,
-                    const uint8_t *chunk, size_t chunklen)
-{
-    uint8_t pkt[ICSP_MAX_PAYLOAD];
-    size_t off = 0;
+/* packet send goes through the shared icsp_send_pkt (icsp.c) */
 
-    pkt[off++] = (uint8_t)(a->src_port >> 8);
-    pkt[off++] = (uint8_t)a->src_port;
-    pkt[off++] = (uint8_t)(a->dst_port >> 8);
-    pkt[off++] = (uint8_t)a->dst_port;
-    pkt[off++] = ICSP_VERSION;
-    pkt[off++] = 0;
-    pkt[off++] = (uint8_t)(a->assoc_id >> 24);
-    pkt[off++] = (uint8_t)(a->assoc_id >> 16);
-    pkt[off++] = (uint8_t)(a->assoc_id >> 8);
-    pkt[off++] = (uint8_t)a->assoc_id;
-    off += 2;                       /* crc placeholder */
-    memcpy(pkt + off, chunk, chunklen);
-    off += chunklen;
-    uint16_t crc = (uint16_t)icsp_crc32c(pkt + 2, off - 2);
-    pkt[10] = (uint8_t)(crc >> 8);
-    pkt[11] = (uint8_t)crc;
-
-    uint8_t frame[1600];
-    size_t len = build_frame(frame, dst_mac, src_mac, src_addr, dst_addr,
-                             IPV69_NEXT_STREAM, 64, 0, 0, pkt, off);
-    return send_frame(fd, ifindex, dst_mac, frame, len);
-}
-
-int icsp_data_send(struct icsp_assoc *a, int fd, int ifindex,
-                   const uint8_t src_mac[6], const uint8_t *dst_mac,
-                   uint64_t dst_addr, uint64_t src_addr,
-                   uint16_t stream_id, const uint8_t *data, size_t len)
+int icsp_data_send(struct icsp_assoc *a, uint16_t stream_id,
+                   const uint8_t *data, size_t len)
 {
     struct icsp_stream *s;
     uint8_t clear[4 + 2 + 2 + ICSP_MAX_PAYLOAD];
@@ -139,15 +105,13 @@ int icsp_data_send(struct icsp_assoc *a, int fd, int ifindex,
     }
     s->next_send_seq++;
 
-    if (send_pkt(a, fd, ifindex, src_mac, dst_mac, dst_addr, src_addr,
-                 chunk, ICSP_CHUNK_HDR + 4 + 2 + 2 + 32 + 8 + len) < 0)
+    if (icsp_send_pkt(a, chunk,
+                      ICSP_CHUNK_HDR + 4 + 2 + 2 + 32 + 8 + len) < 0)
         return -1;
     return (int)tsn;
 }
 
-int icsp_sack_send(struct icsp_assoc *a, int fd, int ifindex,
-                   const uint8_t src_mac[6], const uint8_t *dst_mac,
-                   uint64_t dst_addr, uint64_t src_addr)
+int icsp_sack_send(struct icsp_assoc *a)
 {
     uint8_t chunk[ICSP_CHUNK_HDR + 4];
     uint8_t *d = icsp_chunk_put(chunk, ICSP_CHUNK_SACK, 4);
@@ -155,14 +119,10 @@ int icsp_sack_send(struct icsp_assoc *a, int fd, int ifindex,
     d[1] = (uint8_t)(a->cum_tsn >> 16);
     d[2] = (uint8_t)(a->cum_tsn >> 8);
     d[3] = (uint8_t)a->cum_tsn;
-    return send_pkt(a, fd, ifindex, src_mac, dst_mac, dst_addr, src_addr,
-                    chunk, sizeof(chunk));
+    return icsp_send_pkt(a, chunk, sizeof(chunk));
 }
 
-int icsp_data_retransmit(struct icsp_assoc *a, int fd, int ifindex,
-                         const uint8_t src_mac[6], const uint8_t *dst_mac,
-                         uint64_t dst_addr, uint64_t src_addr,
-                         int timeout_s)
+int icsp_data_retransmit(struct icsp_assoc *a, int timeout_s)
 {
     int resent = 0;
     time_t now = time(NULL);
@@ -196,10 +156,9 @@ int icsp_data_retransmit(struct icsp_assoc *a, int fd, int ifindex,
         d[6] = (uint8_t)(a->sendq[i].seq >> 8);
         d[7] = (uint8_t)a->sendq[i].seq;
         memcpy(d + 8, box, 32 + 8 + a->sendq[i].len);
-        int spr = send_pkt(a, fd, ifindex, src_mac, dst_mac, dst_addr,
-                           src_addr, chunk,
-                           ICSP_CHUNK_HDR + 4 + 2 + 2 + 32 + 8 +
-                                  a->sendq[i].len);
+        int spr = icsp_send_pkt(a, chunk,
+                                ICSP_CHUNK_HDR + 4 + 2 + 2 + 32 + 8 +
+                                       a->sendq[i].len);
         if (spr >= 0) {
             a->sendq[i].sent_at = now;
             resent++;
@@ -293,4 +252,12 @@ next:
         left -= ICSP_CHUNK_HDR + clen;
     }
     return 0;
+}
+
+int icsp_all_acked(struct icsp_assoc *a)
+{
+    for (int i = 0; i < a->n_sendq; i++)
+        if (!a->sendq[i].acked)
+            return 0;
+    return 1;
 }
