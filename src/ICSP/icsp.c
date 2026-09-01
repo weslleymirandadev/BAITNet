@@ -88,8 +88,8 @@ int icsp_send_pkt(struct icsp_assoc *a, const uint8_t *chunk,
                              a->has_peer_mac ? a->peer_mac : bcast,
                              a->src_mac, a->src_addr, a->dst_addr,
                              IPV69_NEXT_STREAM, 64, 0, 0, pkt, off);
-    return send_frame(a->fd, a->ifindex,
-                      a->has_peer_mac ? a->peer_mac : bcast, frame, len);
+    return l2_send(a->fd, a->ifindex,
+                   a->has_peer_mac ? a->peer_mac : bcast, frame, len);
 }
 
 /* --- session key derivation (spec §5) ---
