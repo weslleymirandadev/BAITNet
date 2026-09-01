@@ -9,6 +9,10 @@
  * provides forward secrecy; cookie = server secret + hash of params,
  * clients cannot forge it. Session key = SHA-512(X25519 shared ||
  * assoc_id || "icsp-v1").
+ *
+ * The endpoint context (fd/ifindex/src_mac/dst_addr) lives in the
+ * association (icsp_endpoint_open + the caller); frame TX goes through
+ * the shared icsp_send_pkt, RX through icsp_recv_frame.
  */
 #include <stdio.h>
 #include <string.h>
@@ -70,87 +74,43 @@ static int cookie_valid(const uint8_t c[COOKIE_LEN], const struct icsp_assoc *a)
     return memcmp(c, expect, COOKIE_LEN) == 0;
 }
 
-/* --- frame plumbing: ICSP payload inside an IPv69 frame (nh=2) --- */
-static ssize_t icsp_recv(int fd, uint8_t frame[1600],
-                         uint8_t **icsp_payload, size_t *plen,
-                         uint64_t *src_addr, uint8_t *src_mac)
+/* fresh association state, keeping the endpoint context (fd, ifindex,
+ * src_mac, dst_addr) and the keepalive config — so a server can accept
+ * association after association on the same socket. */
+static void assoc_reset(struct icsp_assoc *a)
 {
-    ssize_t n = recv(fd, frame, 1600, 0);
-    if (n < 0)
-        return -1;
-    if (n < 14 + IPV69_HEADER_LEN + ICSP_HEADER_LEN)
-        return -1;
-    const struct ipv69_header *h = (const struct ipv69_header *)(frame + 14);
-    if (h->next_header != IPV69_NEXT_STREAM)
-        return -1;
-    *icsp_payload = frame + 14 + IPV69_HEADER_LEN;
-    *plen = (size_t)(n - 14 - IPV69_HEADER_LEN);
-    *src_addr = get_addr40(h->source);
-    if (src_mac)
-        memcpy(src_mac, frame + 6, 6);   /* ethernet src */
-    return n;
-}
+    int fd = a->fd, ifindex = a->ifindex;
+    uint8_t smac[6];
+    uint64_t dst_addr = a->dst_addr, src_addr = a->src_addr;
+    int hb = a->hb_interval_s, dead = a->dead_timeout_s;
 
-static int icsp_send(int fd, int ifindex, const uint8_t src_mac[6],
-                     const uint8_t *dst_mac, uint64_t dst_addr,
-                     uint64_t src_addr,
-                     const uint8_t *payload, size_t plen)
-{
-    uint8_t frame[1600];
-    size_t len = build_frame(frame, dst_mac, src_mac, src_addr, dst_addr,
-                             IPV69_NEXT_STREAM, 64, 0, 0, payload, plen);
-    return send_frame(fd, ifindex, dst_mac, frame, len);
-}
-
-/* one ICSP packet = header(12) + chunk(s). Build and send. */
-static int icsp_send_pkt(int fd, int ifindex, const uint8_t src_mac[6],
-                         const uint8_t *dst_mac, uint64_t dst_addr,
-                         uint64_t src_addr, struct icsp_assoc *a,
-                         const uint8_t *chunk, size_t chunklen)
-{
-    uint8_t pkt[ICSP_MAX_PAYLOAD];
-    size_t off = 0;
-    uint16_t crc;
-
-    pkt[off++] = (uint8_t)(a->src_port >> 8);
-    pkt[off++] = (uint8_t)a->src_port;
-    pkt[off++] = (uint8_t)(a->dst_port >> 8);
-    pkt[off++] = (uint8_t)a->dst_port;
-    pkt[off++] = ICSP_VERSION;
-    pkt[off++] = 0;
-    pkt[off++] = (uint8_t)(a->assoc_id >> 24);
-    pkt[off++] = (uint8_t)(a->assoc_id >> 16);
-    pkt[off++] = (uint8_t)(a->assoc_id >> 8);
-    pkt[off++] = (uint8_t)a->assoc_id;
-    /* crc placeholder at off..off+1, filled after the body */
-    off += 2;
-    memcpy(pkt + off, chunk, chunklen);
-    off += chunklen;
-    crc = (uint16_t)icsp_crc32c(pkt + 2, off - 2);  /* over ports..end */
-    pkt[10] = (uint8_t)(crc >> 8);
-    pkt[11] = (uint8_t)crc;
-    return icsp_send(fd, ifindex, src_mac, dst_mac, dst_addr, src_addr,
-                     pkt, off);
+    memcpy(smac, a->src_mac, 6);
+    memset(a, 0, sizeof(*a));
+    a->fd = fd;
+    a->ifindex = ifindex;
+    memcpy(a->src_mac, smac, 6);
+    a->dst_addr = dst_addr;
+    a->src_addr = src_addr;
+    a->hb_interval_s = hb;
+    a->dead_timeout_s = dead;
 }
 
 /* --- client --- */
-int icsp_client_handshake(int fd, int ifindex, const uint8_t src_mac[6],
-                          uint64_t dst_addr,
-                          uint16_t src_port, uint16_t dst_port,
-                          const uint8_t sk[64],
-                          struct icsp_assoc *a)
+int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
+                          uint16_t dst_port, const uint8_t sk[64])
 {
-    const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
     uint8_t frame[1600];
     uint8_t eph_priv[32];
-    uint8_t *payload;
+    const uint8_t *payload;
     size_t plen;
     uint64_t from;
     struct timeval tv = { 3, 0 };
 
-    memset(a, 0, sizeof(*a));
-    a->src_port = src_port;
+    assoc_reset(a);
+    a->dst_addr = dst_addr;
     a->dst_port = dst_port;
+    if (a->src_port == 0)
+        a->src_port = 50000 + (uint16_t)getpid() % 1000;
     a->state = ICSP_ST_COOKIE_WAIT;
     a->streams_in = a->streams_out = 4;
     {
@@ -172,7 +132,7 @@ int icsp_client_handshake(int fd, int ifindex, const uint8_t src_mac[6],
     }
     if (ed25519_scalarmult_base(a->eph_pub, eph_priv) != 0)
         return -1;
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(a->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     /* INIT [ver][streams_in 2][streams_out 2][eph 32][id 32][sig 64] */
     uint8_t chunk[ICSP_CHUNK_HDR + 1 + 4 + 32 + 32 + 64];
@@ -186,8 +146,7 @@ int icsp_client_handshake(int fd, int ifindex, const uint8_t src_mac[6],
     memcpy(d + 5, a->eph_pub, 32);
     memcpy(d + 37, a->id_pub, 32);
     ed25519_sign(d + 69, d, 5 + 32 + 32, sk);
-    if (icsp_send_pkt(fd, ifindex, src_mac, bcast, dst_addr, 0, a,
-                      chunk, sizeof(chunk)) < 0) {
+    if (icsp_send_pkt(a, chunk, sizeof(chunk)) < 0) {
         perror("icsp: send INIT");
         return -1;
     }
@@ -196,10 +155,10 @@ int icsp_client_handshake(int fd, int ifindex, const uint8_t src_mac[6],
 
     /* wait INIT-ACK [ver][streams][eph 32][id 32][sig 64][cookie] */
     for (;;) {
-        ssize_t n = icsp_recv(fd, frame, &payload, &plen, &from,
-                              a->peer_mac);
+        ssize_t n = icsp_recv_frame(a, frame, &payload, &plen, &from);
         if (n < 0) { perror("icsp: INIT-ACK"); return -1; }
-        a->has_peer_mac = 1;
+        if (n == 0)
+            continue;           /* noise frame */
         if (payload[4] != ICSP_VERSION ||
             payload[ICSP_HEADER_LEN] != ICSP_CHUNK_INIT_ACK)
             continue;
@@ -226,9 +185,7 @@ int icsp_client_handshake(int fd, int ifindex, const uint8_t src_mac[6],
                                       COOKIE_LEN + 64);
         memcpy(ckd, cd + 69 + 64, COOKIE_LEN);
         ed25519_sign(ckd + COOKIE_LEN, ckd, COOKIE_LEN, sk);
-        if (icsp_send_pkt(fd, ifindex, src_mac, a->has_peer_mac ?
-                          a->peer_mac : bcast, dst_addr, 0, a,
-                          ck, sizeof(ck)) < 0) {
+        if (icsp_send_pkt(a, ck, sizeof(ck)) < 0) {
             perror("icsp: send COOKIE-ECHO");
             return -1;
         }
@@ -238,9 +195,10 @@ int icsp_client_handshake(int fd, int ifindex, const uint8_t src_mac[6],
 
     /* wait COOKIE-ACK */
     for (;;) {
-        ssize_t n = icsp_recv(fd, frame, &payload, &plen, &from,
-                              a->peer_mac);
+        ssize_t n = icsp_recv_frame(a, frame, &payload, &plen, &from);
         if (n < 0) { perror("icsp: COOKIE-ACK"); return -1; }
+        if (n == 0)
+            continue;
         if (payload[ICSP_HEADER_LEN] != ICSP_CHUNK_COOKIE_ACK)
             continue;
         a->state = ICSP_ST_ESTABLISHED;
@@ -252,21 +210,19 @@ int icsp_client_handshake(int fd, int ifindex, const uint8_t src_mac[6],
 }
 
 /* --- server --- */
-int icsp_server_accept(int fd, int ifindex, const uint8_t src_mac[6],
-                       uint64_t srv_addr, uint16_t port,
+int icsp_server_accept(struct icsp_assoc *a, uint16_t port,
                        const uint8_t sk[64],
                        const uint8_t (*peers)[32], int n_peers,
-                       struct icsp_assoc *a, int timeout_s)
+                       int timeout_s)
 {
-    const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
     uint8_t frame[1600];
     uint8_t eph_priv[32];
-    uint8_t *payload;
+    const uint8_t *payload;
     size_t plen;
     uint64_t from;
     struct timeval tv = { 30, 0 };
 
-    memset(a, 0, sizeof(*a));
+    assoc_reset(a);
     a->src_port = port;
     a->dst_port = 0;
     a->state = ICSP_ST_CLOSED;
@@ -283,20 +239,20 @@ int icsp_server_accept(int fd, int ifindex, const uint8_t src_mac[6],
     if (timeout_s > 0) {
         tv.tv_sec = timeout_s;
         tv.tv_usec = 0;
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(a->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     } else {
         /* blocking listen: a real server waits forever */
         tv.tv_sec = 0;
         tv.tv_usec = 0;
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(a->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     }
 
     /* wait INIT */
     for (;;) {
-        ssize_t n = icsp_recv(fd, frame, &payload, &plen, &from,
-                              a->peer_mac);
+        ssize_t n = icsp_recv_frame(a, frame, &payload, &plen, &from);
         if (n < 0) { perror("icsp: INIT"); return -1; }
-        a->has_peer_mac = 1;
+        if (n == 0)
+            continue;
         if (payload[ICSP_HEADER_LEN] != ICSP_CHUNK_INIT)
             continue;
         const uint8_t *cd = payload + ICSP_HEADER_LEN + ICSP_CHUNK_HDR;
@@ -306,7 +262,7 @@ int icsp_server_accept(int fd, int ifindex, const uint8_t src_mac[6],
                                  ((uint32_t)payload[7] << 16) |
                                  ((uint32_t)payload[8] << 8) |
                                  payload[9]);
-        a->peer_eph[0] = cd[5];
+        a->dst_addr = from;
         memcpy(a->peer_eph, cd + 5, 32);
         memcpy(a->peer_id, cd + 37, 32);
         /* verify client signature */
@@ -345,9 +301,7 @@ int icsp_server_accept(int fd, int ifindex, const uint8_t src_mac[6],
     memcpy(d + 37, a->id_pub, 32);
     ed25519_sign(d + 69, d, 5 + 32 + 32, sk);
     cookie_make(a, d + 69 + 64);
-    if (icsp_send_pkt(fd, ifindex, src_mac,
-                      a->has_peer_mac ? a->peer_mac : bcast,
-                      from, srv_addr, a, chunk, sizeof(chunk)) < 0) {
+    if (icsp_send_pkt(a, chunk, sizeof(chunk)) < 0) {
         perror("icsp: send INIT-ACK");
         return -1;
     }
@@ -355,9 +309,10 @@ int icsp_server_accept(int fd, int ifindex, const uint8_t src_mac[6],
 
     /* wait COOKIE-ECHO [cookie][sig] */
     for (;;) {
-        ssize_t n = icsp_recv(fd, frame, &payload, &plen, &from,
-                              a->peer_mac);
+        ssize_t n = icsp_recv_frame(a, frame, &payload, &plen, &from);
         if (n < 0) { perror("icsp: COOKIE-ECHO"); return -1; }
+        if (n == 0)
+            continue;
         if (payload[ICSP_HEADER_LEN] != ICSP_CHUNK_COOKIE_ECHO)
             continue;
         const uint8_t *cd = payload + ICSP_HEADER_LEN + ICSP_CHUNK_HDR;
@@ -375,9 +330,7 @@ int icsp_server_accept(int fd, int ifindex, const uint8_t src_mac[6],
     /* COOKIE-ACK */
     uint8_t ck[ICSP_CHUNK_HDR];
     icsp_chunk_put(ck, ICSP_CHUNK_COOKIE_ACK, 0);
-    if (icsp_send_pkt(fd, ifindex, src_mac,
-                      a->has_peer_mac ? a->peer_mac : bcast,
-                      from, srv_addr, a, ck, sizeof(ck)) < 0) {
+    if (icsp_send_pkt(a, ck, sizeof(ck)) < 0) {
         perror("icsp: send COOKIE-ACK");
         return -1;
     }
