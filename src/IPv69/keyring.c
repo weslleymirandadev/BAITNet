@@ -7,9 +7,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <windows.h>
+#include <direct.h>
+#else
 #include <termios.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#endif
 #include "ed25519.h"
 #include "IPv69/keyring.h"
 
@@ -43,7 +49,10 @@ void keyring_paths(char *dir, size_t dirsz, char *key, size_t keysz,
                    char *pub, size_t pubsz)
 {
     const char *home = getenv("HOME");
-
+#ifdef _WIN32
+    if (!home || !*home)
+        home = getenv("USERPROFILE");   /* Windows: no HOME by default */
+#endif
     if (!home || !*home)
         home = "/root";
     snprintf(dir, dirsz, "%s/.hosts69", home);
@@ -66,12 +75,15 @@ static int write_file(const char *path, const char *data, size_t len)
     FILE *f = fopen(path, "w");
     if (!f)
         return -1;
+#ifndef _WIN32
     fchmod(fileno(f), 0600);
+#endif
     size_t w = fwrite(data, 1, len, f);
     fclose(f);
     return w == len ? 0 : -1;
 }
 
+#ifndef _WIN32
 /* read one line from /dev/tty with echo disabled */
 static int read_noecho(const char *prompt, char *out, size_t outsz)
 {
@@ -103,6 +115,34 @@ static int read_noecho(const char *prompt, char *out, size_t outsz)
     fprintf(stderr, "\n");
     return 0;
 }
+#else
+/* Windows: console input without echo (no /dev/tty, no termios) */
+static int read_noecho(const char *prompt, char *out, size_t outsz)
+{
+    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD oldmode = 0, n = 0;
+
+    fprintf(stderr, "%s", prompt);
+    fflush(stderr);
+    if (h != INVALID_HANDLE_VALUE) {
+        GetConsoleMode(h, &oldmode);
+        SetConsoleMode(h, oldmode & ~ENABLE_ECHO_INPUT);
+        BOOL ok = ReadFile(h, out, (DWORD)outsz - 1, &n, NULL);
+        SetConsoleMode(h, oldmode);
+        if (!ok || n == 0)
+            return -1;
+        out[n] = 0;
+    } else if (!fgets(out, (int)outsz, stdin)) {
+        return -1;
+    }
+    out[outsz - 1] = 0;
+    size_t l = strlen(out);
+    while (l && (out[l - 1] == '\n' || out[l - 1] == '\r'))
+        out[--l] = 0;
+    fprintf(stderr, "\n");
+    return 0;
+}
+#endif
 
 int keyring_prompt_passphrase(char *out, size_t outsz)
 {
@@ -160,7 +200,11 @@ int keyring_create(const char *key, const char *pub,
     char *slash = strrchr(dir, '/');
     if (slash && slash != dir) {
         *slash = 0;
+#ifndef _WIN32
         mkdir(dir, 0700);
+#else
+        _mkdir(dir);
+#endif
     }
 
     if (ed25519_keypair(sk, pk) < 0)
@@ -171,15 +215,8 @@ int keyring_create(const char *key, const char *pub,
     if (*passphrase) {
         uint8_t salt[SALT_LEN], nonce[NONCE_LEN], k[32];
         uint8_t box[32 + 32];           /* n+32: TweetNaCl padding */
-        FILE *ur = fopen("/dev/urandom", "r");
-        if (!ur)
-            return -1;
-        if (fread(salt, 1, SALT_LEN, ur) != SALT_LEN ||
-            fread(nonce, 1, NONCE_LEN, ur) != NONCE_LEN) {
-            fclose(ur);
-            return -1;
-        }
-        fclose(ur);
+        randombytes(salt, SALT_LEN);
+        randombytes(nonce, NONCE_LEN);
         derive_key(k, salt, SALT_LEN, passphrase);
         ed25519_secretbox(box, sk, 32, nonce, k);
         char salt_h[33], nonce_h[49], box_h[129];
@@ -225,10 +262,18 @@ static int load_encrypted(const char *path, uint8_t sk[64],
         return -1;
     for (;;) {
         if (!pass) {
+#ifndef _WIN32
             char *p = getpass("Enter passphrase for key: ");
             if (!p)
                 return -1;
             pass = p;
+#else
+            static char winpass[256];
+            if (read_noecho("Enter passphrase for key: ", winpass,
+                            sizeof(winpass)) < 0)
+                return -1;
+            pass = winpass;
+#endif
         }
         derive_key(k, salt, SALT_LEN, pass);
         if (ed25519_secretbox_open(sk, boxed, 32, nonce, k) == 0) {
