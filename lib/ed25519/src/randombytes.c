@@ -1,7 +1,26 @@
-/* randombytes.c - getrandom() backend for TweetNaCl (Linux + Android). */
+/* randombytes.c - secure RNG backend for TweetNaCl.
+ * POSIX: getrandom(); Windows: BCryptGenRandom. Same interface.
+ */
 #include <stdint.h>
-#include <sys/random.h>
 #include "tweetnacl.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#include <bcrypt.h>
+
+void randombytes(uint8_t *buf, uint64_t n)
+{
+    while (n > 0) {
+        ULONG chunk = (ULONG)(n > 0xFFFFFFFFULL ? 0xFFFFFFFFULL : n);
+        if (BCryptGenRandom(NULL, buf, chunk,
+                            BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0)
+            continue;
+        buf += chunk;
+        n -= chunk;
+    }
+}
+#else
+#include <sys/random.h>
 
 void randombytes(uint8_t *buf, uint64_t n)
 {
@@ -13,3 +32,4 @@ void randombytes(uint8_t *buf, uint64_t n)
         n -= (uint64_t)r;
     }
 }
+#endif
