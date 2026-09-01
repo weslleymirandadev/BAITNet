@@ -3,15 +3,21 @@
  * IPv69 stream transport (next_header 2). An improved SCTP: reliable,
  * ordered, multi-stream, encrypted by default. See docs/icsp-spec.md.
  *
- * This header is the public API + wire constants. Phase 1: infra +
- * authenticated handshake (INIT -> COOKIE-ACK) with Ed25519 identity +
- * ephemeral X25519 -> session key.
+ * Two layers:
+ *   - transport: association + handshake + DATA/SACK + lifecycle.
+ *     Every sender takes ONLY the association: the endpoint context
+ *     (fd, ifindex, src_mac, dst_addr) lives in struct icsp_assoc,
+ *     filled by icsp_endpoint_open() + the handshake.
+ *   - session: icsp_poll()/icsp_handle_frame()/icsp_keepalive_tick()
+ *     give an app a ready-made receive loop — no manual frame parsing,
+ *     heartbeats are answered and sent automatically.
  */
 #ifndef ICSP_H
 #define ICSP_H
 
 #include <stdint.h>
 #include <stddef.h>
+#include <sys/types.h>
 #include <time.h>
 
 #define ICSP_VERSION       1
@@ -105,6 +111,23 @@ struct icsp_assoc {
         uint8_t  valid;
     } rcvq[ICSP_RCVQ];
     int n_rcvq;
+
+    /* --- session layer: endpoint context ---
+     * filled by icsp_endpoint_open(); preserved by the handshake. */
+    int      fd;                 /* AF_PACKET socket on the interface */
+    int      ifindex;
+    uint8_t  src_mac[6];
+    uint64_t dst_addr;          /* peer address (0 for a server: replies
+                                   go unicast to a->peer_mac) */
+    uint64_t src_addr;          /* our address in the frame (0 = none) */
+
+    /* keepalive / dead-peer, used by icsp_poll + icsp_keepalive_tick */
+    int      hb_interval_s;     /* HEARTBEAT when idle this long (0 = off) */
+    int      dead_timeout_s;    /* peer declared dead after this silence
+                                   (0 = off) */
+    int      sack_loss_pct;     /* fault injection: skip SACK N% (tests) */
+    time_t   last_rx;           /* any frame from the peer */
+    time_t   last_hb;
 };
 
 /* --- public API (Phase 1: handshake) --- */
@@ -121,35 +144,36 @@ uint8_t *icsp_chunk_put(uint8_t *buf, uint8_t type, size_t datalen);
  * (X25519(eph_priv, peer_eph) -> SHA-512(shared||assoc_id||"icsp-v1")) */
 int icsp_derive_key(struct icsp_assoc *a, const uint8_t eph_priv[32]);
 
-/* Client: open an association with peer at `dst_addr`.
- * fd = AF_PACKET socket (raw_socket), src_mac from it, sk = device
- * seed[32] (+ pub at sk+32). Runs INIT -> INIT-ACK -> COOKIE-ECHO ->
- * COOKIE-ACK. Returns 0 + established assoc (session_key set), -1. */
-int icsp_client_handshake(int fd, int ifindex, const uint8_t src_mac[6],
-                          uint64_t dst_addr,
-                          uint16_t src_port, uint16_t dst_port,
-                          const uint8_t sk[64],
-                          struct icsp_assoc *a);
+/* low-level send: one ICSP packet = header(12) + chunk, on the
+ * association's endpoint. dst_mac = a->peer_mac when known, else
+ * broadcast (handshake starts broadcast, replies go unicast). */
+int icsp_send_pkt(struct icsp_assoc *a, const uint8_t *chunk,
+                  size_t chunklen);
 
-/* Server: accept one association. Waits for INIT, answers INIT-ACK
- * (signed, with a secret-protected cookie), validates COOKIE-ECHO.
- * peers = optional allowlist of trusted identity pubs (NULL = anyone
- * with a valid signature, like DHCP --learn). Returns 0 + established
- * assoc, -1. */
-int icsp_server_accept(int fd, int ifindex, const uint8_t src_mac[6],
-                       uint64_t srv_addr, uint16_t port,
+/* Client: open an association with peer at `dst_addr`. Requires a
+ * endpoint opened with icsp_endpoint_open() (fd/ifindex/src_mac set).
+ * a->src_port is used when != 0, else an auto port (50000 + pid%1000).
+ * Runs INIT -> INIT-ACK -> COOKIE-ECHO -> COOKIE-ACK. sk = device
+ * seed[32] (+ pub at sk+32). Returns 0 + established assoc, -1. */
+int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
+                          uint16_t dst_port, const uint8_t sk[64]);
+
+/* Server: accept one association on `port`. Waits for INIT, answers
+ * INIT-ACK (signed, with a secret-protected cookie), validates
+ * COOKIE-ECHO. peers = optional allowlist of trusted identity pubs
+ * (NULL = anyone with a valid signature). timeout_s > 0 = finite wait,
+ * <= 0 = block forever. Returns 0 + established assoc, -1. */
+int icsp_server_accept(struct icsp_assoc *a, uint16_t port,
                        const uint8_t sk[64],
                        const uint8_t (*peers)[32], int n_peers,
-                       struct icsp_assoc *a, int timeout_s);
+                       int timeout_s);
 
 /* --- Phase 2: data path --- */
 
 /* send one message on a stream (encrypted with the session key).
  * Returns the TSN used, or -1. */
-int icsp_data_send(struct icsp_assoc *a, int fd, int ifindex,
-                   const uint8_t src_mac[6], const uint8_t *dst_mac,
-                   uint64_t dst_addr, uint64_t src_addr,
-                   uint16_t stream_id, const uint8_t *data, size_t len);
+int icsp_data_send(struct icsp_assoc *a, uint16_t stream_id,
+                   const uint8_t *data, size_t len);
 
 /* handle one received ICSP payload: DATA chunks are decrypted,
  * validated (TSN window, stream ordering) and queued; SACK chunks mark
@@ -161,40 +185,75 @@ int icsp_data_handle(struct icsp_assoc *a, const uint8_t *payload,
 
 /* retransmit unacked sendq entries older than `timeout_s`;
  * returns how many were resent. */
-int icsp_data_retransmit(struct icsp_assoc *a, int fd, int ifindex,
-                         const uint8_t src_mac[6], const uint8_t *dst_mac,
-                         uint64_t dst_addr, uint64_t src_addr,
-                         int timeout_s);
+int icsp_data_retransmit(struct icsp_assoc *a, int timeout_s);
 
 /* send a SACK for everything received up to cum_tsn. */
-int icsp_sack_send(struct icsp_assoc *a, int fd, int ifindex,
-                   const uint8_t src_mac[6], const uint8_t *dst_mac,
-                   uint64_t dst_addr, uint64_t src_addr);
+int icsp_sack_send(struct icsp_assoc *a);
+
+/* 1 when every sendq entry is acked (nothing pending retransmission) */
+int icsp_all_acked(struct icsp_assoc *a);
 
 /* --- Phase 3: lifecycle --- */
 
 /* liveness probe: send HEARTBEAT / answer with HEARTBEAT-ACK */
-int icsp_heartbeat_send(struct icsp_assoc *a, int fd, int ifindex,
-                        const uint8_t src_mac[6], const uint8_t *dst_mac,
-                        uint64_t dst_addr, uint64_t src_addr);
-int icsp_heartbeat_ack(struct icsp_assoc *a, int fd, int ifindex,
-                       const uint8_t src_mac[6], const uint8_t *dst_mac,
-                       uint64_t dst_addr, uint64_t src_addr);
+int icsp_heartbeat_send(struct icsp_assoc *a);
+int icsp_heartbeat_ack(struct icsp_assoc *a);
 
 /* graceful close: send SHUTDOWN, state -> SHUTDOWN */
-int icsp_shutdown_send(struct icsp_assoc *a, int fd, int ifindex,
-                       const uint8_t src_mac[6], const uint8_t *dst_mac,
-                       uint64_t dst_addr, uint64_t src_addr);
+int icsp_shutdown_send(struct icsp_assoc *a);
 
 /* dynamic stream renegotiation (mode: 0=reset, 1=add, 2=close) */
-int icsp_stream_reset(struct icsp_assoc *a, int fd, int ifindex,
-                      const uint8_t src_mac[6], const uint8_t *dst_mac,
-                      uint64_t dst_addr, uint64_t src_addr,
-                      uint16_t stream_id, uint8_t mode);
+int icsp_stream_reset(struct icsp_assoc *a, uint16_t stream_id,
+                      uint8_t mode);
 
 /* process lifecycle chunks (SHUTDOWN/STREAM-RESET/HEARTBEAT) in a
  * received payload; returns 1 when the association should close. */
 int icsp_life_handle(struct icsp_assoc *a, const uint8_t *payload,
                      size_t plen);
+
+/* --- session layer: endpoint, receive, poll --- */
+
+/* poll / handle_frame / keepalive_tick return codes */
+#define ICSP_POLL_DATA    1   /* a message was delivered (callback ran) */
+#define ICSP_POLL_TIMEOUT 0   /* nothing happened within the timeout */
+#define ICSP_POLL_ERR    -1   /* I/O error */
+#define ICSP_POLL_DEAD   -2   /* peer silent for dead_timeout_s */
+#define ICSP_POLL_CLOSED -3   /* peer sent SHUTDOWN */
+
+/* one received DATA message */
+typedef void (*icsp_data_cb)(struct icsp_assoc *a, uint16_t stream,
+                             const uint8_t *data, size_t len, void *ud);
+
+/* open the L2 endpoint for an association: load the ~/.hosts69 identity
+ * (creating it if missing) and open the raw socket on `ifname`. Fills
+ * a->fd / ifindex / src_mac / id_pub and copies the device seed into
+ * sk[64] (needed by the handshake to sign INIT). Returns the fd, -1. */
+int icsp_endpoint_open(struct icsp_assoc *a, const char *ifname,
+                       uint8_t sk[64]);
+
+/* receive + parse one nh=2 frame on a->fd. Returns the frame length,
+ * 0 for noise (short frame / wrong next_header), -1 on recv error.
+ * *payload/*plen = ICSP payload inside the frame, *src_addr = the
+ * frame's 40-bit source (may be NULL). Refreshes a->peer_mac/last_rx. */
+ssize_t icsp_recv_frame(struct icsp_assoc *a, uint8_t *frame,
+                        const uint8_t **payload, size_t *plen,
+                        uint64_t *src_addr);
+
+/* dispatch ONE received frame: refresh peer_mac/last_rx, answer
+ * HEARTBEAT automatically, process DATA (delivered messages go to
+ * on_data) and SACK, send a SACK when cum_tsn advanced (unless
+ * a->sack_loss_pct), detect SHUTDOWN. Returns an ICSP_POLL_* code. */
+int icsp_handle_frame(struct icsp_assoc *a, const uint8_t *frame, ssize_t n,
+                      icsp_data_cb on_data, void *ud);
+
+/* keepalive tick: send a HEARTBEAT when hb_interval_s elapsed, declare
+ * the peer dead when dead_timeout_s of silence passed. Returns 1 dead,
+ * 0 alive. Call from your own select/poll loop. */
+int icsp_keepalive_tick(struct icsp_assoc *a);
+
+/* wait up to timeout_ms on a->fd, dispatch what arrives, run the
+ * keepalive tick. Returns an ICSP_POLL_* code. */
+int icsp_poll(struct icsp_assoc *a, int timeout_ms,
+              icsp_data_cb on_data, void *ud);
 
 #endif
