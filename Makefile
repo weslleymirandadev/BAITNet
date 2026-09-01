@@ -46,6 +46,24 @@ CHAT_SRC := examples/icsp_chat.c src/IPv69/keyring.c src/IPv69/parse.c \
 chat: $(CHAT_SRC) include/ICSP/icsp.h include/IPv69/keyring.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $(BUILD)/icsp_chat $(CHAT_SRC)
 
+# --- Windows build (MinGW + Npcap): same ICSP stack, raw L2 via libpcap.
+# gcc.exe runs through WSL interop: the CWD is translated, so relative
+# paths work, but the Npcap SDK needs a Windows-style path (fwd slashes).
+# Npcap SDK zip: https://npcap.com/dist/npcap-sdk-1.13.zip -> C:/Users/user/
+WIN_CC     ?= /mnt/c/ProgramData/mingw64/mingw64/bin/gcc.exe
+WIN_SDK    ?= C:/Users/user/npcap-sdk
+WIN_CFLAGS := -Wall -Wextra -O2 -static -Iinclude -Ilib/ed25519/include \
+	-I$(WIN_SDK)/Include
+WIN_LIBS   := $(WIN_SDK)/Lib/x64/wpcap.lib -lws2_32 -liphlpapi -lbcrypt
+WIN_SRC    := examples/icsp_chat.c src/IPv69/keyring.c src/IPv69/parse.c \
+	src/IPv69/l2_win.c $(ICSP_SRC) $(ED25519)
+
+win: build/icsp_chat.exe
+
+build/icsp_chat.exe: $(WIN_SRC) include/ICSP/icsp.h include/IPv69/l2.h | $(BUILD)
+	$(WIN_CC) $(WIN_CFLAGS) -o $@ $(WIN_SRC) $(WIN_LIBS)
+	chmod +x $@
+
 # legacy targets -> single binary (kept so old scripts still work)
 af69_test af69d af69_raw keygen ip69d ip69 ipv69gw: ipv69
 	@ln -sf ipv69 $(BUILD)/$@
