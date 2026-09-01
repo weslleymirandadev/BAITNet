@@ -236,8 +236,10 @@ static void usage_icsp(void)
     fprintf(stderr,
         "ipv69 icsp - ICSP stream transport (nh=2, SCTP-derived)\n"
         "\n"
-        "Usage: ipv69 icsp <server|client> <ifname> [dst] [port]\n"
-        "                   [--peer HEX] [--peer-file F] [--echo] [--loss N]\n"
+        "Usage: ipv69 icsp <server|client> <ifname> [port|:port]\n"
+        "        [--peer HEX] [--peer-file F] [--echo] [--loss N]\n"
+        "        ipv69 icsp client <ifname> <dst:porta> [msg] [--echo]\n"
+        "        [--hb] [--reset]\n"
         "\n"
         "Authenticated 4-way handshake (INIT->INIT-ACK cookie->COOKIE-ECHO->\n"
         "COOKIE-ACK) with Ed25519 identity + X25519 ECDH: both sides derive\n"
