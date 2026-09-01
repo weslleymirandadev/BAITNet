@@ -5,11 +5,16 @@
  * buffer. This wrapper exposes the natural sign/verify split (sig and
  * msg kept separate), so callers never touch TweetNaCl internals.
  */
+#ifdef _WIN32
+#include <windows.h>
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/stat.h>
 #include "ed25519.h"
 #include "tweetnacl.h"
 
@@ -104,12 +109,18 @@ int ed25519_keyfile_load_or_create(const char *path,
     char *slash = strrchr(dir, '/');
     if (slash) {
         *slash = 0;
+#ifndef _WIN32
         mkdir(dir, 0700);
+#else
+        _mkdir(dir);
+#endif
     }
     f = fopen(path, "w");
     if (!f)
         return -1;
+#ifndef _WIN32
     fchmod(fileno(f), 0600);
+#endif
     fprintf(f, "%s\n", seedhex);
     fclose(f);
     printf("ipv69: chave gerada em %s\n", path);
