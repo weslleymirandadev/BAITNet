@@ -1,17 +1,25 @@
 /* l2.h - shared L2 helpers for IPv69 tools (frame build, raw socket).
- * Extracted from af69_raw.c so ICSP (and future tools) reuse the same
- * wire plumbing: Ethernet + 32B IPv69 header over AF_PACKET.
- * Byte-order helpers (ipv69_addr_get/put, be16/32/64) come from
- * endian.h (via header.h) — no local copies needed.
+ * The l2_* API is the portable backend: POSIX uses AF_PACKET (l2.c),
+ * Windows uses Npcap/libpcap (l2_win.c). Byte-order helpers
+ * (ipv69_addr_get/put, be16/32/64) come from endian.h (via header.h)
+ * — no local copies needed.
  */
 #ifndef IPV69_L2_H
 #define IPV69_L2_H
 
 #include <stdint.h>
 #include <stddef.h>
+#include <sys/types.h>
 #include "endian.h"
 
 #define IPV69_BCAST_ADDR 0xFFFFFFFFFFULL
+
+/* L2 backend handle: AF_PACKET fd on POSIX, pcap_t* on Windows */
+#ifdef _WIN32
+typedef void *l2_handle;
+#else
+typedef int l2_handle;
+#endif
 
 int hex_decode(const char *hex, uint8_t *out, size_t max);
 
@@ -22,6 +30,26 @@ size_t build_frame(uint8_t *frame, const uint8_t *dst_mac,
                    uint8_t next_header, uint8_t hop_limit,
                    uint16_t src_port, uint16_t dst_port,
                    const uint8_t *payload, size_t plen);
+
+/* --- portable L2 backend --- */
+
+/* open a raw L2 endpoint on `ifname` (substring match on Windows).
+ * Fills the handle, *ifindex (0 on Windows) and the interface MAC.
+ * Returns 0, -1 on error. */
+int l2_open(const char *ifname, l2_handle *h, int *ifindex,
+            uint8_t src_mac[6]);
+
+/* transmit one complete Ethernet frame. 0 on success, -1. */
+int l2_send(l2_handle h, int ifindex, const uint8_t *dst_mac,
+            const uint8_t *frame, size_t len);
+
+/* receive one frame, waiting up to timeout_ms (0 = forever).
+ * Returns the frame length, 0 on timeout, -1 on error. */
+ssize_t l2_recv(l2_handle h, uint8_t *frame, size_t maxlen, int timeout_ms);
+
+void l2_close(l2_handle h);
+
+/* --- legacy POSIX AF_PACKET API (dgram tools, Linux only) --- */
 
 /* open an AF_PACKET socket bound to ifname, ethertype 0x6969.
  * Returns fd, sets *ifindex and *src_mac; -1 on error. */
