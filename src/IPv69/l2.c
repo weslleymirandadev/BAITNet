@@ -4,6 +4,9 @@
  */
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
@@ -87,4 +90,49 @@ int send_frame(int fd, int ifindex, const uint8_t *dst_mac,
     };
     memcpy(sll.sll_addr, dst_mac, 6);
     return sendto(fd, frame, len, 0, (struct sockaddr *)&sll, sizeof(sll));
+}
+
+/* --- portable L2 backend (POSIX: AF_PACKET + poll/recv) --- */
+
+int l2_open(const char *ifname, l2_handle *h, int *ifindex,
+            uint8_t src_mac[6])
+{
+    int fd = raw_socket(ifname, ifindex, src_mac);
+    if (fd < 0)
+        return -1;
+    *h = fd;
+    return 0;
+}
+
+int l2_send(l2_handle h, int ifindex, const uint8_t *dst_mac,
+            const uint8_t *frame, size_t len)
+{
+    return send_frame((int)h, ifindex, dst_mac, frame, len) < 0 ? -1 : 0;
+}
+
+ssize_t l2_recv(l2_handle h, uint8_t *frame, size_t maxlen, int timeout_ms)
+{
+    int fd = (int)h;
+
+    if (timeout_ms > 0) {
+        struct pollfd pfd = { fd, POLLIN, 0 };
+        int r = poll(&pfd, 1, timeout_ms);
+        if (r < 0) {
+            if (errno == EINTR)
+                return 0;               /* treat as timeout */
+            return -1;
+        }
+        if (r == 0 || !(pfd.revents & POLLIN))
+            return 0;                   /* timeout */
+    }
+    ssize_t n = recv(fd, frame, maxlen, 0);
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+        return 0;
+    return n;
+}
+
+void l2_close(l2_handle h)
+{
+    if ((int)h >= 0)
+        close((int)h);
 }
