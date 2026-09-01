@@ -67,4 +67,8 @@ int ed25519_secretbox_open(uint8_t *m, const uint8_t *c, size_t n,
 int ed25519_scalarmult(uint8_t q[32], const uint8_t n[32], const uint8_t p[32]);
 int ed25519_scalarmult_base(uint8_t q[32], const uint8_t n[32]);
 
+/* secure RNG: getrandom() on POSIX, BCryptGenRandom on Windows.
+ * Fills `n` bytes; never fails (loops on error). */
+void randombytes(uint8_t *buf, uint64_t n);
+
 #endif
