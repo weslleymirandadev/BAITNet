@@ -213,12 +213,13 @@ int icsp_life_handle(struct icsp_assoc *a, const uint8_t *payload,
 
 /* --- session layer: endpoint, receive, poll --- */
 
-/* poll / handle_frame / keepalive_tick return codes */
+/* poll / handle_frame / keepalive_tick / relay return codes */
 #define ICSP_POLL_DATA    1   /* a message was delivered (callback ran) */
 #define ICSP_POLL_TIMEOUT 0   /* nothing happened within the timeout */
 #define ICSP_POLL_ERR    -1   /* I/O error */
 #define ICSP_POLL_DEAD   -2   /* peer silent for dead_timeout_s */
 #define ICSP_POLL_CLOSED -3   /* peer sent SHUTDOWN */
+#define ICSP_POLL_EOF    -4   /* relay: stdin EOF on a tty (user closed) */
 
 /* one received DATA message */
 typedef void (*icsp_data_cb)(struct icsp_assoc *a, uint16_t stream,
@@ -233,8 +234,9 @@ int icsp_endpoint_open(struct icsp_assoc *a, const char *ifname,
 
 /* receive + parse one nh=2 frame on a->fd. Returns the frame length,
  * 0 for noise (short frame / wrong next_header), -1 on recv error.
- * *payload/*plen = ICSP payload inside the frame, *src_addr = the
- * frame's 40-bit source (may be NULL). Refreshes a->peer_mac/last_rx. */
+ * Fills *payload and *plen with the ICSP payload inside the frame and
+ * *src_addr with the frame's 40-bit source (may be NULL). Refreshes
+ * a->peer_mac/last_rx. */
 ssize_t icsp_recv_frame(struct icsp_assoc *a, uint8_t *frame,
                         const uint8_t **payload, size_t *plen,
                         uint64_t *src_addr);
@@ -255,5 +257,15 @@ int icsp_keepalive_tick(struct icsp_assoc *a);
  * keepalive tick. Returns an ICSP_POLL_* code. */
 int icsp_poll(struct icsp_assoc *a, int timeout_ms,
               icsp_data_cb on_data, void *ud);
+
+/* the netcat primitive: relay stdin (when use_stdin) to `stream_id`
+ * and socket DATA to on_data, until peer SHUTDOWN (ICSP_POLL_CLOSED),
+ * a dead peer (ICSP_POLL_DEAD), an I/O error (ICSP_POLL_ERR), or stdin
+ * EOF on a tty (ICSP_POLL_EOF — graceful close, SHUTDOWN already
+ * sent). Non-tty stdin EOF stops reading but keeps relaying (netcat
+ * servers survive pipes/daemons). Keepalive (a->hb_interval_s /
+ * a->dead_timeout_s) runs; empty lines are skipped. */
+int icsp_relay(struct icsp_assoc *a, uint16_t stream_id, int use_stdin,
+               icsp_data_cb on_data, void *ud);
 
 #endif
