@@ -18,8 +18,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <sys/socket.h>
-#include <sys/time.h>
 #include <time.h>
 #include <errno.h>
 #include "IPv69/header.h"
@@ -79,7 +77,8 @@ static int cookie_valid(const uint8_t c[COOKIE_LEN], const struct icsp_assoc *a)
  * association after association on the same socket. */
 static void assoc_reset(struct icsp_assoc *a)
 {
-    int fd = a->fd, ifindex = a->ifindex;
+    l2_handle fd = a->fd;
+    int ifindex = a->ifindex;
     uint8_t smac[6];
     uint64_t dst_addr = a->dst_addr, src_addr = a->src_addr;
     int hb = a->hb_interval_s, dead = a->dead_timeout_s;
@@ -104,7 +103,6 @@ int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
     const uint8_t *payload;
     size_t plen;
     uint64_t from;
-    struct timeval tv = { 3, 0 };
 
     assoc_reset(a);
     a->dst_addr = dst_addr;
@@ -113,26 +111,18 @@ int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
         a->src_port = 50000 + (uint16_t)getpid() % 1000;
     a->state = ICSP_ST_COOKIE_WAIT;
     a->streams_in = a->streams_out = 4;
+    a->rcv_timeout_ms = 3000;
     {
         uint8_t rnd[4];
-        FILE *ur = fopen("/dev/urandom", "r");
-        if (!ur || fread(rnd, 1, 4, ur) != 4)
-            return -1;
-        fclose(ur);
+        randombytes(rnd, sizeof(rnd));
         a->assoc_id = ((uint32_t)rnd[0] << 24) | ((uint32_t)rnd[1] << 16) |
                       ((uint32_t)rnd[2] << 8) | rnd[3];
     }
     /* identity + ephemeral keypair */
     memcpy(a->id_pub, sk + 32, 32);
-    {
-        FILE *ur = fopen("/dev/urandom", "r");
-        if (!ur || fread(eph_priv, 1, 32, ur) != 32)
-            return -1;
-        fclose(ur);
-    }
+    randombytes(eph_priv, 32);
     if (ed25519_scalarmult_base(a->eph_pub, eph_priv) != 0)
         return -1;
-    setsockopt(a->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     /* INIT [ver][streams_in 2][streams_out 2][eph 32][id 32][sig 64] */
     uint8_t chunk[ICSP_CHUNK_HDR + 1 + 4 + 32 + 32 + 64];
@@ -220,32 +210,17 @@ int icsp_server_accept(struct icsp_assoc *a, uint16_t port,
     const uint8_t *payload;
     size_t plen;
     uint64_t from;
-    struct timeval tv = { 30, 0 };
 
     assoc_reset(a);
     a->src_port = port;
     a->dst_port = 0;
     a->state = ICSP_ST_CLOSED;
     a->streams_in = a->streams_out = 4;
+    a->rcv_timeout_ms = timeout_s > 0 ? timeout_s * 1000 : 0;
     memcpy(a->id_pub, sk + 32, 32);
-    {
-        FILE *ur = fopen("/dev/urandom", "r");
-        if (!ur || fread(eph_priv, 1, 32, ur) != 32)
-            return -1;
-        fclose(ur);
-    }
+    randombytes(eph_priv, 32);
     if (ed25519_scalarmult_base(a->eph_pub, eph_priv) != 0)
         return -1;
-    if (timeout_s > 0) {
-        tv.tv_sec = timeout_s;
-        tv.tv_usec = 0;
-        setsockopt(a->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    } else {
-        /* blocking listen: a real server waits forever */
-        tv.tv_sec = 0;
-        tv.tv_usec = 0;
-        setsockopt(a->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    }
 
     /* wait INIT */
     for (;;) {
