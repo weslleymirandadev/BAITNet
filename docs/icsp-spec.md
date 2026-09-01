@@ -124,18 +124,23 @@ icsp_client_handshake(&a, dst, port, sk);   /* or icsp_server_accept(&a, port, .
 a.hb_interval_s = 6;                        /* keepalive config (0 = off) */
 a.dead_timeout_s = 18;
 
-/* service loop: poll dispatches frames, answers heartbeats, sends SACKs */
-int r = icsp_poll(&a, 200, on_data, NULL);
-/* or multiplex yourself: select() on a.fd + stdin, then
-   icsp_handle_frame(&a, frame, n, on_data, NULL) and
-   icsp_keepalive_tick(&a) on idle — what examples/icsp_chat.c does */
+/* netcat: relay stdin -> stream 1, socket -> on_data, keepalive runs */
+int r = icsp_relay(&a, 1, 1, on_data, NULL);
+/* or a pure-socket service loop: */
+while ((r = icsp_poll(&a, 200, on_data, NULL)) == ICSP_POLL_DATA ||
+       r == ICSP_POLL_TIMEOUT)
+    ;
+/* or multiplex your own fds with poll()/select(): on socket ready,
+   icsp_handle_frame(&a, frame, n, on_data, NULL); on idle,
+   icsp_keepalive_tick(&a) — what icsp_relay does internally */
 ```
 
 All senders take only the association: `icsp_data_send(&a, stream, data, len)`,
-`icsp_shutdown_send(&a)`, `icsp_heartbeat_send(&a)`, ... Poll return
-codes: `ICSP_POLL_DATA` (a message hit the callback), `ICSP_POLL_TIMEOUT`,
+`icsp_shutdown_send(&a)`, `icsp_heartbeat_send(&a)`, ... Return codes:
+`ICSP_POLL_DATA` (a message hit the callback), `ICSP_POLL_TIMEOUT`,
 `ICSP_POLL_DEAD` (peer silent for `dead_timeout_s`), `ICSP_POLL_CLOSED`
-(peer SHUTDOWN), `ICSP_POLL_ERR`.
+(peer SHUTDOWN), `ICSP_POLL_EOF` (relay: Ctrl-D on a tty), `ICSP_POLL_ERR`.
+`icsp_relay` survives non-tty stdin EOF (pipes/daemons keep receiving).
 
 The `lib/ed25519` library gains exposed wrappers: `nacl_scalarmult`
 (X25519) and `nacl_secretbox_*` (AEAD) — already in tweetnacl.c, just
