@@ -74,7 +74,8 @@ void print_ipv69_fields(const struct ipv69_header *h) {
             v = rd_be32(base + f->off);
         else
             v = rd_be64(base + f->off);
-        printf("%s = %0*lx\n", f->name, (int)(f->nbytes * 2), v);
+        printf("%s = %0*llx\n", f->name, (int)(f->nbytes * 2),
+               (unsigned long long)v);
     }
 }
 
