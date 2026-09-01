@@ -439,3 +439,34 @@ make chat        # builds build/icsp_chat separately
 
 The example links only the ICSP core + keyring + ed25519 + l2.c —
 read `examples/icsp_chat.c` as the template for your own ICSP tool.
+
+---
+
+## 11. Windows build (`make win`)
+
+The same ICSP stack (chat + session layer) builds natively on Windows
+with **MinGW + Npcap**: the L2 backend is libpcap instead of AF_PACKET
+(`src/IPv69/l2_win.c`), the RNG is BCrypt, the keyring uses
+`%USERPROFILE%` and a console no-echo prompt. The full `ipv69` binary
+(module-dependent tools) stays Linux-only.
+
+```bash
+# requirements: MinGW gcc on PATH, Npcap installed, Npcap SDK unpacked
+#   to C:/Users/<you>/npcap-sdk (https://npcap.com/dist/npcap-sdk-1.13.zip)
+make win        # -> build/icsp_chat.exe
+
+# run from WSL: pass HOME (WSL interop does NOT forward it) and the
+# adapter is matched by substring of the friendly name:
+WSLENV=HOME HOME='C:/Users/you' ./build/icsp_chat.exe server Realtek :6969
+./build/icsp_chat.exe client "Host-Only" 00.00.00.00.01:6969
+```
+
+Windows notes (all validated this session):
+- Npcap sees locally-injected frames — a client and a server on the
+  SAME adapter connect fine (no AF_PACKET same-interface loopback issue).
+- Npcap does **not** expose the Hyper-V `vEthernet (WSL)` adapter, so
+  WSL2 <-> Windows over raw L2 is not possible — use the VM or two NICs.
+- VirtualBox **bridged** mode does not forward Npcap-injected frames to
+  the VM; **host-only** mode does (Windows <-> Kali VM full ICSP
+  handshake + identical session keys, validated).
+
