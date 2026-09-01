@@ -1,10 +1,12 @@
-/* icsp_session.c - ICSP session layer: endpoint, receive, poll.
+/* icsp_session.c - ICSP session layer: endpoint, receive, poll, relay.
  *
  * What the tools used to hand-roll on top of the transport: open the
  * endpoint (identity + raw socket), parse the L2 frame, refresh the
  * peer MAC, answer heartbeats, send SACKs, detect a dead peer and a
- * graceful SHUTDOWN. icsp_poll() wraps all of it in a select loop, so
- * a service (or a netcat) just registers a DATA callback.
+ * graceful SHUTDOWN. icsp_poll() wraps all of it in a select loop and
+ * icsp_relay() is the netcat primitive (stdin <-> stream). The L2
+ * backend is portable: AF_PACKET on POSIX (l2.c), Npcap on Windows
+ * (l2_win.c) — everything here goes through l2_recv/l2_send.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,9 +14,13 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/types.h>
-#include <sys/socket.h>
-#include <poll.h>
 #include <errno.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+#else
+#include <poll.h>
+#endif
 #include "IPv69/header.h"
 #include "IPv69/l2.h"
 #include "IPv69/keyring.h"
@@ -33,17 +39,21 @@ int icsp_endpoint_open(struct icsp_assoc *a, const char *ifname,
                                sizeof(comment)) < 0)
         return -1;
     memcpy(a->id_pub, pub, 32);
-    a->fd = raw_socket(ifname, &a->ifindex, a->src_mac);
-    if (a->fd < 0)
-        perror("icsp: raw_socket");
-    return a->fd;
+    if (l2_open(ifname, &a->fd, &a->ifindex, a->src_mac) < 0)
+        return -1;
+    return 0;
 }
 
 ssize_t icsp_recv_frame(struct icsp_assoc *a, uint8_t *frame,
                         const uint8_t **payload, size_t *plen,
                         uint64_t *src_addr)
 {
-    ssize_t n = recv(a->fd, frame, 1600, 0);
+    ssize_t n = l2_recv(a->fd, frame, 1600, a->rcv_timeout_ms);
+    if (n == 0) {
+        errno = ETIMEDOUT;      /* wait expired (handshake fails like
+                                   the old SO_RCVTIMEO behavior) */
+        return -1;
+    }
     if (n < 0)
         return -1;
     if (n < 14 + IPV69_HEADER_LEN + ICSP_HEADER_LEN)
@@ -118,84 +128,169 @@ int icsp_keepalive_tick(struct icsp_assoc *a)
 int icsp_poll(struct icsp_assoc *a, int timeout_ms,
               icsp_data_cb on_data, void *ud)
 {
-    struct pollfd pfd = { a->fd, POLLIN, 0 };
     uint8_t frame[1600];
 
-    int r = poll(&pfd, 1, timeout_ms);
-    if (r < 0) {
-        if (errno == EINTR)
-            return icsp_keepalive_tick(a) ? ICSP_POLL_DEAD : ICSP_POLL_TIMEOUT;
+    ssize_t n = l2_recv(a->fd, frame, sizeof(frame), timeout_ms);
+    if (n < 0)
         return ICSP_POLL_ERR;
-    }
-    if (r == 0 || !(pfd.revents & POLLIN))
+    if (n == 0)
         return icsp_keepalive_tick(a) ? ICSP_POLL_DEAD : ICSP_POLL_TIMEOUT;
-    ssize_t n = recv(a->fd, frame, sizeof(frame), 0);
-    if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
-            return icsp_keepalive_tick(a) ? ICSP_POLL_DEAD : ICSP_POLL_TIMEOUT;
-        return ICSP_POLL_ERR;
-    }
     return icsp_handle_frame(a, frame, n, on_data, ud);
 }
+
+/* --- relay: stdin <-> stream (the netcat primitive) ---
+ * POSIX watches stdin with poll(); Windows has no pollable console
+ * stdin, so a reader thread feeds a small queue. */
+
+static int relay_send_line(struct icsp_assoc *a, uint16_t stream_id,
+                           char *line)
+{
+    size_t len = strlen(line);
+    while (len && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+        line[--len] = 0;
+    if (!len)
+        return 1;               /* empty line: skip */
+    return icsp_data_send(a, stream_id, (const uint8_t *)line, len) < 0 ?
+           -1 : 1;
+}
+
+#ifdef _WIN32
+struct stdin_q {
+    char buf[64][ICSP_MAX_PAYLOAD];
+    int head, tail, count;
+    int eof;
+    CRITICAL_SECTION cs;
+};
+
+static void stdin_q_init(struct stdin_q *q)
+{
+    memset(q, 0, sizeof(*q));
+    InitializeCriticalSection(&q->cs);
+}
+
+static void stdin_q_push(struct stdin_q *q, const char *line)
+{
+    size_t l = strlen(line);
+    if (l > ICSP_MAX_PAYLOAD - 1)
+        l = ICSP_MAX_PAYLOAD - 1;
+    EnterCriticalSection(&q->cs);
+    if (q->count < 64) {
+        memcpy(q->buf[q->tail], line, l);
+        q->buf[q->tail][l] = 0;
+        q->tail = (q->tail + 1) % 64;
+        q->count++;
+    }
+    LeaveCriticalSection(&q->cs);
+}
+
+static int stdin_q_pop(struct stdin_q *q, char *out)
+{
+    int got = 0;
+    EnterCriticalSection(&q->cs);
+    if (q->count > 0) {
+        strcpy(out, q->buf[q->head]);
+        q->head = (q->head + 1) % 64;
+        q->count--;
+        got = 1;
+    }
+    LeaveCriticalSection(&q->cs);
+    return got;
+}
+
+static int stdin_q_eof(struct stdin_q *q)
+{
+    int e;
+    EnterCriticalSection(&q->cs);
+    e = q->eof;
+    LeaveCriticalSection(&q->cs);
+    return e;
+}
+
+static DWORD WINAPI stdin_thread(void *arg)
+{
+    struct stdin_q *q = (struct stdin_q *)arg;
+    char line[ICSP_MAX_PAYLOAD];
+    while (fgets(line, sizeof(line), stdin))
+        stdin_q_push(q, line);
+    EnterCriticalSection(&q->cs);
+    q->eof = 1;
+    LeaveCriticalSection(&q->cs);
+    return 0;
+}
+
+static int relay_stdin(struct icsp_assoc *a, uint16_t stream_id,
+                       struct stdin_q *q, int *use_stdin)
+{
+    char line[ICSP_MAX_PAYLOAD];
+    while (stdin_q_pop(q, line))
+        if (relay_send_line(a, stream_id, line) < 0)
+            return -1;
+    if (stdin_q_eof(q)) {
+        if (_isatty(_fileno(stdin))) {
+            icsp_shutdown_send(a);      /* Ctrl-Z: graceful close */
+            return 2;                   /* EOF */
+        }
+        *use_stdin = 0;                 /* pipe EOF: keep receiving */
+    }
+    return 0;
+}
+#else
+static int relay_stdin(struct icsp_assoc *a, uint16_t stream_id,
+                       void *unused, int *use_stdin)
+{
+    (void)unused;
+    struct pollfd pfd = { 0, POLLIN, 0 };
+    if (poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLIN))
+        return 0;
+    char line[ICSP_MAX_PAYLOAD];
+    if (!fgets(line, sizeof(line), stdin)) {
+        if (isatty(0)) {
+            icsp_shutdown_send(a);      /* Ctrl-D: graceful close */
+            return 2;                   /* EOF */
+        }
+        *use_stdin = 0;                 /* pipe/daemon EOF: keep receiving */
+        return 0;
+    }
+    return relay_send_line(a, stream_id, line) < 0 ? -1 : 0;
+}
+#endif
 
 int icsp_relay(struct icsp_assoc *a, uint16_t stream_id, int use_stdin,
                icsp_data_cb on_data, void *ud)
 {
     uint8_t frame[1600];
-    char line[ICSP_MAX_PAYLOAD];
+#ifdef _WIN32
+    struct stdin_q q;
+    stdin_q_init(&q);
+    HANDLE thr = CreateThread(NULL, 0, stdin_thread, &q, 0, NULL);
+    (void)thr;
+#else
+    void *q = NULL;
+#endif
 
     for (;;) {
-        struct pollfd pfds[2];
-        int n = 0;
-
         if (use_stdin) {
-            pfds[n].fd = 0;
-            pfds[n].events = POLLIN;
-            pfds[n].revents = 0;
-            n++;
+#ifdef _WIN32
+            int r = relay_stdin(a, stream_id, &q, &use_stdin);
+#else
+            int r = relay_stdin(a, stream_id, q, &use_stdin);
+#endif
+            if (r < 0)
+                return ICSP_POLL_ERR;
+            if (r == 2)                 /* tty EOF: graceful close */
+                return ICSP_POLL_EOF;
         }
-        pfds[n].fd = a->fd;
-        pfds[n].events = POLLIN;
-        pfds[n].revents = 0;
-        int nsock = n;          /* the socket is the last slot */
-        n++;
-
-        int r = poll(pfds, n, 500);
-        if (r < 0) {
-            if (errno == EINTR)
-                continue;
+        ssize_t n = l2_recv(a->fd, frame, sizeof(frame), 250);
+        if (n < 0)
             return ICSP_POLL_ERR;
-        }
-        if (r == 0) {
+        if (n == 0) {
             if (icsp_keepalive_tick(a))
                 return ICSP_POLL_DEAD;
             continue;
         }
-
-        if (use_stdin && (pfds[0].revents & POLLIN)) {
-            if (!fgets(line, sizeof(line), stdin)) {
-                if (isatty(0)) {
-                    icsp_shutdown_send(a);  /* Ctrl-D: graceful close */
-                    return ICSP_POLL_EOF;
-                }
-                use_stdin = 0;  /* pipe/daemon EOF: keep receiving only */
-                continue;
-            }
-            size_t len = strlen(line);
-            while (len && (line[len - 1] == '\n' || line[len - 1] == '\r'))
-                line[--len] = 0;
-            if (len && icsp_data_send(a, stream_id,
-                                      (const uint8_t *)line, len) < 0)
-                return ICSP_POLL_ERR;
-        }
-        if (pfds[nsock].revents & POLLIN) {
-            ssize_t n = recv(a->fd, frame, sizeof(frame), 0);
-            if (n < 0)
-                continue;
-            int pr = icsp_handle_frame(a, frame, n, on_data, ud);
-            if (pr == ICSP_POLL_CLOSED || pr == ICSP_POLL_DEAD ||
-                pr == ICSP_POLL_ERR)
-                return pr;
-        }
+        int pr = icsp_handle_frame(a, frame, n, on_data, ud);
+        if (pr == ICSP_POLL_CLOSED || pr == ICSP_POLL_DEAD ||
+            pr == ICSP_POLL_ERR)
+            return pr;
     }
 }
