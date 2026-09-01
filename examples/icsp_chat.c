@@ -2,10 +2,10 @@
  *
  * This is NOT part of the ipv69 binary — it is a standalone example
  * showing how little code a tool needs on top of ICSP: open the
- * endpoint, handshake, then a select() loop that forwards stdin to
- * stream 1 and prints incoming DATA. Frame parsing, heartbeats,
- * SACKs and dead-peer detection are handled by the library
- * (icsp_handle_frame / icsp_keepalive_tick).
+ * endpoint, handshake, then icsp_relay() — the netcat primitive that
+ * multiplexes stdin + the socket internally (poll), forwards stdin
+ * lines to stream 1, prints incoming DATA via a callback, and runs
+ * heartbeat + dead-peer detection on its own.
  *
  * Usage:
  *   ./icsp_chat server <ifname> [port|:port] [--peer HEX] [--echo]
@@ -18,11 +18,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <sys/select.h>
-#include <sys/time.h>
-#include <errno.h>
 #include "IPv69/parse.h"
 #include "IPv69/l2.h"
 #include "ICSP/icsp.h"
@@ -61,74 +56,19 @@ static void on_data(struct icsp_assoc *a, uint16_t stream,
         icsp_data_send(a, stream, data, len);
 }
 
-static int chat_loop(struct icsp_assoc *a, int echo_mode, int use_stdin)
+/* the whole chat: relay stdin <-> stream 1 until close/dead/EOF */
+static int chat_run(struct icsp_assoc *a, int echo_mode)
 {
-    uint8_t frame[1600];
-    char line[ICSP_MAX_PAYLOAD];
-
     printf("chat: conectado! digite e Enter envia (Ctrl-D fecha)\n");
     fflush(stdout);
-
-    for (;;) {
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        if (use_stdin)
-            FD_SET(0, &rfds);
-        FD_SET(a->fd, &rfds);
-        struct timeval tv = { 2, 0 };
-
-        int r = select(a->fd + 1, &rfds, NULL, NULL, &tv);
-        if (r < 0) {
-            if (errno == EINTR)
-                continue;
-            perror("chat: select");
-            return 1;
-        }
-        if (r == 0) {
-            /* idle: heartbeat + dead-peer check live in the library */
-            if (icsp_keepalive_tick(a)) {
-                printf("chat: sem resposta do peer ha %ds — encerrando\n",
-                       a->dead_timeout_s);
-                break;
-            }
-            continue;
-        }
-
-        if (use_stdin && FD_ISSET(0, &rfds)) {
-            if (!fgets(line, sizeof(line), stdin)) {
-                if (isatty(0))
-                    break;          /* Ctrl-D: graceful close */
-                /* non-tty stdin (daemon/pipe): stop reading, keep
-                   receiving — netcat servers must survive EOF */
-                use_stdin = 0;
-                continue;
-            }
-            size_t n = strlen(line);
-            while (n && (line[n - 1] == '\n' || line[n - 1] == '\r'))
-                line[--n] = 0;
-            if (!n)
-                continue;
-            if (icsp_data_send(a, 1, (const uint8_t *)line, n) < 0) {
-                fprintf(stderr, "chat: falha ao enviar\n");
-                return 1;
-            }
-        }
-
-        if (FD_ISSET(a->fd, &rfds)) {
-            ssize_t n = recv(a->fd, frame, sizeof(frame), 0);
-            if (n < 0)
-                continue;
-            int pr = icsp_handle_frame(a, frame, n, on_data, &echo_mode);
-            if (pr == ICSP_POLL_CLOSED) {
-                printf("chat: o outro lado fechou\n");
-                break;
-            }
-            if (pr == ICSP_POLL_ERR) {
-                printf("chat: erro na associacao (MAC invalido?)\n");
-                break;
-            }
-        }
-    }
+    int r = icsp_relay(a, 1, 1, on_data, &echo_mode);
+    if (r == ICSP_POLL_DEAD)
+        printf("chat: sem resposta do peer ha %ds — encerrando\n",
+               a->dead_timeout_s);
+    else if (r == ICSP_POLL_CLOSED)
+        printf("chat: o outro lado fechou\n");
+    else if (r == ICSP_POLL_ERR)
+        return 1;
     icsp_shutdown_send(a);
     printf("chat: encerrado\n");
     return 0;
@@ -192,7 +132,7 @@ int main(int argc, char **argv)
             printf("chat: session_key == %02x%02x..%02x%02x\n",
                    a.session_key[0], a.session_key[1],
                    a.session_key[30], a.session_key[31]);
-            chat_loop(&a, echo_mode, 1);
+            chat_run(&a, echo_mode);
             printf("chat: aguardando proxima associacao...\n");
         }
     }
@@ -213,7 +153,7 @@ int main(int argc, char **argv)
         printf("chat: session_key == %02x%02x..%02x%02x\n",
                a.session_key[0], a.session_key[1],
                a.session_key[30], a.session_key[31]);
-        return chat_loop(&a, echo_mode, 1);
+        return chat_run(&a, echo_mode);
     }
 
     fprintf(stderr, "chat: modo desconhecido '%s'\n", argv[1]);
