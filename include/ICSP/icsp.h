@@ -114,12 +114,18 @@ struct icsp_assoc {
 
     /* --- session layer: endpoint context ---
      * filled by icsp_endpoint_open(); preserved by the handshake. */
-    int      fd;                 /* AF_PACKET socket on the interface */
+#ifdef _WIN32
+    void    *fd;                /* pcap_t* (Npcap L2 backend) */
+#else
+    int      fd;                /* AF_PACKET socket */
+#endif
     int      ifindex;
     uint8_t  src_mac[6];
     uint64_t dst_addr;          /* peer address (0 for a server: replies
                                    go unicast to a->peer_mac) */
     uint64_t src_addr;          /* our address in the frame (0 = none) */
+    int      rcv_timeout_ms;    /* l2_recv timeout for handshake waits
+                                   (0 = block forever) */
 
     /* keepalive / dead-peer, used by icsp_poll + icsp_keepalive_tick */
     int      hb_interval_s;     /* HEARTBEAT when idle this long (0 = off) */
