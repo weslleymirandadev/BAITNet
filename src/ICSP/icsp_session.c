@@ -13,7 +13,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <sys/select.h>
+#include <poll.h>
 #include <errno.h>
 #include "IPv69/header.h"
 #include "IPv69/l2.h"
@@ -118,21 +118,16 @@ int icsp_keepalive_tick(struct icsp_assoc *a)
 int icsp_poll(struct icsp_assoc *a, int timeout_ms,
               icsp_data_cb on_data, void *ud)
 {
-    fd_set rfds;
-    struct timeval tv;
+    struct pollfd pfd = { a->fd, POLLIN, 0 };
     uint8_t frame[1600];
 
-    FD_ZERO(&rfds);
-    FD_SET(a->fd, &rfds);
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    int r = select(a->fd + 1, &rfds, NULL, NULL, &tv);
+    int r = poll(&pfd, 1, timeout_ms);
     if (r < 0) {
         if (errno == EINTR)
             return icsp_keepalive_tick(a) ? ICSP_POLL_DEAD : ICSP_POLL_TIMEOUT;
         return ICSP_POLL_ERR;
     }
-    if (r == 0)
+    if (r == 0 || !(pfd.revents & POLLIN))
         return icsp_keepalive_tick(a) ? ICSP_POLL_DEAD : ICSP_POLL_TIMEOUT;
     ssize_t n = recv(a->fd, frame, sizeof(frame), 0);
     if (n < 0) {
@@ -141,4 +136,66 @@ int icsp_poll(struct icsp_assoc *a, int timeout_ms,
         return ICSP_POLL_ERR;
     }
     return icsp_handle_frame(a, frame, n, on_data, ud);
+}
+
+int icsp_relay(struct icsp_assoc *a, uint16_t stream_id, int use_stdin,
+               icsp_data_cb on_data, void *ud)
+{
+    uint8_t frame[1600];
+    char line[ICSP_MAX_PAYLOAD];
+
+    for (;;) {
+        struct pollfd pfds[2];
+        int n = 0;
+
+        if (use_stdin) {
+            pfds[n].fd = 0;
+            pfds[n].events = POLLIN;
+            pfds[n].revents = 0;
+            n++;
+        }
+        pfds[n].fd = a->fd;
+        pfds[n].events = POLLIN;
+        pfds[n].revents = 0;
+        int nsock = n;          /* the socket is the last slot */
+        n++;
+
+        int r = poll(pfds, n, 500);
+        if (r < 0) {
+            if (errno == EINTR)
+                continue;
+            return ICSP_POLL_ERR;
+        }
+        if (r == 0) {
+            if (icsp_keepalive_tick(a))
+                return ICSP_POLL_DEAD;
+            continue;
+        }
+
+        if (use_stdin && (pfds[0].revents & POLLIN)) {
+            if (!fgets(line, sizeof(line), stdin)) {
+                if (isatty(0)) {
+                    icsp_shutdown_send(a);  /* Ctrl-D: graceful close */
+                    return ICSP_POLL_EOF;
+                }
+                use_stdin = 0;  /* pipe/daemon EOF: keep receiving only */
+                continue;
+            }
+            size_t len = strlen(line);
+            while (len && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+                line[--len] = 0;
+            if (len && icsp_data_send(a, stream_id,
+                                      (const uint8_t *)line, len) < 0)
+                return ICSP_POLL_ERR;
+        }
+        if (pfds[nsock].revents & POLLIN) {
+            ssize_t n = recv(a->fd, frame, sizeof(frame), 0);
+            if (n < 0)
+                continue;
+            int pr = icsp_handle_frame(a, frame, n, on_data, ud);
+            if (pr == ICSP_POLL_CLOSED || pr == ICSP_POLL_DEAD ||
+                pr == ICSP_POLL_ERR)
+                return pr;
+        }
+    }
 }
