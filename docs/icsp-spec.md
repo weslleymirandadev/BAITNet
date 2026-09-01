@@ -99,15 +99,43 @@ authenticate the peer (same pubkey allowlist as DHCP).
 ## 6. Folder structure
 
 ```
-include/ICSP/icsp.h          — public API + wire constants
-include/ICSP/icsp_internal.h — internal structures (association, streams)
-src/ICSP/icsp.c              — core: association, states, chunk RX/TX
+include/ICSP/icsp.h          — public API + wire constants (transport + session)
+src/ICSP/icsp.c              — core: CRC32c, chunk plumbing, shared packet send
 src/ICSP/icsp_handshake.c    — INIT/cookie/key derivation
 src/ICSP/icsp_data.c         — streams, TSN, SACK, retransmission
-src/ICSP/icsp_heartbeat.c    — heartbeat + failover
-tests/icsp_test.c            — test server/client pair
+src/ICSP/icsp_life.c         — heartbeat, SHUTDOWN, STREAM-RESET
+src/ICSP/icsp_session.c      — session layer: endpoint, recv, poll (netcat-friendly)
+tests/icsp_test.c            — test server/client pair (ipv69 icsp)
+examples/icsp_chat.c         — standalone chat example (make chat)
 docs/icsp-spec.md            — this document
 ```
+
+## 6.1 Session layer (the "netcat" API)
+
+Tools don't touch frames or chunk dispatch anymore. The endpoint
+context (fd, ifindex, src_mac, dst_addr) and keepalive config live in
+`struct icsp_assoc`; `icsp_endpoint_open()` fills them in one call:
+
+```c
+struct icsp_assoc a;
+uint8_t sk[64];
+icsp_endpoint_open(&a, "wlan0", sk);        /* keyring identity + raw socket */
+icsp_client_handshake(&a, dst, port, sk);   /* or icsp_server_accept(&a, port, ...) */
+a.hb_interval_s = 6;                        /* keepalive config (0 = off) */
+a.dead_timeout_s = 18;
+
+/* service loop: poll dispatches frames, answers heartbeats, sends SACKs */
+int r = icsp_poll(&a, 200, on_data, NULL);
+/* or multiplex yourself: select() on a.fd + stdin, then
+   icsp_handle_frame(&a, frame, n, on_data, NULL) and
+   icsp_keepalive_tick(&a) on idle — what examples/icsp_chat.c does */
+```
+
+All senders take only the association: `icsp_data_send(&a, stream, data, len)`,
+`icsp_shutdown_send(&a)`, `icsp_heartbeat_send(&a)`, ... Poll return
+codes: `ICSP_POLL_DATA` (a message hit the callback), `ICSP_POLL_TIMEOUT`,
+`ICSP_POLL_DEAD` (peer silent for `dead_timeout_s`), `ICSP_POLL_CLOSED`
+(peer SHUTDOWN), `ICSP_POLL_ERR`.
 
 The `lib/ed25519` library gains exposed wrappers: `nacl_scalarmult`
 (X25519) and `nacl_secretbox_*` (AEAD) — already in tweetnacl.c, just
