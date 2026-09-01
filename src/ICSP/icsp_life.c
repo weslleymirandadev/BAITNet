@@ -9,7 +9,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include <sys/socket.h>
 #include "ICSP/icsp.h"
 
 /* send HEARTBEAT; returns 0 on success */

@@ -13,7 +13,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include <sys/socket.h>
 #include "ed25519.h"
 #include "ICSP/icsp.h"
 
