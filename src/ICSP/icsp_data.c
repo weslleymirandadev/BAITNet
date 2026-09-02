@@ -80,7 +80,7 @@ int icsp_data_send(struct icsp_assoc *a, uint16_t stream_id,
     clear[7] = (uint8_t)s->next_send_seq;
     memcpy(clear + 8, data, len);
     data_nonce(a, tsn, nonce);
-    ed25519_secretbox(box, clear, 8 + len, nonce, a->session_key);
+    ed25519_secretbox(box, clear, 8 + len, nonce, a->send_key);
 
     /* chunk: [type][flags][len][tsn 4][stream 2][seq 2][box] */
     uint8_t *d = icsp_chunk_put(chunk, ICSP_CHUNK_DATA, 4 + 2 + 2 + 32 + 8 + len);
@@ -145,7 +145,7 @@ int icsp_data_retransmit(struct icsp_assoc *a, int timeout_s)
         memcpy(clear + 8, a->sendq[i].data, a->sendq[i].len);
         data_nonce(a, tsn, nonce);
         ed25519_secretbox(box, clear, 8 + a->sendq[i].len, nonce,
-                          a->session_key);
+                          a->send_key);
         uint8_t *d = icsp_chunk_put(chunk, ICSP_CHUNK_DATA,
                                     4 + 2 + 2 + 32 + 8 + a->sendq[i].len);
         d[0] = (uint8_t)(tsn >> 24); d[1] = (uint8_t)(tsn >> 16);
@@ -196,11 +196,26 @@ int icsp_data_handle(struct icsp_assoc *a, const uint8_t *payload,
             uint8_t clear[ICSP_MAX_PAYLOAD + 4 + 4];
             uint8_t nonce[24];
 
+            /* WireGuard-style sliding window: drop replays and TSNs too
+               old to reorder, BEFORE paying the AEAD cost. Out-of-order
+               but in-window TSNs are marked seen and processed (the
+               stream ordering gate + rcvq reorder them). */
+            if (tsn > a->rw_tsn) {
+                uint32_t shift = tsn - a->rw_tsn;
+                a->rw_mask = shift < 32 ? (a->rw_mask << shift) | 1 : 1;
+                a->rw_tsn = tsn;
+            } else if (a->rw_tsn - tsn >= 32) {
+                goto next;              /* outside the window */
+            } else if ((a->rw_mask >> (a->rw_tsn - tsn)) & 1) {
+                goto next;              /* replay */
+            } else {
+                a->rw_mask |= 1u << (a->rw_tsn - tsn);
+            }
             data_nonce(a, tsn, nonce);
             if (boxlen < 32 || boxlen > ICSP_MAX_PAYLOAD + 32 + 8)
                 goto next;
             if (ed25519_secretbox_open(clear, cd + 8, boxlen - 32, nonce,
-                                       a->session_key) != 0)
+                                       a->recv_key) != 0)
                 return -1;          /* bad MAC: drop association */
             /* validate the plaintext matches the header (anti-replay) */
             uint32_t t2 = ((uint32_t)clear[0] << 24) |
