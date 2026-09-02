@@ -46,11 +46,11 @@ static void usage(void)
         "                                       DHCP69 server (private networks)\n"
         "  dhcp   <ifname> [--server-pub HEX] [--key HEX] [--remote gw:port]\n"
         "                                       DHCP69 client (get a lease)\n"
-        "  send   <ifname> <dst[:port]> <src_port> [payload] [--remote gws]\n"
+        "  send   <ifname> <dst[:port]> [src_port] [payload] [--remote gws]\n"
         "  recv   <ifname> [addr[:port]] [--remote gws]   listen for dgrams\n"
         "  ping   <ifname> <dst> [payload]      echo request\n"
         "  lease | renew | status [-s PATH]     query the tun daemon (Linux)\n"
-        "  icsp   <server|client> <ifname> [dst:porta]   stream handshake (nh=2)\n"
+        "  icsp   <server|client> <ifname> [dst:port]    stream handshake (nh=2)\n"
         "\n"
         "Ports are DECIMAL and glued to the address (addr:16 = port 16).\n"
         "On Windows, tun/lease/status are not available.\n");
@@ -61,7 +61,7 @@ int main(int argc, char **argv)
     const char *cmd;
 
     if (plat_sock_init() < 0) {
-        fprintf(stderr, "ipv69: winsock init falhou\n");
+        fprintf(stderr, "ipv69: winsock init failed\n");
         return 1;
     }
     if (argc < 2) {
@@ -92,7 +92,7 @@ int main(int argc, char **argv)
 #ifdef _WIN32
     if (!strcmp(cmd, "tun") || !strcmp(cmd, "lease") || !strcmp(cmd, "renew") ||
         !strcmp(cmd, "status")) {
-        fprintf(stderr, "ipv69: '%s' nao e suportado no Windows\n", cmd);
+        fprintf(stderr, "ipv69: '%s' is not supported on Windows\n", cmd);
         return 1;
     }
 #else

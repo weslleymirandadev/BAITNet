@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>         /* getpid (ephemeral src_port) */
 #ifdef _WIN32
 #include "IPv69/plat.h"
 #else
@@ -209,7 +210,7 @@ static void dump_frame(const uint8_t *frame, size_t len)
     const struct ipv69_header *h = (const struct ipv69_header *)(frame + 14);
     size_t plen;
 
-    if (len < 14 + IPV69_HEADER_LEN) { printf("frame curto (%zu)\n", len); return; }
+    if (len < 14 + IPV69_HEADER_LEN) { printf("frame too short (%zu)\n", len); return; }
     plen = rd_be16(&h->payload_len);
     printf("frame: eth_dst=%02x:%02x:%02x:%02x:%02x:%02x src=%016llx dst=%016llx nh=%u",
            eth->dst_mac[0], eth->dst_mac[1], eth->dst_mac[2],
@@ -366,7 +367,7 @@ static int load_auto_key(uint8_t sk[64])
     keyring_paths(dir, sizeof(dir), key, sizeof(key), kpub, sizeof(kpub));
     if (keyring_load_or_create(key, kpub, sk, pub, comment,
                                sizeof(comment)) < 0) {
-        fprintf(stderr, "nao foi possivel carregar/criar chave em %s\n", key);
+        fprintf(stderr, "could not load/create key at %s\n", key);
         return -1;
     }
     return 0;
@@ -386,13 +387,13 @@ static int dhcp_client(const uint8_t src_mac[6],
            has_sk ? " (Ed25519)" : "");
     if (dhcp_discover(src_mac, sk, has_sk, server_pub, has_server_pub,
                       &addr) < 0) {
-        printf("dhcp: nao foi possivel obter lease (timeout/recusado)\n");
+        printf("dhcp: could not obtain a lease (timeout/refused)\n");
         return 1;
     }
-    printf("dhcp: ACK %016llx — configurado!\n", (unsigned long long)addr);
+    printf("dhcp: ACK %016llx — configured!\n", (unsigned long long)addr);
 
     /* keep receiving for a few seconds to show it works */
-    printf("dhcp: bound src=%016llx, ouvindo 5s...\n", (unsigned long long)addr);
+    printf("dhcp: bound src=%016llx, listening for 5s...\n", (unsigned long long)addr);
     for (;;) {
         n = tun_recv(frame, sizeof(frame), 5000);
         if (n <= 0) break;
@@ -457,7 +458,7 @@ int cmd_raw(int argc, char **argv)
         if (!strcmp(argv[i], "--key")) {
             uint8_t seed[32];
             if (hex_decode(argv[i + 1], seed, 32) != 32) {
-                fprintf(stderr, "key: privkey invalida (32 bytes hex)\n");
+                fprintf(stderr, "key: invalid private key (32 bytes hex)\n");
                 return 1;
             }
             memcpy(sk, seed, 32);
@@ -465,14 +466,14 @@ int cmd_raw(int argc, char **argv)
             has_sk = 1;
         } else if (!strcmp(argv[i], "--server-pub")) {
             if (hex_decode(argv[i + 1], server_pub, 32) != 32) {
-                fprintf(stderr, "server-pub: pubkey invalida (32 bytes hex)\n");
+                fprintf(stderr, "server-pub: invalid pubkey (32 bytes hex)\n");
                 return 1;
             }
             has_server_pub = 1;
         } else if (!strcmp(argv[i], "--auth")) {
             /* dgram auth: MAC every datagram with X25519(our sk, dst pub) */
             if (hex_decode(argv[i + 1], auth_pub, 32) != 32) {
-                fprintf(stderr, "auth: pubkey invalida (32 bytes hex)\n");
+                fprintf(stderr, "auth: invalid pubkey (32 bytes hex)\n");
                 return 1;
             }
             has_auth = 1;
@@ -480,7 +481,7 @@ int cmd_raw(int argc, char **argv)
             /* recv: trusted sender pubkeys (dgram auth verification) */
             if (n_rpubs >= 16 ||
                 hex_decode(argv[i + 1], rpubs[n_rpubs], 32) != 32) {
-                fprintf(stderr, "peer: pubkey invalida (32 bytes hex)\n");
+                fprintf(stderr, "peer: invalid pubkey (32 bytes hex)\n");
                 return 1;
             }
             n_rpubs++;
@@ -501,10 +502,10 @@ int cmd_raw(int argc, char **argv)
                     n_rpubs++;
             }
             fclose(f);
-            printf("recv: %d pub(s) confiaveis de %s\n", n_rpubs, argv[i + 1]);
+            printf("recv: %d trusted pub(s) from %s\n", n_rpubs, argv[i + 1]);
         } else if (!strcmp(argv[i], "--remote")) {
             if (gw_parse(argv[i + 1]) < 0) {
-                fprintf(stderr, "remote: lista de gateways invalida (%s)\n",
+                fprintf(stderr, "remote: invalid gateway list (%s)\n",
                         argv[i + 1]);
                 return 1;
             }
@@ -532,23 +533,23 @@ int cmd_raw(int argc, char **argv)
         }
         if (cls != 'A' && cls != 'B' && cls != 'C' &&
             cls != 'D' && cls != 'E') {
-            fprintf(stderr, "addr: classe invalida '%c' (A-E)\n", cls);
+            fprintf(stderr, "addr: invalid class '%c' (A-E)\n", cls);
             return 1;
         }
         if (load_auto_key(sk) < 0) {
-            fprintf(stderr, "addr: sem identidade (ipv69 keygen)\n");
+            fprintf(stderr, "addr: no identity (ipv69 keygen)\n");
             return 1;
         }
         memcpy(pub, sk + 32, 32);
         ipv69_addr_derive(derived, pub, cls);
-        printf("addr: %02x.%02x.%02x.%02x.%02x (derivado da identidade, classe %c)\n",
+        printf("addr: %02x.%02x.%02x.%02x.%02x (derived from identity, class %c)\n",
                derived[0], derived[1], derived[2], derived[3], derived[4], cls);
         if (do_dad) {
             if (argc < 3) {
-                fprintf(stderr, "addr --dad: precisa <ifname>\n");
+                fprintf(stderr, "addr --dad: requires <ifname>\n");
                 return 1;
             }
-            /* DAD: ND request pro proprio endereco; reply = colisao */
+            /* DAD: ND request for our own address; reply = collision */
             uint8_t req[1 + 5] = { IPV69_CTRL_ND_REQUEST };
             memcpy(req + 1, derived, 5);
             if (tun_open(argv[2], &ifindex, src_mac) < 0)
@@ -570,7 +571,7 @@ int cmd_raw(int argc, char **argv)
                         collision = 1;
                 }
             }
-            printf("dad: %s\n", collision ? "COLISAO - endereco em uso" : "endereco livre");
+            printf("dad: %s\n", collision ? "COLLISION - address in use" : "address free");
         }
         return 0;
     }
@@ -580,7 +581,7 @@ int cmd_raw(int argc, char **argv)
     if (!strcmp(argv[1], "net") && argc >= 4 && !strcmp(argv[2], "up")) {
         uint64_t addr;
         if (load_auto_key(sk) < 0) {
-            fprintf(stderr, "net: sem identidade (ipv69 keygen)\n");
+            fprintf(stderr, "net: no identity (ipv69 keygen)\n");
             return 1;
         }
         has_sk = 1;
@@ -591,8 +592,8 @@ int cmd_raw(int argc, char **argv)
                src_mac[3], src_mac[4], src_mac[5]);
         if (dhcp_discover(src_mac, sk, has_sk,
                           server_pub, has_server_pub, &addr) < 0) {
-            fprintf(stderr, "net: sem servidor DHCP na rede local; "
-                    "suba um dhcpd ou use --remote\n");
+            fprintf(stderr, "net: no DHCP server on the local network; "
+                    "run a dhcpd or use --remote\n");
             return 1;
         }
         printf("net: up! addr %02x.%02x.%02x.%02x.%02x (lease)\n",
@@ -628,7 +629,7 @@ int cmd_raw(int argc, char **argv)
         uint64_t my_addr = 0;
         uint16_t my_port = 0;
         if (argc > 3 && parse_ipv69_addr_port(argv[3], &my_addr, &my_port) < 0) {
-            fprintf(stderr, "recv: src_addr[:porta] invalido\n");
+            fprintf(stderr, "recv: invalid src_addr[:port]\n");
             return 1;
         }
         if (g_ngw > 0 && !my_addr) {
@@ -638,7 +639,7 @@ int cmd_raw(int argc, char **argv)
             if (load_auto_key(sk) == 0) {
                 ipv69_addr_derive(derived, sk + 32, 'C');
                 my_addr = get_addr40(derived);
-                printf("recv: addr derivado da identidade: %016llx (classe C)\n",
+                printf("recv: addr derived from identity: %016llx (class C)\n",
                        (unsigned long long)my_addr);
             }
             has_sk = 1;
@@ -651,15 +652,15 @@ int cmd_raw(int argc, char **argv)
             has_sk = 1;
             if (dhcp_discover(src_mac, sk, has_sk,
                               server_pub, has_server_pub, &my_addr) < 0) {
-                fprintf(stderr, "recv: sem servidor DHCP na rede local; "
-                        "suba um dhcpd ou use --remote\n");
+                fprintf(stderr, "recv: no DHCP server on the local network; "
+                        "run a dhcpd or use --remote\n");
                 return 1;
             }
             printf("recv: addr = lease %016llx (auto)\n",
                    (unsigned long long)my_addr);
         }
         if (my_addr)
-            printf("bound src=%016llx port=%04x (filtrando)\n",
+            printf("bound src=%016llx port=%04x (filtering)\n",
                    (unsigned long long)my_addr, my_port);
         /* dgram auth verification (--peer/--peer-file) needs our key
            even with an explicit address / local mode */
@@ -715,7 +716,7 @@ int cmd_raw(int argc, char **argv)
                     announce_to(sk, my_addr, src_mac,
                                 (const struct sockaddr_storage *)&c4,
                                 sizeof(c4));
-                    printf("recv: call de %016llx — probe direto\n",
+                    printf("recv: call from %016llx — direct probe\n",
                            (unsigned long long)caller);
                     fflush(stdout);
                     continue;
@@ -752,7 +753,7 @@ int cmd_raw(int argc, char **argv)
                     }
                     if (!auth_ok)
                         continue;       /* forged/unknown: silent drop */
-                    printf("recv: dgram autenticado (pub=%02x%02x..)\n",
+                    printf("recv: authenticated datagram (pub=%02x%02x..)\n",
                            pub[0], pub[1]);
                 }
             }
@@ -762,22 +763,39 @@ int cmd_raw(int argc, char **argv)
 
     if (!strcmp(argv[1], "send")) {
         uint64_t dst, src = 0;
-        uint16_t dp = 0;
+        uint16_t dp = 0, sp;
         size_t plen;
-        if (argc < 5 || parse_ipv69_addr_port(argv[3], &dst, &dp) < 0) {
-            fprintf(stderr, "send: precisa <dst[:porta]> <src_port> [payload]\n");
+        if (argc < 4 || parse_ipv69_addr_port(argv[3], &dst, &dp) < 0) {
+            fprintf(stderr, "send: requires <dst[:port]> [src_port] [payload]\n");
             return 1;
         }
-        const uint8_t *data = (const uint8_t *)(argc > 5 ? argv[5]
-                                                        : "hello ipv69");
-        size_t dlen = strlen((const char *)data);
-        uint16_t sp = (uint16_t)strtoul(argv[4], NULL, 10);
-        if (argc > 6) {
-            fprintf(stderr, "send: src manual removido (anti-spoofing) - "
-                    "o src agora e descoberto automaticamente\n");
+        /* src_port is optional: a bare decimal number is the port,
+           otherwise an ephemeral one is picked and argv[4] is payload */
+        int argi = 4;
+        if (argc > 4) {
+            const char *p = argv[4];
+            while (*p >= '0' && *p <= '9')
+                p++;
+            if (*p == 0) {
+                sp = (uint16_t)strtoul(argv[4], NULL, 10);
+                argi = 5;
+            } else {
+                sp = (uint16_t)(50000 + getpid() % 1000);
+                printf("send: src_port %u (ephemeral)\n", sp);
+            }
+        } else {
+            sp = (uint16_t)(50000 + getpid() % 1000);
+            printf("send: src_port %u (ephemeral)\n", sp);
+        }
+        const char *payload = argc > argi ? argv[argi] : "hello ipv69";
+        if (argc > argi + 1) {
+            fprintf(stderr, "send: manual src removed (anti-spoofing) - "
+                    "the src is now discovered automatically\n");
             return 1;
         }
-        /* src automatico (anti-spoofing): never user-chosen.
+        const uint8_t *data = (const uint8_t *)payload;
+        size_t dlen = strlen(payload);
+        /* src is automatic (anti-spoofing): never user-chosen.
            local: silent DHCP discovers the real lease;
            tunnel: derived from the identity (class C). */
         if (g_ngw > 0) {
@@ -785,7 +803,7 @@ int cmd_raw(int argc, char **argv)
             if (load_auto_key(sk) == 0) {
                 ipv69_addr_derive(derived, sk + 32, 'C');
                 src = get_addr40(derived);
-                printf("send: src derivado da identidade: %016llx\n",
+                printf("send: src derived from identity: %016llx\n",
                        (unsigned long long)src);
             }
             has_sk = 1;
@@ -795,8 +813,8 @@ int cmd_raw(int argc, char **argv)
             has_sk = 1;
             if (dhcp_discover(src_mac, sk, has_sk,
                               server_pub, has_server_pub, &src) < 0) {
-                fprintf(stderr, "send: sem servidor DHCP na rede local; "
-                        "suba um dhcpd ou use --remote\n");
+                fprintf(stderr, "send: no DHCP server on the local network; "
+                        "run a dhcpd or use --remote\n");
                 return 1;
             }
             printf("send: src = lease %016llx (auto)\n",
@@ -860,7 +878,7 @@ int cmd_raw(int argc, char **argv)
         uint64_t dst;
         uint8_t req[1 + 512];
         if (argc < 4 || parse_ipv69_addr(argv[3], &dst) < 0) {
-            fprintf(stderr, "ping: precisa <dst> [payload]\n");
+            fprintf(stderr, "ping: requires <dst> [payload]\n");
             return 1;
         }
         const char *data = argc > 4 ? argv[4] : "ping";
@@ -870,7 +888,7 @@ int cmd_raw(int argc, char **argv)
         size_t len = build_frame(frame, bcast, src_mac, 1, dst, IPV69_NEXT_CONTROL,
                                  64, 0, 0, req, 1 + dlen);
         if (tun_send(bcast, frame, len) < 0) { perror_sock("sendto"); return 1; }
-        printf("ping enviado para %016llx, aguardando reply...\n",
+        printf("ping sent to %016llx, waiting for reply...\n",
                (unsigned long long)dst);
         for (;;) {
             ssize_t n = tun_recv(frame, sizeof(frame), 2000);
@@ -880,7 +898,7 @@ int cmd_raw(int argc, char **argv)
                     (const struct ipv69_header *)(frame + 14);
                 if (h->next_header == IPV69_NEXT_CONTROL &&
                     frame[14 + IPV69_HEADER_LEN] == IPV69_CTRL_ECHO_REPLY) {
-                    printf("reply de %016llx: ",
+                    printf("reply from %016llx: ",
                            (unsigned long long)get_addr40(h->source));
                     for (size_t i = 1; i < (size_t)n - 14 - IPV69_HEADER_LEN && i <= dlen; i++)
                         putchar((frame[14 + IPV69_HEADER_LEN + i] >= 0x20 &&
@@ -903,6 +921,6 @@ int cmd_raw(int argc, char **argv)
         return dhcp_client(src_mac, sk, has_sk, server_pub, has_server_pub);
     }
 
-    fprintf(stderr, "modo desconhecido: %s\n", argv[1]);
+    fprintf(stderr, "unknown mode: %s\n", argv[1]);
     return 1;
 }
