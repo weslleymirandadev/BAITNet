@@ -2,9 +2,12 @@
 
 Experimental protocol of its own (EtherType `0x6969`, 40-bit addresses)
 with DHCP69 (automatic address configuration) and Ed25519
-authentication. Everything runs on L2 — no IP, no router, no internet.
-No kernel module: the AF_69 socket family was removed; every tool uses
-the portable raw L2 backend (AF_PACKET on Linux, Npcap on Windows).
+authentication. The protocol is **L2-native**: where the hosts share a
+medium (cable, Wi-Fi, radio) it runs with no IP and no router of any
+kind — IP appears only as an optional carrier at the edge, when a
+gateway joins two islands across the internet (section 7). No kernel
+module: the AF_69 socket family was removed; every tool uses the
+portable raw L2 backend (AF_PACKET on Linux, Npcap on Windows).
 
 ```
 ┌─────────────────┐   Wi-Fi / Ethernet cable     ┌─────────────────┐
@@ -311,6 +314,18 @@ Details and wire format: `docs/security.md`.
 ---
 
 ## 7. Internet: tunnel gateway (multi-gateway, P2P)
+
+**The model.** Each local network is an *island* where IPv69 runs
+natively on L2. To reach an island elsewhere, run a gateway (`ipv69
+gw`) on any host with a public IP and point your tools at it with
+`--remote`. A gateway is an **entry point, not a middlebox**: it
+introduces peers to each other (see below) and only relays when no
+direct path can open. The data path is peer-to-peer — once two hosts
+know each other's endpoint, the gateway is out of the way. There is no
+central server and no load balancer: every gateway serves its own
+island, and a client's `--remote` list is only for redundancy (it
+announces to all of them and fails over). Gateways themselves can be
+linked (`--peer-gw`) so islands reach each other's networks directly.
 
 `ipv69 gw` bridges IPv69 L2 frames over UDP, so devices behind NAT can
 join through any host with a public IP. No single gateway is required —
