@@ -15,11 +15,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <errno.h>
+#ifdef _WIN32
+#include "IPv69/plat.h"
+#else
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/time.h>
-#include <time.h>
-#include <errno.h>
+#endif
 #include "IPv69/parse.h"
 #include "IPv69/l2.h"
 #include "ICSP/icsp.h"
