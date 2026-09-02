@@ -145,6 +145,50 @@ void ed25519_sha512(uint8_t out[64], const uint8_t *msg, size_t n)
     crypto_hash(out, msg, n);
 }
 
+void ed25519_hmac_sha512(uint8_t out[64], const uint8_t *msg, size_t n,
+                         const uint8_t *key, size_t klen)
+{
+    uint8_t k[128];
+    uint8_t ipad[128], opad[128];
+    uint8_t inner[64];
+
+    memset(k, 0, sizeof(k));
+    if (klen > sizeof(k)) {
+        ed25519_sha512(k, key, klen);
+    } else {
+        memcpy(k, key, klen);
+    }
+    for (size_t i = 0; i < sizeof(k); i++) {
+        ipad[i] = k[i] ^ 0x36;
+        opad[i] = k[i] ^ 0x5c;
+    }
+    /* inner = SHA512(ipad || msg) */
+    {
+        uint8_t buf[128 + 2048];
+        memcpy(buf, ipad, sizeof(ipad));
+        memcpy(buf + sizeof(ipad), msg, n);
+        ed25519_sha512(inner, buf, sizeof(ipad) + n);
+    }
+    {
+        uint8_t buf[128 + 64];
+        memcpy(buf, opad, sizeof(opad));
+        memcpy(buf + sizeof(opad), inner, 64);
+        ed25519_sha512(out, buf, sizeof(opad) + 64);
+    }
+}
+
+void ed25519_poly1305(uint8_t out[16], const uint8_t *msg, size_t n,
+                      const uint8_t key[32])
+{
+    crypto_onetimeauth(out, msg, (unsigned long long)n, key);
+}
+
+int ed25519_poly1305_verify(const uint8_t tag[16], const uint8_t *msg,
+                            size_t n, const uint8_t key[32])
+{
+    return crypto_onetimeauth_verify(tag, msg, (unsigned long long)n, key);
+}
+
 void ed25519_secretbox(uint8_t *c, const uint8_t *m, size_t n,
                        const uint8_t nonce[24], const uint8_t key[32])
 {

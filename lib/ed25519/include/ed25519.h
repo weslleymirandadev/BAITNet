@@ -51,6 +51,19 @@ void ed25519_keyfile_default_path(char *out, size_t outsz);
 /* SHA-512 (TweetNaCl crypto_hash). 64-byte digest. */
 void ed25519_sha512(uint8_t out[64], const uint8_t *msg, size_t n);
 
+/* HMAC-SHA512 (RFC 2104) built on ed25519_sha512. key may be any length
+ * (block size 128); out[64]. Cheap enough for per-packet filters. */
+void ed25519_hmac_sha512(uint8_t out[64], const uint8_t *msg, size_t n,
+                         const uint8_t *key, size_t klen);
+
+/* Poly1305 one-time authenticator (TweetNaCl crypto_onetimeauth):
+ * 16-byte tag over msg with a 32-byte key — ~µs, the building block of
+ * the WireGuard-style mac1 pre-auth filter and dgram authentication. */
+void ed25519_poly1305(uint8_t out[16], const uint8_t *msg, size_t n,
+                      const uint8_t key[32]);
+int ed25519_poly1305_verify(const uint8_t tag[16], const uint8_t *msg,
+                            size_t n, const uint8_t key[32]);
+
 /* XSalsa20-Poly1305 secretbox (TweetNaCl crypto_secretbox): encrypts
    `n` bytes to `c`, authenticated. key[32], nonce[24]. open returns
    0 on success, -1 on auth failure.
