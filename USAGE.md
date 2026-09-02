@@ -417,6 +417,19 @@ signature binds the link to the configured identity. This is the
 building block of a gateway-to-gateway mesh: add one `--peer-gw` per
 neighbor (max 8) and QUERYs propagate hop by hop.
 
+### Remote routes (P4b): QUERY becomes a local lookup
+
+Every gateway also announces the clients it serves — `addr/prefix ->
+endpoint` (GW_ROUTE, piggybacked on the 30s link announce) — so its
+neighbors learn WHERE an address lives. A QUERY for a remote address is
+then answered straight from the route table (the endpoint the owning
+gateway advertised), with no mesh round-trip; data relay goes only to
+the owning link instead of flooding. The QUERY forward remains as the
+fallback for the window before the first route announce (or after a
+route expires, 90s). This is the IPv69 equivalent of a routing
+protocol: route by prefix, verify by range — still no per-packet
+crypto anywhere.
+
 ---
 
 ## 8. Build

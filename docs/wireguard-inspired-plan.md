@@ -9,7 +9,7 @@ Source of ideas: WireGuard protocol design
 problems IPv69 has: handshake DoS, per-packet crypto cost, state
 allocation before authentication, and configuration pain.
 
-## Status: P0-P3 IMPLEMENTED (see USAGE.md §12)
+## Status: P0-P4 IMPLEMENTED (see USAGE.md §7 and §12)
 
 - P0 anti-DoS: mac1 pre-auth filter (Poly1305 over the dest addr),
   per-sender token buckets (ICSP INIT / dhcpd / gw broadcast+learn).
@@ -25,6 +25,12 @@ allocation before authentication, and configuration pain.
   X25519, edwards->montgomery conversion); gateway mesh (GW_ANN
   discovery, GW_Q/GW_R QUERY forwarding, P2P across federated
   gateways).
+- P4 federation across islands: `gw --peer-gw PUB@endpoint` links two
+  gateways in different L2 islands over an authenticated UDP tunnel
+  (P4a); each gateway announces host routes for its clients
+  (GW_ROUTE), so QUERY resolves from the route table with no mesh
+  round-trip and data routes only to the owning link (P4b). The link
+  carrier can be IPv6-only — zero IPv4 on the path.
 
 This document below remains the design rationale + the phase-by-phase
 breakdown that was implemented.
