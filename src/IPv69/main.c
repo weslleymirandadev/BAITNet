@@ -83,6 +83,7 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "keygen"))    return cmd_keygen(argc - 1, argv + 1);
     if (!strcmp(cmd, "dhcpd"))     return cmd_dhcpd(argc - 1, argv + 1);
     if (!strcmp(cmd, "dhcp"))      return cmd_raw(argc, argv);
+    if (!strcmp(cmd, "net"))       return cmd_raw(argc, argv);
     if (!strcmp(cmd, "send"))      return cmd_raw(argc, argv);
     if (!strcmp(cmd, "recv"))      return cmd_raw(argc, argv);
     if (!strcmp(cmd, "ping"))      return cmd_raw(argc, argv);

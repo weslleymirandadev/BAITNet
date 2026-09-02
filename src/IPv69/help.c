@@ -19,6 +19,7 @@ static void usage_general(void)
         "  keygen      generate Ed25519 key pairs (keyring ~/.hosts69)\n"
         "  dhcpd       DHCP69 server (private networks)\n"
         "  dhcp        DHCP69 client (get a lease)\n"
+        "  net up      bring the device up (keygen + DHCP lease)\n"
         "  send        send a datagram (src is auto, anti-spoofing)\n"
         "  recv        listen for datagrams\n"
         "  ping        echo request\n"

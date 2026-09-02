@@ -245,24 +245,40 @@ static int dhcp_discover(const uint8_t src_mac[6],
     if (tun_send(bcast, frame, len) < 0)
         return -1;
 
-    /* wait OFFER [8][mac][addr5][lease4] + pub + sig */
-    for (;;) {
-        n = tun_recv(frame, sizeof(frame), 3000);
-        if (n <= 0) return -1;                  /* timeout */
-        if (n < 14 + IPV69_HEADER_LEN + 16 + (ssize_t)SIGSZ) continue;
-        const struct ipv69_header *h = (const struct ipv69_header *)(frame + 14);
-        const uint8_t *p = frame + 14 + IPV69_HEADER_LEN;
-        if (h->next_header != IPV69_NEXT_CONTROL || p[0] != IPV69_CTRL_DHCP_OFFER)
-            continue;
-        if (memcmp(p + 1, src_mac, 6)) continue;
-        if (has_server_pub) {
-            const uint8_t *spub = p + 16, *ssig = p + 16 + 32;
-            if (memcmp(spub, server_pub, 32) ||
-                ed25519_verify(p, 16, ssig, server_pub) != 0)
-                return -1;
+    /* wait OFFER [8][mac][addr5][lease4] + pub + sig, retrying the
+       DISCOVER with backoff + jitter (WG REKEY_TIMEOUT discipline) */
+    {
+        int offer_ok = 0;
+        for (int attempt = 0; attempt < 3 && !offer_ok; attempt++) {
+            if (attempt > 0) {
+                plat_sleep_ms(200 * attempt);
+                tun_send(bcast, frame, len);    /* re-send DISCOVER */
+            }
+            uint64_t wait = (uint64_t)(1000 << attempt) + rand() % 200;
+            for (;;) {
+                n = tun_recv(frame, sizeof(frame), (int)wait);
+                if (n <= 0) break;              /* timeout: retry */
+                if (n < 14 + IPV69_HEADER_LEN + 16 + (ssize_t)SIGSZ) continue;
+                const struct ipv69_header *h =
+                    (const struct ipv69_header *)(frame + 14);
+                const uint8_t *p = frame + 14 + IPV69_HEADER_LEN;
+                if (h->next_header != IPV69_NEXT_CONTROL ||
+                    p[0] != IPV69_CTRL_DHCP_OFFER)
+                    continue;
+                if (memcmp(p + 1, src_mac, 6)) continue;
+                if (has_server_pub) {
+                    const uint8_t *spub = p + 16, *ssig = p + 16 + 32;
+                    if (memcmp(spub, server_pub, 32) ||
+                        ed25519_verify(p, 16, ssig, server_pub) != 0)
+                        return -1;
+                }
+                addr = get_addr40(p + 7);
+                offer_ok = 1;
+                break;
+            }
         }
-        addr = get_addr40(p + 7);
-        break;
+        if (!offer_ok)
+            return -1;
     }
 
     /* REQUEST [9][mac][addr5] + pub + sig + mac1 */
@@ -282,23 +298,38 @@ static int dhcp_discover(const uint8_t src_mac[6],
     if (tun_send(bcast, frame, len) < 0)
         return -1;
 
-    /* wait ACK [10][mac][addr5][lease4] + pub + sig */
-    for (;;) {
-        n = tun_recv(frame, sizeof(frame), 3000);
-        if (n <= 0) return -1;                  /* timeout */
-        if (n < 14 + IPV69_HEADER_LEN + 16 + (ssize_t)SIGSZ) continue;
-        const struct ipv69_header *h = (const struct ipv69_header *)(frame + 14);
-        const uint8_t *p = frame + 14 + IPV69_HEADER_LEN;
-        if (h->next_header != IPV69_NEXT_CONTROL || p[0] != IPV69_CTRL_DHCP_ACK)
-            continue;
-        if (memcmp(p + 1, src_mac, 6)) continue;
-        if (has_server_pub) {
-            const uint8_t *spub = p + 16, *ssig = p + 16 + 32;
-            if (memcmp(spub, server_pub, 32) ||
-                ed25519_verify(p, 16, ssig, server_pub) != 0)
-                return -1;
+    /* wait ACK [10][mac][addr5][lease4] + pub + sig, same backoff */
+    {
+        int ack_ok = 0;
+        for (int attempt = 0; attempt < 3 && !ack_ok; attempt++) {
+            if (attempt > 0) {
+                plat_sleep_ms(200 * attempt);
+                tun_send(bcast, frame, len);    /* re-send REQUEST */
+            }
+            uint64_t wait = (uint64_t)(1000 << attempt) + rand() % 200;
+            for (;;) {
+                n = tun_recv(frame, sizeof(frame), (int)wait);
+                if (n <= 0) break;
+                if (n < 14 + IPV69_HEADER_LEN + 16 + (ssize_t)SIGSZ) continue;
+                const struct ipv69_header *h =
+                    (const struct ipv69_header *)(frame + 14);
+                const uint8_t *p = frame + 14 + IPV69_HEADER_LEN;
+                if (h->next_header != IPV69_NEXT_CONTROL ||
+                    p[0] != IPV69_CTRL_DHCP_ACK)
+                    continue;
+                if (memcmp(p + 1, src_mac, 6)) continue;
+                if (has_server_pub) {
+                    const uint8_t *spub = p + 16, *ssig = p + 16 + 32;
+                    if (memcmp(spub, server_pub, 32) ||
+                        ed25519_verify(p, 16, ssig, server_pub) != 0)
+                        return -1;
+                }
+                ack_ok = 1;
+                break;
+            }
         }
-        break;
+        if (!ack_ok)
+            return -1;
     }
     *out_addr = addr;
     return 0;
@@ -451,16 +482,44 @@ int cmd_raw(int argc, char **argv)
         return 0;
     }
 
+    /* `net up <ifname>` — bring the device up (WireGuard style):
+       keygen if missing, DHCP lease with backoff, print the bind. */
+    if (!strcmp(argv[1], "net") && argc >= 4 && !strcmp(argv[2], "up")) {
+        uint64_t addr;
+        if (load_auto_key(sk) < 0) {
+            fprintf(stderr, "net: sem identidade (ipv69 keygen)\n");
+            return 1;
+        }
+        has_sk = 1;
+        if (tun_open(argv[3], &ifindex, src_mac) < 0)
+            return 1;
+        printf("net: iface=%s mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
+               argv[3], src_mac[0], src_mac[1], src_mac[2],
+               src_mac[3], src_mac[4], src_mac[5]);
+        if (dhcp_discover(src_mac, sk, has_sk,
+                          server_pub, has_server_pub, &addr) < 0) {
+            fprintf(stderr, "net: sem servidor DHCP na rede local; "
+                    "suba um dhcpd ou use --remote\n");
+            return 1;
+        }
+        printf("net: up! addr %02x.%02x.%02x.%02x.%02x (lease)\n",
+               (uint8_t)(addr >> 32), (uint8_t)(addr >> 24),
+               (uint8_t)(addr >> 16), (uint8_t)(addr >> 8),
+               (uint8_t)addr);
+        return 0;
+    }
+
     if (argc < 3) {
         fprintf(stderr,
                 "Usage: %s recv <ifname> [src_addr[:port]]\n"
+                "       %s net up <ifname>          (keygen + DHCP lease)\n"
                 "       %s send <ifname> <dst[:port]> <src_port> [payload]\n"
                 "       %s ping <ifname> <dst> [payload]\n"
                 "       %s dhcp <ifname> [--key PRIV_HEX] [--server-pub PUB_HEX]\n"
                 "  --remote gw:port[,gw:port]  tunnel through a gateway\n"
                 "  --key:        your Ed25519 privkey (ipv69 keygen) - signs DHCP msgs\n"
                 "  --server-pub: server pubkey - validates OFFER/ACK (rogue-server guard)\n",
-                argv[0], argv[0], argv[0], argv[0]);
+                argv[0], argv[0], argv[0], argv[0], argv[0]);
         return 1;
     }
 

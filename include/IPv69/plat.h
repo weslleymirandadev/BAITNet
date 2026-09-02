@@ -34,6 +34,11 @@ static inline void perror_sock(const char *s)
 {
     fprintf(stderr, "%s: winsock error %d\n", s, (int)WSAGetLastError());
 }
+
+static inline void plat_sleep_ms(int ms)
+{
+    Sleep(ms);
+}
 #else
 #include <errno.h>
 #include <poll.h>
@@ -53,6 +58,11 @@ static inline int plat_poll(struct pollfd *fds, int n, int tmo)
 }
 
 static inline void perror_sock(const char *s) { perror(s); }
+
+static inline void plat_sleep_ms(int ms)
+{
+    usleep((useconds_t)ms * 1000);
+}
 #endif
 
 #endif
