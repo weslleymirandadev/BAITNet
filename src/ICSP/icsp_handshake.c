@@ -94,6 +94,7 @@ static void assoc_reset(struct icsp_assoc *a)
     uint64_t dst_addr = a->dst_addr, src_addr = a->src_addr;
     int hb = a->hb_interval_s, dead = a->dead_timeout_s;
     int rekey = a->rekey_interval_s;
+    int announce = a->announce_s;
     uint8_t rnd[4];
     /* tunnel endpoint (--remote) is part of the endpoint context too */
     sock_t tfd = a->tfd;
@@ -115,6 +116,7 @@ static void assoc_reset(struct icsp_assoc *a)
     a->hb_interval_s = hb;
     a->dead_timeout_s = dead;
     a->rekey_interval_s = rekey;
+    a->announce_s = announce;
     /* SCTP-style: random initial TSN so the receiver's replay window
        starts clean (a first TSN of 0 would collide with cum_tsn=0) */
     randombytes(rnd, sizeof(rnd));
@@ -405,13 +407,25 @@ int icsp_server_accept(struct icsp_assoc *a, uint16_t port,
     a->dst_port = 0;
     a->state = ICSP_ST_CLOSED;
     a->streams_in = a->streams_out = 4;
-    a->rcv_timeout_ms = timeout_s > 0 ? timeout_s * 1000 : 0;
     memcpy(a->id_pub, sk + 32, 32);
     memcpy(a->sk, sk, 64);
 
     /* wait INIT */
     for (;;) {
+        if (a->tunnel && a->announce_s > 0) {
+            /* keep our route alive at the gateway while waiting: recv
+               with the announce interval as timeout and re-announce on
+               expiry (0-RTT clients need the route up before INIT). */
+            if (a->last_ann == 0 || time(NULL) - a->last_ann >= a->announce_s)
+                icsp_announce_send(a);
+            a->rcv_timeout_ms = a->announce_s * 1000;
+        } else {
+            a->rcv_timeout_ms = timeout_s > 0 ? timeout_s * 1000 : 0;
+        }
         ssize_t n = icsp_recv_frame(a, frame, &payload, &plen, &from);
+        if (n < 0 && a->tunnel && a->announce_s > 0 &&
+            errno == ETIMEDOUT)
+            continue;           /* announce tick expired: re-announce */
         if (n < 0) { perror("icsp: INIT"); return -1; }
         if (n == 0)
             continue;
