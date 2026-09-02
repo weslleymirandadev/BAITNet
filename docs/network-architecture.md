@@ -77,10 +77,10 @@ it is for closed networks that want centrally assigned pool addresses
 identity-derived address — no server at all. The two models are
 explicit alternatives:
 
-```
-dhcp-based:     af69_raw dhcp wlan0            → address from the pool
-                (private networks: allowlist, leases, binding)
-identity-based: af69_raw addr wlan0            → address from your key
+```text
+dhcp-based:     ipv69 dhcp wlan0             → address from the pool
+                (private networks: allowlist, signed leases)
+identity-based: ipv69 addr --class C         → address from your key
                 (open/public networks: no server, no lease)
 ```
 

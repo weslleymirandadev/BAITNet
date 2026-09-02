@@ -6,8 +6,8 @@ authentication. The protocol is **L2-native**: where the hosts share a
 medium (cable, Wi-Fi, radio) it runs with no IP and no router of any
 kind — IP appears only as an optional carrier at the edge, when a
 gateway joins two islands across the internet (section 7). No kernel
-module: the AF_69 socket family was removed; every tool uses the
-portable raw L2 backend (AF_PACKET on Linux, Npcap on Windows).
+module and no custom socket family: every tool uses the portable raw
+L2 backend (AF_PACKET on Linux, Npcap on Windows).
 
 ```
 ┌─────────────────┐   Wi-Fi / Ethernet cable     ┌─────────────────┐
@@ -131,7 +131,7 @@ on clients) — auto-key is bypassed when `--key` is given.
 # it by itself (append to --peer-file, if given). Its own key comes
 # from ~/.hosts69/key automatically (passphrase via IPV69_PASSPHRASE
 # or prompted on the tty) — no --key needed:
-sudo ./ipv69 dhcpd eth0 --raw --peer-file /home/kali/peers.txt --learn
+sudo ./ipv69 dhcpd eth0 --peer-file /home/kali/peers.txt --learn
 
 # log:
 #   af69d: keyring /root/.hosts69/key (servidor)
@@ -152,7 +152,7 @@ MACs only.
 echo '616833cf40e2708d42db3626c1a8e7f7434dc5bfcd2f004c5b6d4ec541379822' > /home/kali/peers.txt
 
 # 2) start the server pointing at it:
-sudo ./ipv69 dhcpd eth0 --raw --peer-file /home/kali/peers.txt \
+sudo ./ipv69 dhcpd eth0 --peer-file /home/kali/peers.txt \
      --key <server_privkey_hex>
 ```
 
@@ -167,7 +167,7 @@ echo 'another_pubkey_hex' >> /home/kali/peers.txt   # takes effect right away
 ### With a single key on the command line
 
 ```bash
-sudo ./ipv69 dhcpd eth0 --raw \
+sudo ./ipv69 dhcpd eth0 \
      --allow 00:08:22:9c:03:fc \        # (optional) allowed MACs
      --peer  <phone_pubkey_hex> \       # only this pub gets in
      --key   <server_privkey_hex>       # signs OFFER/ACK (anti rogue)
@@ -189,9 +189,9 @@ af69d: pub f38f9008... not in allowlist -> ignored
 af69d: 00:08:22:9c:03:fc invalid signature/pubkey -> ignored
 ```
 
-> `--raw` is required when the AP/router filters wired→wireless
-> broadcast (replies go unicast to the client MAC).
-> Custom pool: `af69d eth0 00.00.00.00.10 00.00.00.00.fe 3600 --raw ...`
+> Replies go unicast to the client MAC, so APs that filter wired→wireless
+> broadcast still deliver them.
+> Custom pool: `af69d eth0 00.00.00.00.10 00.00.00.00.fe 3600 ...`
 
 ---
 
@@ -218,7 +218,7 @@ To keep the address alive, use the daemon:
 
 ```bash
 # holds the address + creates the TAP interface ip69-0 (auto-key):
-sudo /root/bin/ipv69 tun wlan0 --raw --tap ip69-0 \
+sudo /root/bin/ipv69 tun wlan0 --tap ip69-0 \
     --server-pub <server_pubkey_hex>
 
 # in another terminal, query like `ip addr`:
@@ -267,9 +267,8 @@ the address** (`addr:port`):
 ./ipv69 send eth0 00.00.00.00.10:16 1 "hi"
 ```
 
-> `ifindex`: `2` = eth0 (check with `ip -o link`). In af69_test the
-> first arg is the **numeric ifindex**; in af69_raw it is the
-> interface **name**.
+> The interface is given by **name** (e.g. `eth0`, `wlan0`), resolved
+> to the ifindex internally (`ip -o link` to list them).
 
 ---
 
@@ -279,7 +278,7 @@ the address** (`addr:port`):
 |---|---|---|
 | MAC allowlist (`--allow`) | only listed MACs get a lease | server |
 | **Ed25519** (`--peer-file`/`--peer`/`--key`/`--server-pub`) | signs DHCP; a leaked device private key only kills that device; no shared secret | server + clients |
-| Lease binding in the module (`IPV69_BIND_ADD`) | dgram only from an address with a valid lease and the right MAC; everything else dropped | automatic (af69d) |
+| Source auth (userspace) | dhcpd only leases to known keys and tracks `mac -> addr`; the gateway validates dgram src against learned ranges (cryptokey routing) | server + gateway |
 
 Without `--peer`/`--peer-file`/`--key` DHCP has no crypto (only MAC
 allowlist if `--allow` is given) — fine for a lab, not for a shared
@@ -301,15 +300,14 @@ Details and wire format: `docs/security.md`.
   real lease via silent DHCP (local) or derives it from the identity
   (`--remote`); passing a manual src is rejected. With binding active on
   the receiver, a forged src would be a silent drop anyway.
-- **Wired→wireless broadcast**: many APs filter it; use `--raw` on the
-  server (unicast) or test VM↔phone through the same router port.
+- **Wired→wireless broadcast**: many APs filter it — the server replies
+  unicast to the client MAC, or test VM↔phone through the same router
+  port.
 - **Ethernet padding**: short frames arrive with padding (60B minimum)
-  — the module accepts it (fix included).
-- **No module on the phone**: stock kernel 4.19 (AF_MAX=45) has no
-  AF_69 — that is why the phone uses `af69_raw` (AF_PACKET, same wire
-  format).
-- **Module in use on WSL**: `rmmod af69` fails if an AF_69 socket is
-  open — kill the processes (`pkill -f 'build/ip69[d]'`) first.
+  — the parser accepts it.
+- **No kernel module needed**: the whole stack runs on the portable raw
+  L2 backend (AF_PACKET on Linux, Npcap on Windows) — stock kernels,
+  Android and WSL included.
 
 ---
 
@@ -490,7 +488,7 @@ aarch64-linux-gnu-gcc -O2 -static -Iinclude -Ilib/ed25519/include \
 
 The crypto lives in `lib/ed25519/` **separate from the protocol** —
 IPv69 consumes the same API you would use in your "own HTTPS". Nothing
-there depends on AF_69, header.h or the kernel.
+there depends on the IPv69 headers or the kernel.
 
 ```c
 #include "ed25519.h"
@@ -565,8 +563,8 @@ natively on Windows with **MinGW + Npcap**. Architecture:
   (the same one the Linux build uses on AF_PACKET).
 - `addr`, `keygen`, `dhcpd`, `dhcp`, `send`, `recv`, `ping`, `gw`,
   `icsp` work. `tun`, `lease/renew/status`, `test` report
-  "nao suportado no Windows" (they need TAP, unix sockets or the AF_69
-  kernel module); `gw --iface` too.
+  "nao suportado no Windows" (they need TAP, unix sockets or a kernel
+  module); `gw --iface` too.
 - RNG is BCrypt, the keyring uses `%USERPROFILE%` and a console no-echo
   prompt, `--remote` tunnels use Winsock.
 
@@ -610,7 +608,7 @@ design. Summary of what to type:
 ./ipv69 recv wlan0 <my_addr> --peer-file /etc/ipv69/peers
 
 # dhcpd allowlist with AllowedIPs-style ranges (key authorizes a range):
-sudo ./ipv69 dhcpd wlan0 --raw --peer <PUBKEY_A> --peer <PUBKEY_B/28>
+sudo ./ipv69 dhcpd wlan0 --peer <PUBKEY_A> --peer <PUBKEY_B/28>
 
 # gateway cryptokey routing + federation: see section 7
 ```

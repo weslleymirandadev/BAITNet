@@ -7,7 +7,7 @@ implemented on top of the DHCP69 address lease flow.
 
 Without any of this, an attacker on the same L2 segment can:
 
-1. **Get an address for free** — run `af69_raw dhcp` and join the network.
+1. **Get an address for free** — run `ipv69 dhcp` and join the network.
 2. **Impersonate the DHCP server** — answer a client's DISCOVER with a fake
    OFFER/ACK (rogue server, MITM on address assignment).
 3. **Spoof a source** — send dgram frames with `src = victim address` and
@@ -22,7 +22,7 @@ Only listed MACs may obtain a lease. The server silently ignores
 DISCOVER/REQUEST/RELEASE from other MACs.
 
 ```
-sudo ./af69d eth0 --raw --allow 00:08:22:9c:03:fc
+sudo ./af69d eth0 --allow 00:08:22:9c:03:fc
 ```
 
 Limitation: MACs are spoofable at L2. This layer is convenience, not
@@ -47,7 +47,7 @@ Server — only devices whose public key is in the allowlist get a lease;
 the server signs OFFER/ACK with its own key:
 
 ```
-sudo ./af69d eth0 --raw \
+sudo ./af69d eth0 \
      --peer <pubkey_A_hex> \
      --key  <server_privkey_hex>
 ```
@@ -56,8 +56,7 @@ Client (device A) — signs DISCOVER/REQUEST/RELEASE; optionally validates
 the server's OFFER/ACK with `--server-pub` (rogue-server protection):
 
 ```
-./af69_raw dhcp wlan0 --key <privkey_A_hex> --server-pub <server_pubkey_hex>
-./af69_test dhcp eth0 --key <privkey_A_hex> --server-pub <server_pubkey_hex>
+./ipv69 dhcp wlan0 --key <privkey_A_hex> --server-pub <server_pubkey_hex>
 ```
 
 Wire format (next_header 0, payload). The signature covers every byte
@@ -85,45 +84,35 @@ Properties vs a shared secret:
 | revoke a device | change the secret for everyone | remove one `--peer` |
 | rogue server detection | client validates HMAC | client validates signature |
 
-## Layer 3 — lease binding in the kernel (dgram source auth)
+## Layer 3 — source authentication (userspace)
 
-The `af69.ko` module keeps a binding table `addr -> (MAC, expiry)`,
-populated by the DHCP server through a new ioctl on an AF_69 socket:
+No kernel module: source authentication lives in the tools.
 
-```
-IPV69_BIND_ADD  (CAP_NET_ADMIN required)
-IPV69_BIND_DEL
-```
-
-`af69d` registers the binding right after each ACK and removes it on
-RELEASE. The module then enforces, on **receive**:
-
-- dgram frames (`next_header 1`) whose `src` address has no valid binding
-  **are dropped**;
-- dgram frames whose `src` matches a binding but come from a **different
-  MAC** are dropped (anti-spoof);
-- control traffic (DHCP, ND, echo) always passes — the protocol needs it
-  to bootstrap.
+- `dhcpd` tracks `mac -> {addr, expiry}` from the lease table: a REQUEST
+  for an address leased to another MAC gets no ACK, and the pool only
+  hands out addresses to allowlisted/signed clients.
+- Every client signs its DISCOVER/REQUEST with its Ed25519 key; the
+  server only leases to known `--peer` pubkeys (or auto-learns with
+  `--learn`).
+- The gateway (`ipv69 gw`) never trusts a source address: it learns
+  each peer's range only from authenticated traffic (signed INIT or ND
+  announce) and validates every datagram's src against the learned
+  ranges with a hash lookup — forged src frames are dropped silently
+  (cryptokey routing, USAGE.md §7).
 
 Consequences for clients:
-- you must send dgram with your **leased address** as `src`, otherwise the
-  receiver's module drops it:
-  ```
-  ./af69_raw send wlan0 00.00.00.00.10 1 16 "hi" 00.00.00.00.10
-  #                                          ^^^^^^^^^^^^^^ your leased addr
-  ```
-- an unleased address (e.g. `src 00.00.00.00.11` you never got) is
-  dropped by the peer — spoofing fails.
-
-The binding table is in-memory: on module reload it starts empty and the
-next DHCP renew repopulates it. `af69d` re-registers on every ACK.
+- your `src` is never user-chosen: locally the DHCP server assigns the
+  lease for your MAC; on `--remote` it is derived from your identity.
+  Passing a manual src is rejected by the tools.
+- an address you never got (or that is not yours) is dropped by the
+  receiver/gateway — spoofing fails.
 
 ## Putting it together
 
 Server on the VM (all three layers):
 
 ```
-sudo ./af69d eth0 --raw \
+sudo ./ipv69 dhcpd eth0 \
      --allow 00:08:22:9c:03:fc \
      --peer <pubkey_hex> \
      --key <server_privkey_hex>
@@ -133,14 +122,14 @@ Phone client:
 
 ```
 export PATH=/usr/bin:/bin
-/root/af69_raw dhcp wlan0 --key <privkey_hex> --server-pub <server_pubkey_hex>
-/root/af69_raw send wlan0 00.00.00.00.10 1 16 "hi" 00.00.00.00.10
+/root/ipv69 dhcp wlan0 --key <privkey_hex> --server-pub <server_pubkey_hex>
+/root/ipv69 send wlan0 00.00.00.00.10:16 1 "hi"
 ```
 
 Expected server log:
 
 ```
-af69d: raw AF_PACKET (ifindex 2), pool 0000000000000010-00000000000000fe lease 3600s
+af69d: raw L2 (eth0), pool 0000000000000010-00000000000000fe lease 3600s
 af69d: allow=1 mac(s), peers=1 pubkey(s), server-key=sim
 af69d: DISCOVER 00:08:22:9c:03:fc -> OFFER 0000000000000010
 af69d: REQUEST 00:08:22:9c:03:fc -> ACK 0000000000000010
@@ -161,14 +150,13 @@ dhcp: OFFER assinatura invalida
 
 ## Files touched
 
-- `src/IPv69/tweetnacl.c` / `include/IPv69/tweetnacl.h` — TweetNaCl
-  (public domain), Ed25519/SHA-512; `crypto_sign_seed_to_pk` added
-- `src/IPv69/randombytes.c` — getrandom() backend for TweetNaCl
-- `src/IPv69/ipv69-keygen.c` — keypair generator (`ipv69-keygen`)
-- `src/IPv69/af69d.c` — `--peer` (pubkey allowlist), `--key` (server
-  signing), binding ioctl on ACK/RELEASE
-- `tests/af69_raw.c` / `tests/af69_test.c` — `--key`, `--server-pub` on
-  `dhcp`, optional `src_addr` on `send`
-- `kernel/af69/af69.c` — binding table + `ipv69_ioctl` (BIND_ADD/DEL) +
-  dgram source validation in `ipv69_rcv`
-- `include/IPv69/af69.h` — `struct ipv69_bind_req`, ioctl numbers
+- `lib/ed25519/` — TweetNaCl (public domain), Ed25519/SHA-512 and the
+  standalone public API (`ed25519.h`)
+- `src/IPv69/keygen.c` / `src/IPv69/keyring.c` — keypair generator and
+  the `~/.hosts69` keyring (`ipv69 keygen`)
+- `src/IPv69/af69d.c` — `ipv69 dhcpd`: `--peer` (pubkey allowlist),
+  `--key` (server signing), `--learn` (auto-register)
+- `tests/af69_raw.c` — `ipv69 dhcp/send/recv/ping`: `--key`,
+  `--server-pub`, identity-derived `src` on `--remote`
+- `include/IPv69/af69.h` — control types and DHCP69 constants
+  (`IPV69_CTRL_DHCP_*`, `IPV69_SERVER_ADDR`, pool range)

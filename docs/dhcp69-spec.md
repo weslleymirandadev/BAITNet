@@ -34,8 +34,8 @@ Payload layout: `[type 1B][fields...]` — same control channel as ND/echo
 
 All multi-byte fields big-endian. `lease` is seconds (4B BE).
 `mac` is the CLIENT's Ethernet MAC (client knows it via SIOCGIFHWADDR;
-included in payload because kernel recvfrom does not expose the sender
-MAC, and the raw AF_PACKET path and the AF_69 path must agree).
+included in payload because the L2 receive path does not expose the
+sender MAC to the caller).
 
 ## Flow
 
@@ -67,24 +67,23 @@ client (unconfigured, src=0)          server (src=00.00.00.00.01)
 
 ## Implementation plan
 
-- `src/IPv69/af69d.c` — server daemon:
-  - socket AF_69 (kernel module) or AF_PACKET raw (no module)
+- `src/IPv69/af69d.c` — server daemon (`ipv69 dhcpd`):
+  - raw L2 backend (AF_PACKET on Linux, Npcap on Windows)
   - bind src `00.00.00.00.01`, port filter 0 (control has no ports)
-  - CLI: `af69d <ifname|ifindex> [pool_start] [pool_end] [lease_sec]`
+  - CLI: `ipv69 dhcpd <ifname|ifindex> [pool_start] [pool_end] [lease_sec]`
   - state: lease table `mac -> {addr, expiry}`; log offers/acks
-- `tests/af69_test.c` and `tests/af69_raw.c` — client mode:
-  - `af69_test dhcp <ifindex> [iface]` / `af69_raw dhcp <ifname>`
+- `tests/af69_raw.c` — client mode (`ipv69 dhcp <ifname>`):
   - send DISCOVER, wait OFFER (filter by own MAC), send REQUEST,
     wait ACK, bind(src=addr), print assigned address
-- no kernel changes required: `ipv69_rcv` already accepts next_header
-  0 (control) and the control switch defaults to delivery; new types flow to
-  userspace sockets untouched.
+- no kernel changes required: the L2 receive path already accepts
+  next_header 0 (control); new types flow to userspace sockets
+  untouched.
 - shared constants go to `include/IPv69/af69.h`
-  (`IPV69_CTRL_DHCP_DISCOVER` etc.) so kernel/userspace/raw agree.
+  (`IPV69_CTRL_DHCP_DISCOVER` etc.) so every backend agrees.
 
 ## Test (after implementation)
 
-1. VM Kali: `sudo af69d eth0` (or `af69d 2` with the module)
-2. Phone (chroot): `af69_raw dhcp wlan0` → prints leased address
-3. `af69_raw ping wlan0 <leased_addr>` works with no manual address
+1. VM Kali: `sudo ipv69 dhcpd eth0`
+2. Phone (chroot): `ipv69 dhcp wlan0` → prints leased address
+3. `ipv69 ping wlan0 <leased_addr>` works with no manual address
 4. Second client gets a different address; lease expiry recycles

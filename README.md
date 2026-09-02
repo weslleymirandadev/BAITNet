@@ -85,16 +85,13 @@ means more entry points to the mesh, never a bigger middlebox.
 - [x] Forwarding (3-netns relay validated)
 - [x] Hop Limit (decrement on forward, drop at 0 + TIME_EXCEEDED)
 - [x] ICMP-like / control messages (echo/ping, dest unreachable, time exceeded, ND)
-- [ ] Transport protocol (next_header 2 stream reserved: SCTP-derived, planned)
-- [x] API/socket (`AF_69`, bind/sendto/recvfrom demux by addr/port)
+- [x] Transport protocol (next_header 2 stream: ICSP, SCTP-derived)
+- [x] Raw-socket API (AF_PACKET backend, send/recv demux by addr/port)
 
 ### Phase 4 — Operating system
-- [x] Native address family `AF_69` (module `kernel/af69/af69.ko`)
-- Define integration API
-- Implement IPv69 support in Linux
-- Create an IPv69 network interface
-- Integrate with existing drivers
-- Test real applications over IPv69
+- [x] ICSP session layer + stream transport (docs/icsp-spec.md)
+- [x] TAP interface daemon (ip69d) + DHCP69 client
+- Implement IPv69 support in Linux (kernel native)
 
 ### Phase 5 — Embedded
 - Microcontroller implementation
@@ -114,10 +111,11 @@ means more entry points to the mesh, never a bigger middlebox.
 IPv69 is in the protocol experimentation phase: detector/receiver and
 transmitter run without root (CAP_NET_RAW), with interface auto-detection,
 40-bit addressing (`ff.ff.ff.ff.ff`) and the dgram protocol with native
-header ports. The AF_69 kernel module gives native socket
-access to the protocol, plus a v0.3 stack: demux by addr/port, neighbor
-discovery (40-bit → MAC), hop limit, forwarding between netns and a
-control plane (echo/ping, errors, ND).
+header ports. The stack runs on the portable raw L2 backend (AF_PACKET
+on Linux, Npcap on Windows): demux by addr/port, neighbor discovery
+(40-bit → MAC), hop limit, forwarding, a control plane (echo/ping,
+errors, ND), DHCP69 addressing, Ed25519 authentication, an ICSP stream
+transport (nh=2) and tunnel gateways for the internet (see USAGE.md).
 
 The immediate goal is not to replace the existing Internet, but to build an
 experimental network stack from scratch, starting at the lowest level
