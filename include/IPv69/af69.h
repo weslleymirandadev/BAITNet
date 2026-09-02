@@ -2,7 +2,11 @@
 #define IPV69_AF_H
 
 #include <stdint.h>
+#ifdef _WIN32
+/* the AF_69 kernel module and its ioctls are Linux-only */
+#else
 #include <sys/ioctl.h>
+#endif
 
 /* AF_69: IPv69 socket address family.
  *
@@ -41,7 +45,8 @@
 
 /* DHCP69 lease binding: addr is owned by mac until expiry. The server
  * registers it in the kernel module (ioctl on an AF_69 socket) so dgram
- * frames from unleased or spoofed sources are dropped. */
+ * frames from unleased or spoofed sources are dropped. (Linux only) */
+#ifndef _WIN32
 struct ipv69_bind_req {
     uint8_t  mac[6];
     uint64_t addr;
@@ -49,6 +54,7 @@ struct ipv69_bind_req {
 };
 #define IPV69_BIND_ADD _IOW(0x69, 1, struct ipv69_bind_req)
 #define IPV69_BIND_DEL _IOW(0x69, 2, struct ipv69_bind_req)
+#endif
 
 /* AF_69 sockaddr: 40-bit addresses (5 octets, ff.ff.ff.ff.ff) + native
  * header ports (src/dst). ifindex 0 = auto-detect the interface on send
