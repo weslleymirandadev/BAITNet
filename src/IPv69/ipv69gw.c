@@ -29,6 +29,7 @@
 #include "IPv69/parse.h"
 #include "IPv69/plat.h"
 #include "IPv69/ratelimit.h"
+#include "ed25519.h"        /* INIT signature check (cryptokey routing) */
 #ifdef _WIN32
 /* the optional local L2 bridge (--iface) is AF_PACKET: Linux only */
 #else
@@ -45,28 +46,71 @@
 #define BCAST_MAC { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }
 #define QMAGIC "Q69"
 #define EMAGIC "E69"
+#define GW_CHUNK_INIT 1         /* ICSP INIT chunk type (id in clear) */
 
 struct endpoint {
     struct sockaddr_storage ss;
     socklen_t slen;
 };
 
+/* cryptokey routing (WireGuard): a peer is (identity key, addr range,
+ * endpoint). The range comes from an AUTHENTICATED handshake (INIT
+ * signature) or allowlist, so src validation is a hash lookup — no
+ * per-packet crypto. */
 struct peer {
-    uint64_t addr;              /* 40-bit IPv69 address (0 = free) */
-    uint8_t mac[6];             /* source MAC of the tunnel */
+    uint64_t addr;              /* 40-bit range base */
+    uint8_t  prefix;            /* range bits (AllowedIPs-style) */
+    uint8_t  mac[6];            /* source MAC of the tunnel */
+    uint8_t  key[32];           /* authenticated identity pub */
     struct endpoint ep;
     time_t last;
 };
 
+/* --peer allowlist: (key, derived range) — WireGuard peers */
+struct auth_peer {
+    uint8_t  key[32];
+    uint64_t base;
+    int      prefix;
+};
+static struct auth_peer auth[MAX_PEERS];
+static int n_auth;
+
 static struct peer peers[MAX_PEERS];
 
 
+/* longest-prefix match (WireGuard cryptokey routing): the most specific
+ * range containing `addr` wins; exact /40 peers are the common case. */
 static struct peer *peer_find_addr(uint64_t addr)
 {
+    struct peer *best = NULL;
+    int best_pref = -1;
+
     for (int i = 0; i < MAX_PEERS; i++)
-        if (peers[i].addr == addr)
+        if (peers[i].addr && (int)peers[i].prefix > best_pref &&
+            ipv69_addr_in_range(addr, peers[i].addr, peers[i].prefix)) {
+            best = &peers[i];
+            best_pref = peers[i].prefix;
+        }
+    return best;
+}
+
+static struct peer *peer_find_key(const uint8_t key[32])
+{
+    for (int i = 0; i < MAX_PEERS; i++)
+        if (peers[i].addr && !memcmp(peers[i].key, key, 32))
             return &peers[i];
     return NULL;
+}
+
+static int auth_allowed(const uint8_t key[32], uint64_t addr)
+{
+    if (n_auth == 0)
+        return 1;               /* open mode: any valid signature */
+    for (int i = 0; i < n_auth; i++)
+        if (!memcmp(auth[i].key, key, 32) &&
+            ipv69_addr_in_range(addr, auth[i].base, auth[i].prefix))
+            return 1;
+    return 0;
 }
 
 static struct peer *peer_find_mac(const uint8_t *mac)
@@ -98,13 +142,19 @@ static struct peer *peer_find_endpoint(const struct endpoint *ep)
     return NULL;
 }
 
-static struct peer *peer_learn(uint64_t addr, const uint8_t *mac,
-                               const struct endpoint *ep)
+/* learn (or refresh) a peer from an AUTHENTICATED source: the identity
+ * key + the address range it is allowed to use. WireGuard learns the
+ * endpoint from traffic but only after the handshake authenticates. */
+static struct peer *peer_learn_auth(uint64_t addr, const uint8_t *mac,
+                                    const struct endpoint *ep,
+                                    const uint8_t key[32], int prefix)
 {
-    struct peer *p = peer_find_addr(addr);
+    struct peer *p = peer_find_key(key);
     int slot = -1;
 
     if (p) {
+        p->addr = addr;
+        p->prefix = (uint8_t)prefix;
         p->ep = *ep;
         p->last = time(NULL);
         return p;
@@ -126,10 +176,104 @@ static struct peer *peer_learn(uint64_t addr, const uint8_t *mac,
     if (slot < 0)
         return NULL;
     peers[slot].addr = addr;
+    peers[slot].prefix = (uint8_t)prefix;
     memcpy(peers[slot].mac, mac, 6);
+    memcpy(peers[slot].key, key, 32);
     peers[slot].ep = *ep;
     peers[slot].last = time(NULL);
     return &peers[slot];
+}
+
+/* cryptokey routing: validate an ICSP INIT (nh=2, id in clear) and learn
+ * the sender's range. Cost: one Ed25519 verify per handshake (rate
+ * limited), then hash lookups forever. Returns 1 when learned. */
+static int gw_learn_init(const uint8_t *buf, ssize_t n,
+                         const struct endpoint *ep)
+{
+    const struct ethernet_header *eth =
+        (const struct ethernet_header *)buf;
+    const struct ipv69_header *h =
+        (const struct ipv69_header *)(buf + 14);
+    const uint8_t *ic = buf + 14 + IPV69_HEADER_LEN;
+    /* ICSP header 12 + chunk hdr 4 + INIT data: [ver][flags][streams 4]
+       [eph 32][ts 8][id 32][sig 64] = 77 + 64 bytes */
+    if (n < 14 + IPV69_HEADER_LEN + 12 + 4 + 77 + 64)
+        return 0;
+    if (ic[12] != GW_CHUNK_INIT || (ic[13] & 0x01))
+        return 0;               /* not an INIT, or id encrypted */
+    {
+        uint8_t rid[8] = { 0 };
+        memcpy(rid, eth->src_mac, 6);
+        if (!rate_allow(rid, 10, 20, 1))
+            return 0;
+    }
+    {
+        const uint8_t *cd = ic + 16;
+        uint8_t pub[32];
+        uint64_t src = get_addr40(h->source);
+        memcpy(pub, cd + 45, 32);
+        if (ed25519_verify(cd, 77, cd + 77, pub) != 0)
+            return 0;           /* forged INIT */
+        if (!auth_allowed(pub, src))
+            return 0;
+        if (peer_learn_auth(src, eth->src_mac, ep, pub, 40)) {
+            printf("ipv69gw: peer autenticado %016llx (%02x%02x..)\n",
+                   (unsigned long long)src, pub[0], pub[1]);
+            fflush(stdout);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* cryptokey routing: validate a signed ND announce — dgram clients
+ * (send/recv --remote) authenticate their derived address with
+ * [ND_REQUEST][addr 5][pub 32][sig 64]. One sign/verify per announce,
+ * rate limited; then hash lookups forever. */
+static int gw_learn_announce(const uint8_t *buf, ssize_t n,
+                             const struct endpoint *ep)
+{
+    const struct ethernet_header *eth =
+        (const struct ethernet_header *)buf;
+    const uint8_t *ic = buf + 14 + IPV69_HEADER_LEN;
+
+    if (n < 14 + IPV69_HEADER_LEN + 6 + 96)
+        return 0;
+    if (ic[0] != IPV69_CTRL_ND_REQUEST)
+        return 0;
+    {
+        uint8_t rid[8] = { 0 };
+        memcpy(rid, eth->src_mac, 6);
+        if (!rate_allow(rid, 10, 20, 1))
+            return 0;
+    }
+    {
+        const uint8_t *pub = ic + 6, *sig = ic + 38;
+        uint64_t addr = get_addr40(ic + 1);
+        if (ed25519_verify(ic, 6, sig, pub) != 0)
+            return 0;           /* forged announce */
+        if (!auth_allowed(pub, addr))
+            return 0;
+        if (peer_learn_auth(addr, eth->src_mac, ep, pub, 40)) {
+            printf("ipv69gw: peer autenticado %016llx (%02x%02x..)\n",
+                   (unsigned long long)addr, pub[0], pub[1]);
+            fflush(stdout);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* cryptokey routing: drop frames whose src is not inside any
+ * authenticated range (dgrams); control (src 0 = DHCP discover) and
+ * handshakes (nh=2) always pass so the learning can happen. */
+static int gw_src_ok(const struct ipv69_header *h)
+{
+    uint64_t src = get_addr40(h->source);
+
+    if (src == 0 || h->next_header != IPV69_NEXT_DGRAM)
+        return 1;               /* control/handshake: let it through */
+    return peer_find_addr(src) != NULL;
 }
 
 static void send_udp(sock_t fd, const void *buf, size_t len,
@@ -164,14 +308,32 @@ int cmd_gw(int argc, char **argv)
             iface = argv[++i];
         else if (!strcmp(argv[i], "--private"))
             allow_private = 1;
-        else {
+        else if (!strcmp(argv[i], "--peer") && i + 1 < argc) {
+            /* cryptokey routing allowlist: PUB[/prefix] (WG peers) */
+            if (n_auth >= MAX_PEERS) {
+                fprintf(stderr, "gw: limite de peers %d\n", MAX_PEERS);
+                return 1;
+            }
+            if (ipv69_addr_parse_peer(argv[++i], auth[n_auth].key,
+                                      &auth[n_auth].base,
+                                      &auth[n_auth].prefix) < 0) {
+                fprintf(stderr, "gw: --peer invalido (%s) — PUB[/prefixo]\n",
+                        argv[i]);
+                return 1;
+            }
+            n_auth++;
+        } else {
             fprintf(stderr,
                     "Usage: %s [--port N] [--iface eth0] [--private]\n"
+                    "             [--peer PUB[/prefix]]...\n"
                     "  --port:    UDP port (default 6969)\n"
                     "  --iface:   optional local L2 interface to bridge\n"
                     "             (e.g. where dhcpd runs; needs root)\n"
                     "  --private: also route class A/B addresses (private\n"
-                    "             VPN). Default: public class C only.\n",
+                    "             VPN). Default: public class C only.\n"
+                    "  --peer:    cryptokey routing allowlist (WireGuard\n"
+                    "             style): only these identities may send;\n"
+                    "             /prefix = AllowedIPs range (default /40)\n",
                     argv[0]);
             return 1;
         }
@@ -305,7 +467,14 @@ int cmd_gw(int argc, char **argv)
             uint64_t src = get_addr40(h->source);
             uint64_t dst = get_addr40(h->dest);
 
-            peer_learn(src, eth->src_mac, &ep);
+            /* cryptokey routing: learn the sender's range from an
+               authenticated handshake/announce, then validate src */
+            if (h->next_header == IPV69_NEXT_STREAM)
+                gw_learn_init(buf, n, &ep);
+            else if (h->next_header == IPV69_NEXT_CONTROL)
+                gw_learn_announce(buf, n, &ep);
+            if (!gw_src_ok(h))
+                continue;       /* unauthenticated src: silent drop */
 
             /* class filter: without --private, class A/B frames never
                cross the gateway — neither as source (private leaking
@@ -338,12 +507,16 @@ int cmd_gw(int argc, char **argv)
                 continue;
             }
 
-            /* unicast: by MAC first (DHCP OFFER/ACK), then by addr */
+            /* unicast: by MAC first (DHCP OFFER/ACK), then by addr.
+               L2-learned peers (empty endpoint) route back to the L2. */
             struct peer *p = peer_find_mac(eth->dst_mac);
             if (!p)
                 p = peer_find_addr(dst);
             if (p) {
-                send_udp(fd, buf, n, &p->ep);
+                if (p->ep.slen > 0)
+                    send_udp(fd, buf, n, &p->ep);
+                else if (l2fd >= 0)
+                    sendto(l2fd, (const char *)buf, n, 0, NULL, 0);
                 continue;
             }
             /* unknown: try the local L2 bridge (maybe the DHCP server) */
@@ -373,6 +546,21 @@ int cmd_gw(int argc, char **argv)
             if (!allow_private &&
                 (scls != 'C' || (dcls != 'C' && dcls != 'E')))
                 continue;       /* private frames never reach tunnels */
+            /* cryptokey routing on the L2 side too: learn ranges (the
+               empty endpoint marks a local-L2 peer: validation only) */
+            if (h->next_header == IPV69_NEXT_STREAM) {
+                struct endpoint lep;
+                memset(&lep, 0, sizeof(lep));
+                lep.slen = 0;   /* L2 peer marker (no UDP route) */
+                gw_learn_init(buf, n, &lep);
+            } else if (h->next_header == IPV69_NEXT_CONTROL) {
+                struct endpoint lep;
+                memset(&lep, 0, sizeof(lep));
+                lep.slen = 0;
+                gw_learn_announce(buf, n, &lep);
+            }
+            if (!gw_src_ok(h))
+                continue;
             const uint8_t bcast_mac[6] = BCAST_MAC;
             if (!memcmp(eth->dst_mac, bcast_mac, 6) ||
                 !peer_find_mac(eth->dst_mac)) {
@@ -389,7 +577,7 @@ int cmd_gw(int argc, char **argv)
             struct peer *p = peer_find_mac(eth->dst_mac);
             if (!p)
                 p = peer_find_addr(dst);
-            if (p)
+            if (p && p->ep.slen > 0)
                 send_udp(fd, buf, n, &p->ep);
         }
     }
