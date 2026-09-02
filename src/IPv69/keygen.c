@@ -16,9 +16,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <winsock2.h>   /* gethostname for the key comment */
+#include <direct.h>     /* _mkdir */
+#else
 #include <unistd.h>
-#include "ed25519.h"
+#endif
 #include <sys/stat.h>
+#include "ed25519.h"
 #include "IPv69/keyring.h"
 
 static void print_hex(const unsigned char *b, int n)
@@ -113,7 +118,11 @@ int cmd_keygen(int argc, char **argv)
     if (slash) {
         *slash = 0;
         if (*dir)
+#ifdef _WIN32
+            _mkdir(dir);
+#else
             mkdir(dir, 0700);
+#endif
     }
     /* never clobber an existing key without explicit approval
        (ssh-keygen style: prompt y/N). */
