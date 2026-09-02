@@ -233,7 +233,7 @@ static void usage_icsp(void)
         "Usage: ipv69 icsp <server|client> <ifname> [port|:port]\n"
         "        [--peer HEX] [--peer-file F] [--loss N]\n"
         "        ipv69 icsp client <ifname> <dst:port> [msg]\n"
-        "        [--hb] [--reset]\n"
+        "        [--hb] [--reset] [--remote gw:port]\n"
         "\n"
         "Authenticated 4-way handshake (INIT->INIT-ACK cookie->COOKIE-ECHO->\n"
         "COOKIE-ACK) with Ed25519 identity + X25519 ECDH: both sides derive\n"
@@ -248,8 +248,11 @@ static void usage_icsp(void)
         "Options:\n"
         "  --peer HEX      allowlist: accept only this identity (repeatable)\n"
         "  --peer-file F   load allowed identities from file\n"
-        "  --loss N        drop N%% of SACKs on the server (retransmission test)\n"
+        "  --loss N        drop N% of SACKs on the server (retransmission test)\n"
         "  --hb / --reset  client: send a heartbeat / STREAM-RESET\n"
+        "  --remote gw     tunnel through a gateway (default: the\n"
+        "                  ~/.hosts69/gateways file, port 6969; domain or\n"
+        "                  IP:port, built-in DNS when it is a domain)\n"
         "\n"
         "A real chat example lives in examples/icsp_chat.c (make chat).\n");
 }
