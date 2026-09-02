@@ -4,8 +4,6 @@ Automatic 40-bit address assignment for IPv69 hosts, DHCP-style.
 Removes the need to type `ff.ff.ff.ff.ff` addresses by hand: a server
 leases addresses from a pool, clients discover/request/keep them.
 
-Status: **spec only** — not implemented yet.
-
 ## Addressing conventions
 
 | value          | meaning                    |
