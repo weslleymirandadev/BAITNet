@@ -142,6 +142,13 @@ ssize_t icsp_recv_frame(struct icsp_assoc *a, uint8_t *frame,
         return -1;
     if (n < 14 + IPV69_HEADER_LEN + ICSP_HEADER_LEN)
         return 0;               /* noise: not ours */
+    /* Npcap (Windows) delivers locally-injected frames back to the
+       same handle: a frame we sent ourselves must never be processed
+       as received — its DATA is encrypted with our send key and would
+       fail the MAC check, killing the association. AF_PACKET (Linux)
+       never loops TX back, so this is a no-op there. */
+    if (!memcmp(frame + 6, a->src_mac, 6))
+        return 0;
     const struct ipv69_header *h =
         (const struct ipv69_header *)(frame + 14);
     if (h->next_header != IPV69_NEXT_STREAM)
@@ -164,6 +171,13 @@ int icsp_handle_frame(struct icsp_assoc *a, const uint8_t *frame, ssize_t n,
                       icsp_data_cb on_data, void *ud)
 {
     if (n < 14 + IPV69_HEADER_LEN + ICSP_HEADER_LEN)
+        return 0;
+    /* Npcap (Windows) loops locally-injected frames back to the same
+       handle: a frame we sent ourselves must never be processed as
+       received — its DATA is encrypted with our send key and would
+       fail the MAC check, killing the association. AF_PACKET (Linux)
+       never loops TX back, so this is a no-op there. */
+    if (!memcmp(frame + 6, a->src_mac, 6))
         return 0;
     const struct ipv69_header *h =
         (const struct ipv69_header *)(frame + 14);
@@ -262,7 +276,9 @@ static int relay_send_line(struct icsp_assoc *a, uint16_t stream_id,
         line[--len] = 0;
     if (!len)
         return 1;               /* empty line: skip */
-    return icsp_data_send(a, stream_id, (const uint8_t *)line, len) < 0 ?
+    /* icsp_data_send returns the TSN (uint32 — may be negative as int
+       with the random initial TSN); only -1 means failure. */
+    return icsp_data_send(a, stream_id, (const uint8_t *)line, len) == -1 ?
            -1 : 1;
 }
 
