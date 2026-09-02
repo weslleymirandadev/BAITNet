@@ -26,7 +26,26 @@
 #endif
 #include "IPv69/parse.h"
 #include "IPv69/l2.h"
+#include "IPv69/af69.h"    /* IPV69_CTRL_ND_REQUEST (tunnel announce) */
+#include "ed25519.h"
 #include "ICSP/icsp.h"
+
+/* tunnel mode: signed ND announce of our address to the gateway */
+static void server_announce(const struct icsp_assoc *a,
+                            const uint8_t sk[64])
+{
+    const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+    uint8_t ann[1 + 5 + 32 + 64] = { IPV69_CTRL_ND_REQUEST };
+    uint8_t frame[512];
+    put_addr40(ann + 1, a->src_addr);
+    memcpy(ann + 6, sk + 32, 32);
+    ed25519_sign(ann + 38, ann, 6, sk);
+    size_t l = build_frame(frame, bcast, a->src_mac, a->src_addr,
+                           0xFFFFFFFFFFULL, IPV69_NEXT_CONTROL,
+                           64, 0, 0, ann, sizeof(ann));
+    sendto(a->tfd, (const char *)frame, l, 0,
+           (struct sockaddr *)&a->gw, a->gwlen);
+}
 
 /* client-side DATA callback: print + remember the echo */
 struct client_ctx {
@@ -76,6 +95,8 @@ static int run_client(int argc, char **argv, struct icsp_assoc *a,
         else if (!strcmp(argv[i], "--reset")) reset_mode = 1;
         else if (!strcmp(argv[i], "--rekey") && i + 1 < argc)
             rekey_s = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--remote") && i + 1 < argc)
+            i++;                /* handled by cmd_icsp (tunnel mode) */
         else msg = argv[i];
     }
     if (argc < 4 || parse_ipv69_addr_port(argv[3], &dst, &port) < 0) {
@@ -175,6 +196,8 @@ static int run_server(int argc, char **argv, struct icsp_assoc *a,
                     n_peers++;
             }
             fclose(f);
+        } else if (!strcmp(argv[i], "--remote") && i + 1 < argc) {
+            i++;                /* handled by cmd_icsp (tunnel mode) */
         } else if (argv[i][0] == ':' && argv[i][1]) {
             port = (uint16_t)atoi(argv[i] + 1);
         } else if (argv[i][0] != '-') {
@@ -183,6 +206,11 @@ static int run_server(int argc, char **argv, struct icsp_assoc *a,
     }
     printf("icsp: servidor em porta %u (peers=%d, echo=%d, loss=%d%%)\n",
            port, n_peers, ctx.echo_mode, loss_pct);
+
+    /* tunnel mode: announce ourselves to the gateway (signed ND
+     * request) so it learns our address and can route the INIT to us */
+    if (a->tunnel)
+        server_announce(a, sk);
 
     if (icsp_server_accept(a, port, sk, peers, n_peers, 30) < 0)
         return 1;
@@ -193,7 +221,12 @@ static int run_server(int argc, char **argv, struct icsp_assoc *a,
     printf("icsp: servidor escutando (ctrl-C para sair)\n");
 
     /* serve this association, then accept the next one */
+    time_t last_ann = 0;
     for (;;) {
+        if (a->tunnel && time(NULL) - last_ann >= 2) {
+            server_announce(a, sk);
+            last_ann = time(NULL);
+        }
         int r = icsp_poll(a, 200, server_on_data, &ctx);
         if (r == ICSP_POLL_ERR) {
             perror("icsp: poll");
@@ -224,7 +257,17 @@ int cmd_icsp(int argc, char **argv)
         fprintf(stderr, "icsp: precisa <server|client> <ifname> [args]\n");
         return 1;
     }
-    if (icsp_endpoint_open(&a, argv[2], sk) < 0) {
+    const char *remote = NULL;
+    for (int i = 3; i < argc; i++)
+        if (!strcmp(argv[i], "--remote") && i + 1 < argc)
+            remote = argv[++i];
+    if (remote) {
+        /* tunnel mode: ICSP over the gateway (--remote gw:port) */
+        if (icsp_endpoint_open_remote(&a, remote, sk) < 0) {
+            fprintf(stderr, "icsp: --remote invalido (%s)\n", remote);
+            return 1;
+        }
+    } else if (icsp_endpoint_open(&a, argv[2], sk) < 0) {
         fprintf(stderr, "icsp: sem identidade (crie com ipv69 keygen)\n");
         return 1;
     }

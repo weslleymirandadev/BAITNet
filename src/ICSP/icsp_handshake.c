@@ -95,6 +95,11 @@ static void assoc_reset(struct icsp_assoc *a)
     int hb = a->hb_interval_s, dead = a->dead_timeout_s;
     int rekey = a->rekey_interval_s;
     uint8_t rnd[4];
+    /* tunnel endpoint (--remote) is part of the endpoint context too */
+    sock_t tfd = a->tfd;
+    struct sockaddr_storage gw = a->gw;
+    socklen_t gwlen = a->gwlen;
+    int tunnel = a->tunnel;
 
     memcpy(smac, a->src_mac, 6);
     memset(a, 0, sizeof(*a));
@@ -103,6 +108,10 @@ static void assoc_reset(struct icsp_assoc *a)
     memcpy(a->src_mac, smac, 6);
     a->dst_addr = dst_addr;
     a->src_addr = src_addr;
+    a->tfd = tfd;
+    a->gw = gw;
+    a->gwlen = gwlen;
+    a->tunnel = tunnel;
     a->hb_interval_s = hb;
     a->dead_timeout_s = dead;
     a->rekey_interval_s = rekey;

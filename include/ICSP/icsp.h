@@ -19,6 +19,10 @@
 #include <stddef.h>
 #include <sys/types.h>
 #include <time.h>
+#ifndef _WIN32
+#include <sys/socket.h>     /* sockaddr_storage (tunnel endpoint) */
+#endif
+#include "IPv69/plat.h"         /* sock_t for the tunnel endpoint */
 
 #define ICSP_VERSION       1
 #define ICSP_HEADER_LEN    12
@@ -142,6 +146,14 @@ struct icsp_assoc {
     int      rcv_timeout_ms;    /* l2_recv timeout for handshake waits
                                    (0 = block forever) */
 
+    /* tunnel mode (--remote): ICSP over the gateway UDP tunnel.
+     * tfd is the UDP socket, gw the gateway endpoint; the local addr
+     * and MAC come from the identity. ifindex is unused (-1). */
+    sock_t   tfd;
+    struct sockaddr_storage gw;
+    socklen_t gwlen;
+    int      tunnel;
+
     /* keepalive / dead-peer, used by icsp_poll + icsp_keepalive_tick */
     int      hb_interval_s;     /* HEARTBEAT when idle this long (0 = off) */
     int      dead_timeout_s;    /* peer declared dead after this silence
@@ -264,6 +276,12 @@ typedef void (*icsp_data_cb)(struct icsp_assoc *a, uint16_t stream,
  * sk[64] (needed by the handshake to sign INIT). Returns the fd, -1. */
 int icsp_endpoint_open(struct icsp_assoc *a, const char *ifname,
                        uint8_t sk[64]);
+
+/* open an association endpoint in tunnel mode (--remote gw:port): the
+ * transport is a UDP datagram to the gateway instead of the local L2.
+ * The local MAC and class-C address are derived from the identity. */
+int icsp_endpoint_open_remote(struct icsp_assoc *a, const char *gwstr,
+                              uint8_t sk[64]);
 
 /* receive + parse one nh=2 frame on a->fd. Returns the frame length,
  * 0 for noise (short frame / wrong next_header), -1 on recv error.

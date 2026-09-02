@@ -16,14 +16,17 @@
 #include <sys/types.h>
 #include <errno.h>
 #ifdef _WIN32
+#include <winsock2.h>   /* must precede windows.h */
 #include <windows.h>
 #include <io.h>
 #else
 #include <poll.h>
+#include <arpa/inet.h>
 #endif
 #include "IPv69/header.h"
 #include "IPv69/l2.h"
 #include "IPv69/keyring.h"
+#include "IPv69/parse.h"    /* ipv69_addr_derive for tunnel mode */
 #include "ed25519.h"
 #include "ICSP/icsp.h"
 
@@ -45,11 +48,91 @@ int icsp_endpoint_open(struct icsp_assoc *a, const char *ifname,
     return 0;
 }
 
+/* open an ICSP endpoint in tunnel mode (--remote gw:port): frames go to
+ * the gateway over UDP. The local MAC and address are derived from the
+ * identity (the gateway learns us from the signed INIT/announce). */
+int icsp_endpoint_open_remote(struct icsp_assoc *a, const char *gwstr,
+                              uint8_t sk[64])
+{
+    char key[512], kpub[512], dir[256], comment[128];
+    uint8_t pub[32];
+
+    memset(a, 0, sizeof(*a));
+    keyring_paths(dir, sizeof(dir), key, sizeof(key), kpub, sizeof(kpub));
+    if (keyring_load_or_create(key, kpub, sk, pub, comment,
+                               sizeof(comment)) < 0)
+        return -1;
+    memcpy(a->id_pub, pub, 32);
+    memcpy(a->sk, sk, 64);      /* rekey signs with the identity */
+
+    char hp[256];
+    snprintf(hp, sizeof(hp), "%s", gwstr);
+    char *colon = strrchr(hp, ':');
+    if (!colon)
+        return -1;
+    *colon = 0;
+    int gport = atoi(colon + 1);
+    char *host = hp;
+    if (host[0] == '[') {       /* [v6]:port */
+        host++;
+        char *rb = strchr(host, ']');
+        if (rb)
+            *rb = 0;
+    }
+    struct sockaddr_in g4;
+    struct sockaddr_in6 g6;
+    int fam;
+    if (inet_pton(AF_INET, host, &g4.sin_addr) == 1) {
+        g4.sin_family = AF_INET;
+        g4.sin_port = htons(gport);
+        memcpy(&a->gw, &g4, sizeof(g4));
+        a->gwlen = sizeof(g4);
+        fam = AF_INET;
+    } else if (inet_pton(AF_INET6, host, &g6.sin6_addr) == 1) {
+        g6.sin6_family = AF_INET6;
+        g6.sin6_port = htons(gport);
+        memcpy(&a->gw, &g6, sizeof(g6));
+        a->gwlen = sizeof(g6);
+        fam = AF_INET6;
+    } else {
+        return -1;
+    }
+    a->tfd = socket(fam, SOCK_DGRAM, 0);
+    if (a->tfd == SOCK_INVALID)
+        return -1;
+    a->tunnel = 1;
+    a->ifindex = -1;
+    /* locally administered MAC + class-C address from the identity */
+    a->src_mac[0] = 0x02;
+    memcpy(a->src_mac + 1, pub, 5);
+    {
+        uint8_t derived[5];
+        ipv69_addr_derive(derived, pub, 'C');
+        a->src_addr = get_addr40(derived);
+    }
+    return 0;
+}
+
+/* receive one frame on the association transport (tunnel or L2) */
+static ssize_t icsp_rx(struct icsp_assoc *a, uint8_t *frame,
+                       size_t maxlen, int timeout_ms)
+{
+    if (a->tunnel) {
+        struct timeval tv = { timeout_ms / 1000,
+                              (timeout_ms % 1000) * 1000 };
+        setsockopt(a->tfd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv,
+                   sizeof(tv));
+        ssize_t n = recvfrom(a->tfd, (char *)frame, maxlen, 0, NULL, NULL);
+        return n < 0 ? 0 : n;   /* timeout counts as "nothing" */
+    }
+    return l2_recv(a->fd, frame, maxlen, timeout_ms);
+}
+
 ssize_t icsp_recv_frame(struct icsp_assoc *a, uint8_t *frame,
                         const uint8_t **payload, size_t *plen,
                         uint64_t *src_addr)
 {
-    ssize_t n = l2_recv(a->fd, frame, 1600, a->rcv_timeout_ms);
+    ssize_t n = icsp_rx(a, frame, 1600, a->rcv_timeout_ms);
     if (n == 0) {
         errno = ETIMEDOUT;      /* wait expired (handshake fails like
                                    the old SO_RCVTIMEO behavior) */
@@ -71,6 +154,8 @@ ssize_t icsp_recv_frame(struct icsp_assoc *a, uint8_t *frame,
         *src_addr = get_addr40(h->source);
     memcpy(a->peer_mac, frame + 6, 6);   /* reply unicast to the sender */
     a->has_peer_mac = 1;
+    a->dst_addr = get_addr40(h->source); /* reply to the sender's addr
+                                            (the gateway routes by it) */
     a->last_rx = time(NULL);            /* peer is alive */
     return n;
 }
@@ -157,7 +242,7 @@ int icsp_poll(struct icsp_assoc *a, int timeout_ms,
 {
     uint8_t frame[1600];
 
-    ssize_t n = l2_recv(a->fd, frame, sizeof(frame), timeout_ms);
+    ssize_t n = icsp_rx(a, frame, sizeof(frame), timeout_ms);
     if (n < 0)
         return ICSP_POLL_ERR;
     if (n == 0)
@@ -307,7 +392,7 @@ int icsp_relay(struct icsp_assoc *a, uint16_t stream_id, int use_stdin,
             if (r == 2)                 /* tty EOF: graceful close */
                 return ICSP_POLL_EOF;
         }
-        ssize_t n = l2_recv(a->fd, frame, sizeof(frame), 250);
+        ssize_t n = icsp_rx(a, frame, sizeof(frame), 250);
         if (n < 0)
             return ICSP_POLL_ERR;
         if (n == 0) {

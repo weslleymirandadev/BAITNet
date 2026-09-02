@@ -3,6 +3,7 @@
  */
 #include <string.h>
 #include "ed25519.h"
+#include "IPv69/plat.h"     /* sock_t/sendto for the tunnel transport */
 #include "IPv69/header.h"
 #include "IPv69/l2.h"
 #include "ICSP/icsp.h"
@@ -88,6 +89,9 @@ int icsp_send_pkt(struct icsp_assoc *a, const uint8_t *chunk,
                              a->has_peer_mac ? a->peer_mac : bcast,
                              a->src_mac, a->src_addr, a->dst_addr,
                              IPV69_NEXT_STREAM, 64, 0, 0, pkt, off);
+    if (a->tunnel)              /* --remote: datagram to the gateway */
+        return sendto(a->tfd, (const char *)frame, len, 0,
+                      (struct sockaddr *)&a->gw, a->gwlen) >= 0 ? 0 : -1;
     return l2_send(a->fd, a->ifindex,
                    a->has_peer_mac ? a->peer_mac : bcast, frame, len);
 }
