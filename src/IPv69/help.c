@@ -14,21 +14,22 @@ static void usage_general(void)
         "  use 'ipv69 help <subcommand>' for details\n"
         "\n"
         "  gw          tunnel gateway (UDP, multi-peer)\n"
-        "  tun         hold address + create TAP interface\n"
+        "  net up      bring the device up: lease + keepalive daemon\n"
+        "  tun         alias of `net up` (same daemon)\n"
         "  addr        print identity-derived 40-bit address\n"
         "  keygen      generate Ed25519 key pairs (keyring ~/.hosts69)\n"
         "  dhcpd       DHCP69 server (private networks)\n"
-        "  dhcp        DHCP69 client (get a lease)\n"
-        "  net up      bring the device up (keygen + DHCP lease)\n"
+        "  dhcp        DHCP69 client (one-shot lease, for scripts)\n"
         "  send        send a datagram (src is auto, anti-spoofing)\n"
         "  recv        listen for datagrams\n"
         "  ping        echo request\n"
-        "  lease       show the lease held by the tun daemon\n"
+        "  lease       show the lease held by the bring-up daemon\n"
         "  renew       renew the lease\n"
-        "  status      tun daemon status\n"
+        "  status      bring-up daemon status\n"
         "  icsp        ICSP stream handshake + data (nh=2)\n"
         "\n"
-        "Ports are DECIMAL and glued to the address (addr:16 = port 16).\n");
+        "Ports are DECIMAL and glued to the address (addr:16 = port 16).\n"
+        "The keepalive daemon (net up/tun/lease/status) is Linux only.\n");
 }
 
 static void usage_gw(void)
@@ -51,23 +52,27 @@ static void usage_gw(void)
         "The gateway itself is addressed as 00.00.00.00.01.\n");
 }
 
-static void usage_tun(void)
+static void usage_netup(void)
 {
     fprintf(stderr,
-        "ipv69 tun - hold the address alive and expose it as a TAP interface\n"
+        "ipv69 net up - bring the device up and keep it up (WireGuard-style)\n"
         "\n"
-        "Usage: ipv69 tun <ifname> [--tap NAME] [--remote gw:port]\n"
-        "                   [--server-pub HEX] [--key HEX]\n"
+        "Usage: ipv69 net up <ifname> [--tap NAME] [--sock PATH]\n"
+        "                     [--server-pub HEX] [--key HEX]\n"
         "\n"
-        "Keeps a DHCP69 lease alive (so the kernel binding for your MAC stays\n"
-        "registered) and, with --tap, creates a virtual interface where IPv69\n"
-        "frames appear like normal Ethernet frames.\n"
+        "Acquires a DHCP69 lease (auto-key from the ~/.hosts69 keyring,\n"
+        "retry with backoff) and then runs the keepalive daemon: renews the\n"
+        "lease on a timer (or SIGUSR1) and answers lease/renew/status on a\n"
+        "local unix socket. One command = the device is on the network and\n"
+        "stays there. 'ipv69 tun' is the same daemon.\n"
         "\n"
         "Options:\n"
-        "  --tap NAME      create a TAP interface named NAME (needs root)\n"
-        "  --remote gw:port  reach the DHCP server through a gateway (tunnel)\n"
+        "  --tap NAME      also create a TAP interface named NAME (needs root)\n"
+        "  --sock PATH     unix socket path (default /tmp/ip69.sock)\n"
         "  --server-pub HEX  only accept a DHCP server with this pubkey\n"
-        "  --key HEX       private seed (default: ~/.hosts69 keyring)\n");
+        "  --key HEX       private seed (default: ~/.hosts69 keyring)\n"
+        "\n"
+        "The plain one-shot lease (prints and exits) is 'ipv69 dhcp'.\n");
 }
 
 static void usage_addr(void)
@@ -141,14 +146,15 @@ static void usage_dhcpd(void)
 static void usage_dhcp(void)
 {
     fprintf(stderr,
-        "ipv69 dhcp - DHCP69 client (get a lease)\n"
+        "ipv69 dhcp - DHCP69 client (one-shot lease, for scripts)\n"
         "\n"
         "Usage: ipv69 dhcp <ifname> [--server-pub HEX] [--key HEX]\n"
         "                   [--remote gw:port]\n"
         "\n"
         "Discovers a DHCP69 server, gets an address for your MAC, prints the\n"
-        "flow and holds the lease for a few seconds. send/recv do this\n"
-        "silently on their own (the src is never user-chosen).\n"
+        "flow and holds the lease for a few seconds, then exits. send/recv\n"
+        "do this silently on their own (the src is never user-chosen). To\n"
+        "keep the address alive, run 'ipv69 net up' (the keepalive daemon).\n"
         "\n"
         "Options:\n"
         "  --server-pub HEX  only accept this DHCP server's pubkey\n"
@@ -207,12 +213,12 @@ static void usage_ping(void)
 static void usage_ip69(void)
 {
     fprintf(stderr,
-        "ipv69 lease|renew|status - talk to the tun daemon\n"
+        "ipv69 lease|renew|status - talk to the bring-up daemon\n"
         "\n"
         "Usage: ipv69 <lease|renew|status> [-s PATH]\n"
         "\n"
-        "Queries the ip69 tun daemon through its unix socket (default\n"
-        "~/.ipv69/ip69.sock).\n"
+        "Queries the ip69 daemon (started by 'ipv69 net up' / 'ipv69 tun')\n"
+        "through its unix socket (default /tmp/ip69.sock).\n"
         "\n"
         "  lease    show the current address and lease time\n"
         "  renew    renew the lease\n"
@@ -257,7 +263,7 @@ int cmd_help(int argc, char **argv)
     const char *c = argv[1];
 
     if (!strcmp(c, "gw"))         usage_gw();
-    else if (!strcmp(c, "tun"))   usage_tun();
+    else if (!strcmp(c, "net") || !strcmp(c, "tun")) usage_netup();
     else if (!strcmp(c, "addr"))  usage_addr();
     else if (!strcmp(c, "keygen")) usage_keygen();
     else if (!strcmp(c, "dhcpd")) usage_dhcpd();
