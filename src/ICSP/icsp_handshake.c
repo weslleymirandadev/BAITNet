@@ -335,6 +335,12 @@ int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
         if (payload[4] != ICSP_VERSION ||
             payload[ICSP_HEADER_LEN] != ICSP_CHUNK_INIT_ACK)
             continue;
+        /* the INIT-ACK must come from the port we asked for */
+        {
+            uint16_t sport = (uint16_t)((payload[0] << 8) | payload[1]);
+            if (sport != dst_port)
+                continue;       /* wrong server port: not ours */
+        }
         const uint8_t *cd = payload + ICSP_HEADER_LEN + ICSP_CHUNK_HDR;
         uint8_t ver = cd[0];
         uint16_t s_in = (uint16_t)((cd[1] << 8) | cd[2]);
@@ -411,6 +417,12 @@ int icsp_server_accept(struct icsp_assoc *a, uint16_t port,
             continue;
         if (payload[ICSP_HEADER_LEN] != ICSP_CHUNK_INIT)
             continue;
+        /* the INIT must be addressed to the port we accept on */
+        {
+            uint16_t dport = (uint16_t)((payload[2] << 8) | payload[3]);
+            if (dport != port)
+                continue;       /* silent drop: not for this port */
+        }
         if (init_check(a, frame, payload, plen, peers, n_peers) < 0)
             continue;           /* silent drop (mac1/rate/ts/sig) */
         a->dst_addr = from;
