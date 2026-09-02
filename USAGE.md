@@ -467,7 +467,7 @@ now the whole stack does:
 ./ipv69 icsp server eth0 :6969 --remote <SEED>:6969
 
 # host B: ICSP client — full handshake + data through the gateway
-./ipv69 icsp client eth0 <addr_A>:6969 "oi" --echo --remote <SEED>:6969
+./ipv69 icsp client eth0 <addr_A>:6969 "oi" --remote <SEED>:6969
 ```
 
 The gateway introduces peers: when a QUERY is answered it also sends a
