@@ -39,6 +39,7 @@ int icsp_endpoint_open(struct icsp_assoc *a, const char *ifname,
                                sizeof(comment)) < 0)
         return -1;
     memcpy(a->id_pub, pub, 32);
+    memcpy(a->sk, sk, 64);      /* rekey signs with the identity */
     if (l2_open(ifname, &a->fd, &a->ifindex, a->src_mac) < 0)
         return -1;
     return 0;
@@ -95,6 +96,25 @@ int icsp_handle_frame(struct icsp_assoc *a, const uint8_t *frame, ssize_t n,
         payload[ICSP_HEADER_LEN] == ICSP_CHUNK_HEARTBEAT)
         icsp_heartbeat_ack(a);
 
+    /* in-session rekey (WireGuard REKEY_AFTER_TIME): the initiator and
+       the responder exchange a fresh handshake over the live assoc */
+    if (a->state == ICSP_ST_REKEY_WAIT_ACK ||
+        a->state == ICSP_ST_REKEY_WAIT_COOKIE_ACK) {
+        int r = icsp_rekey_client_step(a, payload);
+        if (r < 0)
+            return ICSP_POLL_ERR;
+        if (r == 1)
+            return 0;           /* rekey completed, nothing else to do */
+    }
+    if (a->state == ICSP_ST_ESTABLISHED ||
+        a->state == ICSP_ST_REKEY_WAIT_COOKIE) {
+        int r = icsp_rekey_server_step(a, frame, payload, plen);
+        if (r < 0)
+            return ICSP_POLL_ERR;
+        if (r == 1)
+            return 0;           /* rekey completed */
+    }
+
     uint32_t cum_before = a->cum_tsn;
     uint8_t out[ICSP_MAX_PAYLOAD];
     size_t olen = sizeof(out);
@@ -121,6 +141,13 @@ int icsp_keepalive_tick(struct icsp_assoc *a)
     if (a->hb_interval_s > 0 && now - a->last_hb >= a->hb_interval_s) {
         icsp_heartbeat_send(a);
         a->last_hb = now;
+    }
+    /* time-based rekey: only the initiator starts it (WG REKEY_AFTER_TIME) */
+    if (a->rekey_interval_s > 0 && a->is_initiator &&
+        a->state == ICSP_ST_ESTABLISHED &&
+        now - a->key_ts >= a->rekey_interval_s) {
+        if (icsp_rekey_start(a) == 0)
+            printf("icsp: rekey iniciado (nova assoc=%u)\n", a->assoc_id);
     }
     return 0;
 }
