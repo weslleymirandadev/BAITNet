@@ -51,6 +51,10 @@ void ed25519_keyfile_default_path(char *out, size_t outsz);
 /* SHA-512 (TweetNaCl crypto_hash). 64-byte digest. */
 void ed25519_sha512(uint8_t out[64], const uint8_t *msg, size_t n);
 
+/* Ed25519 pub (Edwards y) -> X25519 pub (Montgomery u): lets Ed25519
+ * identities do static X25519 key exchange. */
+void ed25519_pub_to_x25519(uint8_t out[32], const uint8_t ed_pub[32]);
+
 /* HMAC-SHA512 (RFC 2104) built on ed25519_sha512. key may be any length
  * (block size 128); out[64]. Cheap enough for per-packet filters. */
 void ed25519_hmac_sha512(uint8_t out[64], const uint8_t *msg, size_t n,

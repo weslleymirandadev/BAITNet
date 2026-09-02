@@ -145,6 +145,12 @@ void ed25519_sha512(uint8_t out[64], const uint8_t *msg, size_t n)
     crypto_hash(out, msg, n);
 }
 
+void ed25519_pub_to_x25519(uint8_t out[32], const uint8_t ed_pub[32])
+{
+    extern void crypto_ed25519_to_x25519(uint8_t *out, const uint8_t *ed);
+    crypto_ed25519_to_x25519(out, ed_pub);
+}
+
 void ed25519_hmac_sha512(uint8_t out[64], const uint8_t *msg, size_t n,
                          const uint8_t *key, size_t klen)
 {

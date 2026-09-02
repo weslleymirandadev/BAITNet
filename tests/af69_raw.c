@@ -381,6 +381,41 @@ static int dhcp_client(const uint8_t src_mac[6],
     return 0;
 }
 
+/* the Ed25519 secret is SHA-512(seed) clamped, NOT the seed itself —
+ * the X25519 scalar for static key exchange must use the same value. */
+static void x25519_sk(uint8_t out[32], const uint8_t seed[32])
+{
+    uint8_t h[64];
+
+    ed25519_sha512(h, seed, 32);
+    h[0] &= 248;
+    h[31] &= 127;
+    h[31] |= 64;
+    memcpy(out, h, 32);
+}
+
+/* --auth tag: Poly1305 over eth+ipv69+[01][pub]+data, keyed by
+ * X25519(our sk, dst pub). The tag lands at frame+79 (payload+33). */
+static void auth_tag(uint8_t *frame, const uint8_t *data, size_t plen,
+                     const uint8_t sk[64], const uint8_t pub[32])
+{
+    uint8_t shared[32], mont[32], tmp[1600], xsk[32];
+
+    /* the keyring holds Ed25519 (Edwards) pubs; X25519 needs the
+       Montgomery u-coordinate: u = (1+y)/(1-y) */
+    ed25519_pub_to_x25519(mont, pub);
+    x25519_sk(xsk, sk);
+    if (ed25519_scalarmult(shared, xsk, mont) != 0)
+        return;
+    size_t tl = 0;
+    memcpy(tmp, frame, 79);             /* eth 14 + ipv69 32 + [01][pub] */
+    tl = 79;
+    memcpy(tmp + tl, data + 49, plen - 49);
+    tl += plen - 49;
+    ed25519_poly1305(frame + 79, tmp, tl, shared);
+    memset(shared, 0, sizeof(shared));
+}
+
 int cmd_raw(int argc, char **argv)
 {
     const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
@@ -388,6 +423,11 @@ int cmd_raw(int argc, char **argv)
     int ifindex;
     uint8_t sk[64], server_pub[32];
     int has_sk = 0, has_server_pub = 0;
+    /* dgram auth (Poly1305 over X25519 static): pubs we trust + cache */
+    uint8_t auth_pub[32];
+    int has_auth = 0;
+    uint8_t rpubs[16][32];
+    int n_rpubs = 0;
 
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -409,6 +449,39 @@ int cmd_raw(int argc, char **argv)
                 return 1;
             }
             has_server_pub = 1;
+        } else if (!strcmp(argv[i], "--auth")) {
+            /* dgram auth: MAC every datagram with X25519(our sk, dst pub) */
+            if (hex_decode(argv[i + 1], auth_pub, 32) != 32) {
+                fprintf(stderr, "auth: pubkey invalida (32 bytes hex)\n");
+                return 1;
+            }
+            has_auth = 1;
+        } else if (!strcmp(argv[i], "--peer")) {
+            /* recv: trusted sender pubkeys (dgram auth verification) */
+            if (n_rpubs >= 16 ||
+                hex_decode(argv[i + 1], rpubs[n_rpubs], 32) != 32) {
+                fprintf(stderr, "peer: pubkey invalida (32 bytes hex)\n");
+                return 1;
+            }
+            n_rpubs++;
+        } else if (!strcmp(argv[i], "--peer-file")) {
+            FILE *f = fopen(argv[i + 1], "r");
+            char line[96];
+            if (!f) {
+                fprintf(stderr, "peer-file: %s\n", strerror(errno));
+                return 1;
+            }
+            while (n_rpubs < 16 && fgets(line, sizeof(line), f)) {
+                char *p = line;
+                while (*p == ' ' || *p == '\t') p++;
+                if (*p == '#' || *p == '\n' || *p == 0)
+                    continue;
+                line[strcspn(line, "\n")] = 0;
+                if (hex_decode(p, rpubs[n_rpubs], 32) == 32)
+                    n_rpubs++;
+            }
+            fclose(f);
+            printf("recv: %d pub(s) confiaveis de %s\n", n_rpubs, argv[i + 1]);
         } else if (!strcmp(argv[i], "--remote")) {
             if (gw_parse(argv[i + 1]) < 0) {
                 fprintf(stderr, "remote: lista de gateways invalida (%s)\n",
@@ -568,6 +641,13 @@ int cmd_raw(int argc, char **argv)
         if (my_addr)
             printf("bound src=%016llx port=%04x (filtrando)\n",
                    (unsigned long long)my_addr, my_port);
+        /* dgram auth verification (--peer/--peer-file) needs our key
+           even with an explicit address / local mode */
+        if (n_rpubs > 0 && !has_sk) {
+            if (load_auto_key(sk) < 0)
+                return 1;
+            has_sk = 1;
+        }
         /* the signed announce needs the identity even with --remote */
         if (g_ngw > 0 && !has_sk) {
             if (load_auto_key(sk) < 0)
@@ -604,6 +684,41 @@ int cmd_raw(int argc, char **argv)
                     rd_be16(&h->dst_port) != my_port)
                     continue;
             }
+            /* dgram auth (--peer/--peer-file): [0x01][pub 32][mac 16][data].
+               Verify Poly1305(X25519(our sk, pub), eth+ipv69+[01][pub]+data)
+               against the trusted pubkeys; drop forged/unknown senders. */
+            if (h->next_header == IPV69_NEXT_DGRAM) {
+                const uint8_t *payload = frame + 14 + IPV69_HEADER_LEN;
+                size_t plen = (size_t)n - 14 - IPV69_HEADER_LEN;
+                if (plen >= 49 && payload[0] == 0x01 && n_rpubs > 0) {
+                    const uint8_t *pub = payload + 1;
+                    size_t dlen = plen - 49;
+                    int auth_ok = 0;
+                    for (int i = 0; i < n_rpubs && !auth_ok; i++) {
+                        if (memcmp(rpubs[i], pub, 32))
+                            continue;
+                        uint8_t shared[32], mont[32], tmp[1600], calc[16],
+                                xsk[32];
+                        ed25519_pub_to_x25519(mont, pub);
+                        x25519_sk(xsk, sk);
+                        if (ed25519_scalarmult(shared, xsk, mont) != 0)
+                            continue;
+                        size_t tl = 0;
+                        memcpy(tmp, frame, 79);         /* eth+ipv69+[01][pub] */
+                        tl = 79;
+                        memcpy(tmp + tl, payload + 49, dlen);
+                        tl += dlen;
+                        ed25519_poly1305(calc, tmp, tl, shared);
+                        memset(shared, 0, sizeof(shared));
+                        if (!memcmp(calc, payload + 33, 16))
+                            auth_ok = 1;
+                    }
+                    if (!auth_ok)
+                        continue;       /* forged/unknown: silent drop */
+                    printf("recv: dgram autenticado (pub=%02x%02x..)\n",
+                           pub[0], pub[1]);
+                }
+            }
             dump_frame(frame, (size_t)n);
         }
     }
@@ -616,8 +731,9 @@ int cmd_raw(int argc, char **argv)
             fprintf(stderr, "send: precisa <dst[:porta]> <src_port> [payload]\n");
             return 1;
         }
-        const char *data = argc > 5 ? argv[5] : "hello ipv69";
-        size_t dlen = strlen(data);
+        const uint8_t *data = (const uint8_t *)(argc > 5 ? argv[5]
+                                                        : "hello ipv69");
+        size_t dlen = strlen((const char *)data);
         uint16_t sp = (uint16_t)strtoul(argv[4], NULL, 10);
         if (argc > 6) {
             fprintf(stderr, "send: src manual removido (anti-spoofing) - "
@@ -650,6 +766,17 @@ int cmd_raw(int argc, char **argv)
                    (unsigned long long)src);
         }
         plen = dlen;
+        /* --auth: wrap the datagram as [0x01][our pub 32][mac 16][data].
+           The tag is filled in after build_frame (auth_tag). */
+        if (has_auth) {
+            uint8_t abuf[1600];
+            abuf[0] = 0x01;
+            memcpy(abuf + 1, sk + 32, 32);
+            memset(abuf + 33, 0, 16);   /* tag placeholder */
+            memcpy(abuf + 49, data, dlen);
+            data = abuf;
+            plen = 49 + dlen;
+        }
         if (g_ngw > 0 && dst != 0xFFFFFFFFFFULL) {
             /* announce first so the gateway knows us (QUERY gate) —
                signed, so the gateway can authenticate our range. Uses
@@ -670,7 +797,9 @@ int cmd_raw(int argc, char **argv)
             if (gw_query(dst, &ep, &eplen) > 0) {
                 size_t len = build_frame(frame, bcast, src_mac, src, dst,
                                          IPV69_NEXT_DGRAM, 64, sp, dp,
-                                         (const uint8_t *)data, plen);
+                                         data, plen);
+                if (has_auth)
+                    auth_tag(frame, data, plen, sk, auth_pub);
                 if (sendto(g_udp_fd, (const char *)frame, len, 0,
                            (struct sockaddr *)&ep, eplen) >= 0) {
                     printf("sent %zu bytes (dgram P2P, dst=%016llx src=%016llx)\n",
@@ -681,7 +810,9 @@ int cmd_raw(int argc, char **argv)
             /* fallback: relay through the gateway */
         }
         size_t len = build_frame(frame, bcast, src_mac, src, dst, IPV69_NEXT_DGRAM,
-                                 64, sp, dp, (const uint8_t *)data, plen);
+                                 64, sp, dp, data, plen);
+        if (has_auth)
+            auth_tag(frame, data, plen, sk, auth_pub);
         if (tun_send(bcast, frame, len) < 0) { perror_sock("sendto"); return 1; }
         printf("sent %zu bytes (dgram, dst=%016llx src=%016llx)\n",
                dlen, (unsigned long long)dst, (unsigned long long)src);

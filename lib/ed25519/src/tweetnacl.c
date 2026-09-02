@@ -824,3 +824,21 @@ int crypto_sign_open(u8 *m,u64 *mlen,const u8 *sm,u64 n,const u8 *pk)
   *mlen = n;
   return 0;
 }
+
+/* Ed25519 public key (Edwards y) -> X25519 public key (Montgomery u),
+ * u = (1+y)/(1-y) mod 2^255-19. Lets Ed25519 identities do static
+ * X25519 key exchange (WireGuard-style dgram auth). */
+void crypto_ed25519_to_x25519(u8 *out, const u8 *ed)
+{
+  gf one, y, a, b;
+  int i;
+
+  FOR(i, 16) one[i] = 0;
+  one[0] = 1;
+  unpack25519(y, ed);
+  A(a, one, y);
+  Z(b, one, y);
+  inv25519(b, b);
+  M(a, a, b);
+  pack25519(out, a);
+}
