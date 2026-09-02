@@ -28,10 +28,11 @@
 #include "IPv69/l2.h"
 #include "IPv69/mac1.h"
 #include "IPv69/keyring.h"
+#include "IPv69/gwfile.h"
 #include "ed25519.h"
 
 /* ---- UDP tunnel backend (--remote gw1,gw2:port) ---------------------- */
-#define MAX_GW 4
+#define MAX_GW 8
 
 static sock_t g_udp_fd = SOCK_INVALID;      /* UDP socket (tunnel) */
 static l2_handle g_l2;                      /* raw L2 endpoint (local) */
@@ -40,8 +41,8 @@ static struct sockaddr_storage g_gw[MAX_GW];
 static socklen_t g_gwlen[MAX_GW];
 static int g_ngw = 0;
 
-/* resolve "host:port[,host:port...]" into the gateway list.
- * Hosts must be numeric IPs (static binary: no DNS at runtime). */
+/* resolve "host:port[,host:port...]" into the gateway list. Hosts may
+ * be numeric IPs or domains (built-in DNS, static binary). */
 static int gw_parse(const char *list)
 {
     char buf[512];
@@ -50,27 +51,8 @@ static int gw_parse(const char *list)
     char *save = NULL;
     for (char *tok = strtok_r(buf, ",", &save);
          tok && g_ngw < MAX_GW; tok = strtok_r(NULL, ",", &save)) {
-        char *colon = strrchr(tok, ':');
-        if (!colon)
+        if (gwfile_resolve(tok, &g_gw[g_ngw], &g_gwlen[g_ngw]) < 0)
             return -1;
-        *colon = 0;
-        const char *host = tok;
-        int port = atoi(colon + 1);
-        struct sockaddr_in sa4;
-        struct sockaddr_in6 sa6;
-        if (inet_pton(AF_INET, host, &sa4.sin_addr) == 1) {
-            sa4.sin_family = AF_INET;
-            sa4.sin_port = htons(port);
-            memcpy(&g_gw[g_ngw], &sa4, sizeof(sa4));
-            g_gwlen[g_ngw] = sizeof(sa4);
-        } else if (inet_pton(AF_INET6, host, &sa6.sin6_addr) == 1) {
-            sa6.sin6_family = AF_INET6;
-            sa6.sin6_port = htons(port);
-            memcpy(&g_gw[g_ngw], &sa6, sizeof(sa6));
-            g_gwlen[g_ngw] = sizeof(sa6);
-        } else {
-            return -1;
-        }
         g_ngw++;
     }
     return g_ngw > 0 ? 0 : -1;
@@ -612,10 +594,24 @@ int cmd_raw(int argc, char **argv)
                 "       %s ping <ifname> <dst> [payload]\n"
                 "       %s dhcp <ifname> [--key PRIV_HEX] [--server-pub PUB_HEX]\n"
                 "  --remote gw:port[,gw:port]  tunnel through a gateway\n"
+                "                             (default: ~/.hosts69/gateways)\n"
                 "  --key:        your Ed25519 privkey (ipv69 keygen) - signs DHCP msgs\n"
                 "  --server-pub: server pubkey - validates OFFER/ACK (rogue-server guard)\n",
                 argv[0], argv[0], argv[0], argv[0], argv[0]);
         return 1;
+    }
+
+    /* no --remote given: fall back to the ~/.hosts69/gateways file for
+       the tunnel-capable commands (send/recv/ping). DHCP/lease stay
+       L2-only by design — a gateway is a router, not a lease server. */
+    if (g_ngw == 0 &&
+        (!strcmp(argv[1], "send") || !strcmp(argv[1], "recv") ||
+         !strcmp(argv[1], "ping"))) {
+        int n = gwfile_load(g_gw, g_gwlen, MAX_GW);
+        if (n > 0) {
+            g_ngw = n;
+            printf("tunnel: %d gateway(s) from ~/.hosts69/gateways\n", n);
+        }
     }
 
     if (tun_open(argv[2], &ifindex, src_mac) < 0) return 1;
