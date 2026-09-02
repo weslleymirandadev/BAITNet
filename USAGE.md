@@ -352,9 +352,42 @@ The gateway is the class guard: without `--private` only public class C
 crosses it (private never leaks to the internet); with `--private`,
 class A/B also route (private VPN over the internet).
 
-The gateway learns `addr/MAC -> endpoint` from traffic (like a switch),
-forwards unicast, replicates broadcast, answers QUERY ("where is addr?")
-and acts as a last-resort relay when P2P is not possible.
+### Cryptokey routing (WireGuard-style)
+
+The gateway never trusts a source address: it learns each peer's range
+ONLY from authenticated traffic — a signed ICSP INIT (handshake) or a
+signed ND announce (`recv`/`send --remote` sign theirs) — then validates
+every datagram's src against the learned ranges with a hash lookup
+(zero per-packet crypto). Forged src frames are dropped silently.
+
+```bash
+# allowlist (like WG peers): only these identities may send. The range
+# is derived from the key (class C); /prefix narrows it (AllowedIPs):
+sudo ./ipv69 gw --port 6969 --iface eth0 \
+    --peer <PUBKEY_A> --peer <PUBKEY_B/32>
+# without --peer: open mode — any valid signature is learned (rate
+# limited per MAC, table evicts LRU)
+```
+
+The gateway still answers QUERY ("where is addr?") with the peer's
+endpoint for P2P, relays unicast, replicates broadcast (split horizon:
+never back to the sender's endpoint; token bucket per source) and rate
+limits peer learning. L2-learned peers have no UDP route: a QUERY the
+local table cannot answer is forwarded to the gateway mesh instead.
+
+### Gateway mesh (federated gateways on one L2)
+
+Gateways with `--iface` on the same L2 segment announce themselves
+(GW_ANN, every 30s + retries at boot), learn each other, and forward
+QUERYs between themselves (GW_Q/GW_R): a client behind gateway A finds
+a client behind gateway B — the answer relays back to the asker and the
+datagram goes P2P, gateway-free:
+
+```bash
+# two gateways bridging the same L2 (e.g. two routers on one LAN):
+sudo ./ipv69 gw --port 6969 --iface eth0
+sudo ./ipv69 gw --port 6969 --iface eth0   # another host, same segment
+```
 
 ---
 
@@ -479,4 +512,47 @@ Windows notes (all validated this session):
 - VirtualBox **bridged** mode does not forward Npcap-injected frames to
   the VM; **host-only** mode does (Windows <-> Kali VM full ICSP
   handshake + identical session keys, validated).
+
+---
+
+## 12. WireGuard-inspired hardening (P0-P3, all implemented)
+
+DoS protection, session discipline, cryptokey routing, self-containment
+and datagram auth — see `docs/wireguard-inspired-plan.md` for the full
+design. Summary of what to type:
+
+```bash
+# bring a device up: keygen-if-missing + DHCP lease with backoff+jitter
+./ipv69 net up wlan0
+
+# datagram auth: MAC every frame with X25519(our key, dst pub).
+# sender: --auth <dst PUBKEY>; receiver: --peer/--peer-file <trusted pubs>
+./ipv69 send wlan0 <dst>:16 1 "hi" --auth <PUBKEY_DST>
+./ipv69 recv wlan0 <my_addr> --peer-file /etc/ipv69/peers
+
+# dhcpd allowlist with AllowedIPs-style ranges (key authorizes a range):
+sudo ./ipv69 dhcpd wlan0 --raw --peer <PUBKEY_A> --peer <PUBKEY_B/28>
+
+# gateway cryptokey routing + federation: see section 7
+```
+
+Under the hood:
+
+- **mac1** (Poly1305, keyed by the dest addr): every INIT/DHCP control
+  is MACed; servers verify before ANY signature/ECDH work (~us vs
+  ~1.7ms) and drop garbage silently.
+- **Per-sender token buckets** (table of 64, eviction): handshake,
+  broadcast and peer-learning floods are throttled per MAC/endpoint —
+  under load the excess is dropped without a reply (WG "silent").
+- **Session discipline**: HKDF-SHA512 labels derive directional keys
+  (send/recv); time-based rekey with jitter + zeroing of old keys; INIT
+  carries a timestamp (anti-replay); data path has a 32-TSN sliding
+  replay window; random initial TSN (SCTP-style).
+- **Cryptokey routing**: gateway peers are (identity key, addr range,
+  endpoint) learned from signed INITs/announces only; src validation is
+  a range lookup — no per-packet crypto; `--peer PUB[/prefix]` is the
+  allowlist (WG AllowedIPs); dhcpd allocates leases O(1) by MAC hash
+  and lets a signed REQUEST claim any free address inside its range.
+- **Gateway mesh**: GW_ANN discovery + QUERY forwarding between
+  federated gateways on one L2 (P2P across gateways).
 

@@ -9,6 +9,26 @@ Source of ideas: WireGuard protocol design
 problems IPv69 has: handshake DoS, per-packet crypto cost, state
 allocation before authentication, and configuration pain.
 
+## Status: P0-P3 IMPLEMENTED (see USAGE.md §12)
+
+- P0 anti-DoS: mac1 pre-auth filter (Poly1305 over the dest addr),
+  per-sender token buckets (ICSP INIT / dhcpd / gw broadcast+learn).
+- P1 session: HKDF directional keys, time-based rekey + zeroing, INIT
+  timestamp anti-replay, 32-TSN sliding replay window, random initial
+  TSN.
+- P2 cryptokey routing: gw peers = (key, range, endpoint) learned from
+  signed INITs/announces only; src validation by range lookup; `--peer
+  PUB[/prefix]` allowlist (AllowedIPs); dhcpd O(1) hash allocation +
+  range-bounded signed REQUESTs.
+- P3 self-containment: `ipv69 net up` (keygen-if-missing + DHCP
+  backoff); dgram auth `--auth`/`--peer-file` (Poly1305 over static
+  X25519, edwards->montgomery conversion); gateway mesh (GW_ANN
+  discovery, GW_Q/GW_R QUERY forwarding, P2P across federated
+  gateways).
+
+This document below remains the design rationale + the phase-by-phase
+breakdown that was implemented.
+
 ---
 
 ## 1. Current bottlenecks (measured in the code)
