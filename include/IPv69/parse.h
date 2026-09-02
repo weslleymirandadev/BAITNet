@@ -23,8 +23,8 @@ void print_payload(const uint8_t *payload, size_t len);
    returns 0 on success, -1 on error */
 int parse_ipv69_addr(const char *s, uint64_t *out);
 
-/* parses "ff.ff.ff.ff.ff[:porta]" (or raw hex[:porta]); the optional
-   :porta is DECIMAL (:16 = port 16, no leading zeros needed). */
+/* parses "ff.ff.ff.ff.ff[:port]" (or raw hex[:port]); the optional
+   :port is DECIMAL (:16 = port 16, no leading zeros needed). */
 int parse_ipv69_addr_port(const char *s, uint64_t *addr, uint16_t *port);
 
 /* identity-derived address (SLAAC-style): 4 bytes of SHA-512(pubkey)

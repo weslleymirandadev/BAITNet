@@ -263,7 +263,7 @@ static int dhcp_acquire(struct transport *t, struct lease *l)
         return -1;
     }
     if (!check_reply(t, buf, (size_t)n)) {
-        fprintf(stderr, "ip69d: OFFER assinatura invalida\n");
+        fprintf(stderr, "ip69d: OFFER signature invalid\n");
         return -1;
     }
     l->addr = get_addr40(buf + 7);
@@ -285,7 +285,7 @@ static int dhcp_acquire(struct transport *t, struct lease *l)
         return -1;
     }
     if (!check_reply(t, buf, (size_t)n)) {
-        fprintf(stderr, "ip69d: ACK assinatura invalida\n");
+        fprintf(stderr, "ip69d: ACK signature invalid\n");
         return -1;
     }
     l->expiry = time(NULL) + l->lease_sec;
@@ -360,7 +360,7 @@ int cmd_tun(int argc, char **argv)
         else if (!strcmp(argv[i], "--key") && i + 1 < argc) {
             uint8_t seed[32];
             if (hex_decode(argv[++i], seed, 32) != 32) {
-                fprintf(stderr, "key: privkey invalida (32 bytes hex)\n");
+                fprintf(stderr, "key: invalid private key (32 bytes hex)\n");
                 return 1;
             }
             memcpy(t.sk, seed, 32);
@@ -368,7 +368,7 @@ int cmd_tun(int argc, char **argv)
             t.has_sk = 1;
         } else if (!strcmp(argv[i], "--server-pub") && i + 1 < argc) {
             if (hex_decode(argv[++i], t.server_pub, 32) != 32) {
-                fprintf(stderr, "server-pub: pubkey invalida (32 bytes hex)\n");
+                fprintf(stderr, "server-pub: invalid pubkey (32 bytes hex)\n");
                 return 1;
             }
             t.has_server_pub = 1;
@@ -404,7 +404,7 @@ int cmd_tun(int argc, char **argv)
         char kpath[256];
         ed25519_keyfile_default_path(kpath, sizeof(kpath));
         if (ed25519_keyfile_load_or_create(kpath, t.sk, t.server_pub) < 0) {
-            fprintf(stderr, "ip69d: nao foi possivel carregar/criar chave em %s\n", kpath);
+            fprintf(stderr, "ip69d: could not load/create key at %s\n", kpath);
             return 1;
         }
         t.has_sk = 1;

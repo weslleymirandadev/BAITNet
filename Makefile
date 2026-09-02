@@ -48,7 +48,7 @@ $(BUILD)/icsp_chat: $(CHAT_SRC) include/ICSP/icsp.h include/IPv69/keyring.h | $(
 
 # --- Windows build (MinGW + Npcap): full ipv69.exe + chat, raw L2 via
 # libpcap. Linux-only commands (tun/lease/status) are excluded and
-# report "nao suportado no Windows".
+# report "not supported on Windows".
 # gcc.exe runs through WSL interop: the CWD is translated, so relative
 # paths work, but the Npcap SDK needs a Windows-style path (fwd slashes).
 # Toolchain paths are probed, not hardcoded: override with

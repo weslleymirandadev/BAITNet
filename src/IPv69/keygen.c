@@ -127,21 +127,21 @@ int cmd_keygen(int argc, char **argv)
     /* never clobber an existing key without explicit approval
        (ssh-keygen style: prompt y/N). */
     if (access(key, F_OK) == 0) {
-        fprintf(stderr, "keygen: %s ja existe\n", key);
+        fprintf(stderr, "keygen: %s already exists\n", key);
         if (!force) {
-            fprintf(stderr, "sobrescrever? (y/N) ");
+            fprintf(stderr, "overwrite? (y/N) ");
             fflush(stderr);
             char ans[8] = { 0 };
             if (!fgets(ans, sizeof(ans), stdin))
                 return 1;
             if (ans[0] != 'y' && ans[0] != 'Y') {
-                fprintf(stderr, "keygen: abortado (nada foi alterado)\n");
+                fprintf(stderr, "keygen: aborted (nothing was changed)\n");
                 return 1;
             }
         }
     }
     if (keyring_create(key, pub, pass, comment) < 0) {
-        fprintf(stderr, "keygen: nao foi possivel salvar a chave em %s\n", key);
+        fprintf(stderr, "keygen: could not save the key to %s\n", key);
         return 1;
     }
     /* show the pubkey so it can be registered */

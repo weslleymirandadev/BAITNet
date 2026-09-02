@@ -2,7 +2,7 @@
  *
  *   ipv69 icsp server <ifname> [port|:port] [--peer HEX] [--peer-file F]
  *          [--echo] [--loss N]
- *   ipv69 icsp client <ifname> <dst:porta> [msg] [--echo] [--reset] [--hb]
+ *   ipv69 icsp client <ifname> <dst:port> [msg] [--echo] [--reset] [--hb]
  *
  * Handshake (Phase 1), then optionally exchanges data (Phase 2):
  *   server --echo answers back on the same stream;
@@ -57,7 +57,7 @@ static void client_on_data(struct icsp_assoc *a, uint16_t stream,
                            const uint8_t *data, size_t len, void *ud)
 {
     struct client_ctx *c = ud;
-    printf("icsp: recebido %zu bytes (stream %u): \"%.*s\"\n",
+    printf("icsp: received %zu bytes (stream %u): \"%.*s\"\n",
            len, stream, (int)len, (char *)data);
     if (c->echo_mode)
         c->got_echo = 1;
@@ -73,7 +73,7 @@ static void server_on_data(struct icsp_assoc *a, uint16_t stream,
                            const uint8_t *data, size_t len, void *ud)
 {
     struct server_ctx *c = ud;
-    printf("icsp: recebido %zu bytes (stream %u): \"%.*s\"\n",
+    printf("icsp: received %zu bytes (stream %u): \"%.*s\"\n",
            len, stream, (int)len, (char *)data);
     if (c->echo_mode)
         icsp_data_send(a, stream, data, len);
@@ -100,13 +100,13 @@ static int run_client(int argc, char **argv, struct icsp_assoc *a,
         else msg = argv[i];
     }
     if (argc < 4 || parse_ipv69_addr_port(argv[3], &dst, &port) < 0) {
-        fprintf(stderr, "icsp client: precisa <dst:porta> [msg] "
+        fprintf(stderr, "icsp client: requires <dst:port> [msg] "
                         "[--echo|--hb|--reset]\n");
         return 1;
     }
     if (port == 0)
         port = 6969;
-    printf("icsp: cliente -> %016llx:%u\n", (unsigned long long)dst, port);
+    printf("icsp: client -> %016llx:%u\n", (unsigned long long)dst, port);
 
     if (icsp_client_handshake(a, dst, port, sk, NULL) < 0)
         return 1;
@@ -131,11 +131,11 @@ static int run_client(int argc, char **argv, struct icsp_assoc *a,
        the random initial TSN); only -1 means failure. */
     int tsn = icsp_data_send(a, 1, (const uint8_t *)msg, strlen(msg));
     if (tsn == -1) {
-        fprintf(stderr, "icsp: data_send falhou\n");
+        fprintf(stderr, "icsp: data_send failed\n");
         return 1;
     }
-    printf("icsp: DATA enviado (tsn=%d, stream 1)\n", tsn);
-    icsp_data_send(a, 2, (const uint8_t *)"msg na stream 2", 17);
+    printf("icsp: DATA sent (tsn=%d, stream 1)\n", tsn);
+    icsp_data_send(a, 2, (const uint8_t *)"msg on stream 2", 17);
 
     /* wait for SACK (and echo when --echo); retransmit on idle.
        With --rekey keep polling past the echo so the timer fires. */
@@ -145,13 +145,13 @@ static int run_client(int argc, char **argv, struct icsp_assoc *a,
         if (r == ICSP_POLL_CLOSED)
             break;
         if (r == ICSP_POLL_ERR) {
-            fprintf(stderr, "icsp: erro na associação\n");
+            fprintf(stderr, "icsp: error in the association\n");
             return 1;
         }
         if (r == ICSP_POLL_TIMEOUT) {
             int rt = icsp_data_retransmit(a, 1);
             if (rt > 0)
-                printf("icsp: retransmitiu DATA (%d)\n", rt);
+                printf("icsp: retransmitted DATA (%d)\n", rt);
         }
         if (rekey_s == 0 &&
             (ctx.got_echo || !ctx.echo_mode) && icsp_all_acked(a))
@@ -161,7 +161,7 @@ static int run_client(int argc, char **argv, struct icsp_assoc *a,
 
     /* graceful close */
     icsp_shutdown_send(a);
-    printf("icsp: SHUTDOWN enviado\n");
+    printf("icsp: SHUTDOWN sent\n");
     return 0;
 }
 
@@ -181,7 +181,7 @@ static int run_server(int argc, char **argv, struct icsp_assoc *a,
             loss_pct = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--peer") && i + 1 < argc) {
             if (hex_decode(argv[++i], peers[n_peers], 32) != 32) {
-                fprintf(stderr, "icsp: --peer invalido\n");
+                fprintf(stderr, "icsp: invalid --peer\n");
                 return 1;
             }
             n_peers++;
@@ -204,7 +204,7 @@ static int run_server(int argc, char **argv, struct icsp_assoc *a,
             port = (uint16_t)atoi(argv[i]);
         }
     }
-    printf("icsp: servidor em porta %u (peers=%d, echo=%d, loss=%d%%)\n",
+    printf("icsp: server on port %u (peers=%d, echo=%d, loss=%d%%)\n",
            port, n_peers, ctx.echo_mode, loss_pct);
 
     /* tunnel mode: announce ourselves to the gateway (signed ND
@@ -218,7 +218,7 @@ static int run_server(int argc, char **argv, struct icsp_assoc *a,
            a->send_key[0], a->send_key[1],
            a->send_key[30], a->send_key[31]);
     a->sack_loss_pct = loss_pct;        /* fault injection (auto-SACK) */
-    printf("icsp: servidor escutando (ctrl-C para sair)\n");
+    printf("icsp: server listening (ctrl-C to quit)\n");
 
     /* serve this association, then accept the next one */
     time_t last_ann = 0;
@@ -233,12 +233,12 @@ static int run_server(int argc, char **argv, struct icsp_assoc *a,
             return 1;
         }
         if (r == ICSP_POLL_CLOSED) {
-            printf("icsp: SHUTDOWN recebido — associação fechada, "
-                   "aguardando proxima...\n");
+            printf("icsp: SHUTDOWN received — association closed, "
+                   "waiting for the next one...\n");
             if (icsp_server_accept(a, port, sk, peers, n_peers, 30) < 0)
                 return 1;
             a->sack_loss_pct = loss_pct;
-            printf("icsp: nova associação aceita — session_key == "
+            printf("icsp: new association accepted — session_key == "
                    "%02x%02x..%02x%02x\n",
                    a->send_key[0], a->send_key[1],
                    a->send_key[30], a->send_key[31]);
@@ -254,7 +254,7 @@ int cmd_icsp(int argc, char **argv)
     setvbuf(stdout, NULL, _IOLBF, 0);
 
     if (argc < 3) {
-        fprintf(stderr, "icsp: precisa <server|client> <ifname> [args]\n");
+        fprintf(stderr, "icsp: requires <server|client> <ifname> [args]\n");
         return 1;
     }
     const char *remote = NULL;
@@ -264,11 +264,11 @@ int cmd_icsp(int argc, char **argv)
     if (remote) {
         /* tunnel mode: ICSP over the gateway (--remote gw:port) */
         if (icsp_endpoint_open_remote(&a, remote, sk) < 0) {
-            fprintf(stderr, "icsp: --remote invalido (%s)\n", remote);
+            fprintf(stderr, "icsp: invalid --remote (%s)\n", remote);
             return 1;
         }
     } else if (icsp_endpoint_open(&a, argv[2], sk) < 0) {
-        fprintf(stderr, "icsp: sem identidade (crie com ipv69 keygen)\n");
+        fprintf(stderr, "icsp: no identity (create one with ipv69 keygen)\n");
         return 1;
     }
 
@@ -277,6 +277,6 @@ int cmd_icsp(int argc, char **argv)
     if (!strcmp(argv[1], "client"))
         return run_client(argc, argv, &a, sk);
 
-    fprintf(stderr, "icsp: modo desconhecido '%s' (server|client)\n", argv[1]);
+    fprintf(stderr, "icsp: unknown mode '%s' (server|client)\n", argv[1]);
     return 1;
 }

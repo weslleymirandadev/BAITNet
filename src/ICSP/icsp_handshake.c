@@ -277,7 +277,7 @@ static int init_ack_send(struct icsp_assoc *a, const uint8_t sk[64])
         perror("icsp: send INIT-ACK");
         return -1;
     }
-    printf("icsp: INIT-ACK enviado (cookie)\n");
+    printf("icsp: INIT-ACK sent (cookie)\n");
     return 0;
 }
 
@@ -308,7 +308,7 @@ int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
         a->assoc_id = ((uint32_t)rnd[0] << 24) | ((uint32_t)rnd[1] << 16) |
                       ((uint32_t)rnd[2] << 8) | rnd[3];
     }
-    printf("icsp: cliente -> %016llx:%u\n",
+    printf("icsp: client -> %016llx:%u\n",
            (unsigned long long)dst_addr, dst_port);
 
     /* INIT */
@@ -321,9 +321,9 @@ int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
             perror("icsp: send INIT");
             return -1;
         }
-        printf("icsp: INIT enviado (dst=%016llx:%u%s)\n",
+        printf("icsp: INIT sent (dst=%016llx:%u%s)\n",
                (unsigned long long)dst_addr, dst_port,
-               server_pub ? ", id cifrado" : "");
+               server_pub ? ", id encrypted" : "");
     }
 
     /* wait INIT-ACK [ver][streams][eph 32][id 32][sig 64][cookie] */
@@ -344,7 +344,7 @@ int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
         memcpy(a->peer_id, cd + 37, 32);
         /* verify server signature over [ver..id] */
         if (ed25519_verify(cd, 5 + 32 + 32, cd + 69, a->peer_id) != 0) {
-            printf("icsp: INIT-ACK assinatura invalida (servidor falso)\n");
+            printf("icsp: INIT-ACK invalid signature (rogue server)\n");
             return -1;
         }
         printf("icsp: INIT-ACK ok (peer_id=%02x%02x.., assoc=%u)\n",
@@ -362,7 +362,7 @@ int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
             perror("icsp: send COOKIE-ECHO");
             return -1;
         }
-        printf("icsp: COOKIE-ECHO enviado\n");
+        printf("icsp: COOKIE-ECHO sent\n");
         break;
     }
 
@@ -375,7 +375,7 @@ int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
         if (payload[ICSP_HEADER_LEN] != ICSP_CHUNK_COOKIE_ACK)
             continue;
         a->state = ICSP_ST_ESTABLISHED;
-        printf("icsp: COOKIE-ACK — associação estabelecida! session_key=");
+        printf("icsp: COOKIE-ACK — association established! session_key=");
         for (int i = 0; i < 32; i++) printf("%02x", a->send_key[i]);
         printf("\n");
         return 0;
@@ -431,11 +431,11 @@ int icsp_server_accept(struct icsp_assoc *a, uint16_t port,
             continue;
         const uint8_t *cd = payload + ICSP_HEADER_LEN + ICSP_CHUNK_HDR;
         if (!cookie_valid(cd, a)) {
-            printf("icsp: COOKIE-ECHO cookie invalido -> recusado\n");
+            printf("icsp: COOKIE-ECHO invalid cookie -> rejected\n");
             return -1;
         }
         if (ed25519_verify(cd, COOKIE_LEN, cd + COOKIE_LEN, a->peer_id) != 0) {
-            printf("icsp: COOKIE-ECHO assinatura invalida -> recusado\n");
+            printf("icsp: COOKIE-ECHO invalid signature -> rejected\n");
             return -1;
         }
         printf("icsp: COOKIE-ECHO ok -> COOKIE-ACK\n");
@@ -451,7 +451,7 @@ int icsp_server_accept(struct icsp_assoc *a, uint16_t port,
         }
     }
     a->state = ICSP_ST_ESTABLISHED;
-    printf("icsp: associação estabelecida! session_key=");
+    printf("icsp: association established! session_key=");
     for (int i = 0; i < 32; i++) printf("%02x", a->send_key[i]);
     printf("\n");
     return 0;
@@ -507,7 +507,7 @@ int icsp_rekey_client_step(struct icsp_assoc *a, const uint8_t *payload)
         if (icsp_derive_key(a, a->eph_priv) != 0)
             return -1;
         a->state = ICSP_ST_ESTABLISHED;
-        printf("icsp: rekey ok! nova session_key=");
+        printf("icsp: rekey ok! new session_key=");
         for (int i = 0; i < 32; i++) printf("%02x", a->send_key[i]);
         printf("\n");
         return 1;
@@ -552,7 +552,7 @@ int icsp_rekey_server_step(struct icsp_assoc *a, const uint8_t *frame,
                 return -1;
         }
         a->state = ICSP_ST_ESTABLISHED;
-        printf("icsp: rekey ok! nova session_key=");
+        printf("icsp: rekey ok! new session_key=");
         for (int i = 0; i < 32; i++) printf("%02x", a->send_key[i]);
         printf("\n");
         return 1;

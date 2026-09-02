@@ -222,7 +222,7 @@ static int gw_learn_init(const uint8_t *buf, ssize_t n,
         if (!auth_allowed(pub, src))
             return 0;
         if (peer_learn_auth(src, eth->src_mac, ep, pub, 40)) {
-            printf("ipv69gw: peer autenticado %016llx (%02x%02x..)\n",
+            printf("ipv69gw: peer authenticated %016llx (%02x%02x..)\n",
                    (unsigned long long)src, pub[0], pub[1]);
             fflush(stdout);
             return 1;
@@ -260,7 +260,7 @@ static int gw_learn_announce(const uint8_t *buf, ssize_t n,
         if (!auth_allowed(pub, addr))
             return 0;
         if (peer_learn_auth(addr, eth->src_mac, ep, pub, 40)) {
-            printf("ipv69gw: peer autenticado %016llx (%02x%02x..)\n",
+            printf("ipv69gw: peer authenticated %016llx (%02x%02x..)\n",
                    (unsigned long long)addr, pub[0], pub[1]);
             fflush(stdout);
             return 1;
@@ -414,7 +414,7 @@ static void gw_pend_relay(const uint8_t *p)
                        gwp[i].asker.slen);
             }
             gwp[i] = gwp[--n_gwp];
-            printf("ipv69gw: mesh: relayei %016llx -> asker\n",
+            printf("ipv69gw: mesh: relayed %016llx -> asker\n",
                    (unsigned long long)q);
             fflush(stdout);
             return;
@@ -454,7 +454,7 @@ static int gw_mesh_handle(const uint8_t *buf, ssize_t n)
             memcpy(gwn[n_gwn].mac, eth->src_mac, 6);
             gwn[n_gwn].last = time(NULL);
             n_gwn++;
-            printf("ipv69gw: mesh: vizinho %02x:%02x:%02x:%02x:%02x:%02x\n",
+            printf("ipv69gw: mesh: neighbor %02x:%02x:%02x:%02x:%02x:%02x\n",
                    eth->src_mac[0], eth->src_mac[1], eth->src_mac[2],
                    eth->src_mac[3], eth->src_mac[4], eth->src_mac[5]);
             fflush(stdout);
@@ -469,7 +469,7 @@ static int gw_mesh_handle(const uint8_t *buf, ssize_t n)
         uint8_t rpkt[12];
         if (t && gw_r_build(rpkt, q, t) > 0) {
             gw_mesh_send(rpkt, sizeof(rpkt));
-            printf("ipv69gw: mesh: respondi %016llx\n",
+            printf("ipv69gw: mesh: answered %016llx\n",
                    (unsigned long long)q);
             fflush(stdout);
         }
@@ -506,7 +506,7 @@ static int gw_mesh_query(uint64_t q, const struct endpoint *asker)
         gw_mesh_send(qpkt, sizeof(qpkt));       /* L2 mesh */
     for (int i = 0; i < n_glink; i++)
         gw_link_send_pkt(&glink[i], qpkt, sizeof(qpkt)); /* links */
-    printf("ipv69gw: mesh: forwardei QUERY %016llx\n",
+    printf("ipv69gw: mesh: forwarded QUERY %016llx\n",
            (unsigned long long)q);
     fflush(stdout);
     return 1;
@@ -615,7 +615,7 @@ static int gw_fed_handle(int li, const uint8_t *buf, ssize_t n)
             rate_allow(glink[li].pub, 10, 20, 1) &&
             ed25519_verify(p, 3, p + 3, glink[li].pub) == 0) {
             if (glink[li].last == 0) {
-                printf("ipv69gw: link %d: vizinho autenticado "
+                printf("ipv69gw: link %d: neighbor authenticated "
                        "(pub %02x%02x..)\n",
                        li, glink[li].pub[0], glink[li].pub[1]);
                 fflush(stdout);
@@ -630,7 +630,7 @@ static int gw_fed_handle(int li, const uint8_t *buf, ssize_t n)
         uint8_t rpkt[12];
         if (t && gw_r_build(rpkt, q, t) > 0) {
             gw_link_send_pkt(&glink[li], rpkt, sizeof(rpkt));
-            printf("ipv69gw: mesh: respondi %016llx (link %d)\n",
+            printf("ipv69gw: mesh: answered %016llx (link %d)\n",
                    (unsigned long long)q, li);
             fflush(stdout);
         } else if (!t && n_glink > 1) {
@@ -755,7 +755,7 @@ static void route_learn(const uint8_t *p, int li)
         routes[n_routes].li = li;
         routes[n_routes].last = time(NULL);
         n_routes++;
-        printf("ipv69gw: rota aprendida %016llx/%d via link %d\n",
+        printf("ipv69gw: route learned %016llx/%d via link %d\n",
                (unsigned long long)addr, prefix, li);
         fflush(stdout);
     }
@@ -829,13 +829,13 @@ int cmd_gw(int argc, char **argv)
         else if (!strcmp(argv[i], "--peer") && i + 1 < argc) {
             /* cryptokey routing allowlist: PUB[/prefix] (WG peers) */
             if (n_auth >= MAX_PEERS) {
-                fprintf(stderr, "gw: limite de peers %d\n", MAX_PEERS);
+                fprintf(stderr, "gw: peer limit %d\n", MAX_PEERS);
                 return 1;
             }
             if (ipv69_addr_parse_peer(argv[++i], auth[n_auth].key,
                                       &auth[n_auth].base,
                                       &auth[n_auth].prefix) < 0) {
-                fprintf(stderr, "gw: --peer invalido (%s) — PUB[/prefixo]\n",
+                fprintf(stderr, "gw: invalid --peer (%s) — PUB[/prefix]\n",
                         argv[i]);
                 return 1;
             }
@@ -844,27 +844,27 @@ int cmd_gw(int argc, char **argv)
             /* federated gateway link: PUB@endpoint (the other gateway's
                Ed25519 identity and its UDP listener) */
             if (n_glink >= MAX_LINKS) {
-                fprintf(stderr, "gw: limite de links %d\n", MAX_LINKS);
+                fprintf(stderr, "gw: link limit %d\n", MAX_LINKS);
                 return 1;
             }
             char *arg = argv[++i];
             char *at = strchr(arg, '@');
             if (!at || at == arg) {
                 fprintf(stderr,
-                        "gw: --peer-gw invalido (%s) — PUB@endpoint\n",
+                        "gw: invalid --peer-gw (%s) — PUB@endpoint\n",
                         arg);
                 return 1;
             }
             *at = 0;
             if (hex_decode(arg, glink[n_glink].pub, 32) != 32) {
-                fprintf(stderr, "gw: --peer-gw: pub invalida (%s)\n", arg);
+                fprintf(stderr, "gw: --peer-gw: invalid pub (%s)\n", arg);
                 return 1;
             }
             char hp[256];
             snprintf(hp, sizeof(hp), "%s", at + 1);
             char *colon = strrchr(hp, ':');
             if (!colon) {
-                fprintf(stderr, "gw: --peer-gw: endpoint invalido (%s)\n",
+                fprintf(stderr, "gw: --peer-gw: invalid endpoint (%s)\n",
                         at + 1);
                 return 1;
             }
@@ -892,7 +892,7 @@ int cmd_gw(int argc, char **argv)
                 memcpy(&lep.ss, &l6, sizeof(l6));
                 lep.slen = sizeof(l6);
             } else {
-                fprintf(stderr, "gw: --peer-gw: endpoint invalido (%s)\n",
+                fprintf(stderr, "gw: --peer-gw: invalid endpoint (%s)\n",
                         at + 1);
                 return 1;
             }
@@ -918,7 +918,7 @@ int cmd_gw(int argc, char **argv)
                     "             style): only these identities may send;\n"
                     "             /prefix = AllowedIPs range (default /40)\n"
                     "  --peer-gw: federate with another gateway (this\n"
-                    "             machine's ilha is bridged to its): the\n"
+                    "             machine's island is bridged to its): the\n"
                     "             link is UDP to its listener, authenticated\n"
                     "             by its Ed25519 PUB (needs our keyring)\n",
                     argv[0]);
@@ -953,8 +953,8 @@ int cmd_gw(int argc, char **argv)
     /* optional local L2 bridge (AF_PACKET — Linux only) */
     if (iface) {
 #ifdef _WIN32
-        fprintf(stderr, "ipv69gw: --iface nao e suportado no Windows "
-                        "(bridge L2 local usa AF_PACKET)\n");
+        fprintf(stderr, "ipv69gw: --iface is not supported on Windows "
+                        "(local L2 bridge uses AF_PACKET)\n");
         return 1;
 #else
         l2fd = socket(AF_PACKET, SOCK_RAW, htons(ETHERTYPE_IPV69));
@@ -996,15 +996,15 @@ int cmd_gw(int argc, char **argv)
             printf("ipv69gw: keyring %s (%s)\n", kpath, comment);
         } else {
             fprintf(stderr,
-                    "gw: --peer-gw precisa da identidade local — crie\n"
-                    "    com 'ipv69 keygen' (HOME=%s)\n", kdir);
+                    "gw: --peer-gw requires the local identity — create it\n"
+                    "    with 'ipv69 keygen' (HOME=%s)\n", kdir);
             return 1;
         }
     }
 
     printf("ipv69gw: listening on udp/%d%s%s%s\n", port,
            iface ? " + l2 bridge " : "", iface ? iface : "",
-           n_glink > 0 ? " + links federados" : "");
+           n_glink > 0 ? " + federated links" : "");
     fflush(stdout);
 
     uint8_t buf[1700];
@@ -1022,7 +1022,7 @@ int cmd_gw(int argc, char **argv)
                 apkt[1] = (uint8_t)(port >> 8);
                 apkt[2] = (uint8_t)port;
                 gw_mesh_send(apkt, sizeof(apkt));
-                printf("ipv69gw: mesh: anunciado na L2 (udp/%d)\n", port);
+                printf("ipv69gw: mesh: announced on L2 (udp/%d)\n", port);
                 fflush(stdout);
             }
             if (n_glink > 0) {
@@ -1194,7 +1194,7 @@ int cmd_gw(int argc, char **argv)
             char dcls = ipv69_addr_class(dst);
             if (!allow_private &&
                 (scls != 'C' || (dcls != 'C' && dcls != 'E'))) {
-                fprintf(stderr, "ipv69gw: classe src=%c dst=%c nao roteada (--private ausente)\n",
+                fprintf(stderr, "ipv69gw: class src=%c dst=%c not routed (no --private)\n",
                         scls, dcls);
                 continue;
             }
@@ -1249,7 +1249,7 @@ int cmd_gw(int argc, char **argv)
                     gw_link_send_raw(&glink[i], buf, n);
                 continue;
             }
-            fprintf(stderr, "ipv69gw: sem destino para %016llx\n",
+            fprintf(stderr, "ipv69gw: no destination for %016llx\n",
                     (unsigned long long)dst);
         }
 
@@ -1299,7 +1299,7 @@ int cmd_gw(int argc, char **argv)
                     continue;
                 /* broadcast / unknown: replicate to all tunnels and
                    the federated links (the target may be in another
-                   ilha; its gateway will route it) */
+                   island; its gateway will route it) */
                 for (int i = 0; i < MAX_PEERS; i++)
                     if (peers[i].addr)
                         send_udp(fd, buf, n, &peers[i].ep);

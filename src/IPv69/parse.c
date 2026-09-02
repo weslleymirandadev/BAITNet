@@ -104,9 +104,9 @@ int parse_ipv69_addr(const char *s, uint64_t *out) {
     return 0;
 }
 
-/* "ff.ff.ff.ff.ff[:porta]" or raw hex[:porta]; splits the optional
-   :porta, in DECIMAL (no leading zeros needed: :16 = port 16).
-   Returns 0 or -1. */
+/* "ff.ff.ff.ff.ff[:port]" or raw hex[:port]; splits the optional
+  :port, in DECIMAL (no leading zeros needed: :16 = port 16).
+  Returns 0 or -1. */
 int parse_ipv69_addr_port(const char *s, uint64_t *addr, uint16_t *port)
 {
     char buf[64];

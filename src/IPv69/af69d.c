@@ -128,7 +128,7 @@ static void peer_file_load(struct ctx *c, const char *path)
                                   &c->peers[c->n_peers].prefix) == 0)
             c->n_peers++;
         else
-            fprintf(stderr, "af69d: peer-file: linha invalida ignorada: %s\n", p);
+            fprintf(stderr, "af69d: peer-file: ignoring invalid line: %s\n", p);
     }
     fclose(f);
     printf("af69d: peer-file %s: %d pubkey(s)\n", path, c->n_peers);
@@ -190,7 +190,7 @@ static int check_msg(struct ctx *c, const uint8_t *msg, size_t plen,
         if (!memcmp(c->peers[i].pub, pub, PUB_LEN)) {
             if (ed25519_verify(msg, body, sig, pub) == 0)
                 return 1;
-            printf("af69d: assinatura invalida de %s\n", ps);
+            printf("af69d: invalid signature from %s\n", ps);
             return 0;
         }
     if (c->learn && (!c->n_allow || mac_in_allowlist(c, mac)) &&
@@ -198,7 +198,7 @@ static int check_msg(struct ctx *c, const uint8_t *msg, size_t plen,
         learn_peer(c, pub, mac);
         return 1;
     }
-    printf("af69d: pub %s nao esta na allowlist -> ignorado\n", ps);
+    printf("af69d: pub %s not in allowlist -> ignored\n", ps);
     return 0;
 }
 
@@ -233,7 +233,7 @@ static int learn_peer(struct ctx *c, const uint8_t *pub, const uint8_t *mac)
         if (!memcmp(c->peers[i].pub, pub, PUB_LEN))
             return 0;               /* already known */
     if (c->n_peers >= MAX_PEERS) {
-        fprintf(stderr, "af69d: learn: tabela de peers cheia (%d)\n",
+        fprintf(stderr, "af69d: learn: peer table full (%d)\n",
                 MAX_PEERS);
         return 0;
     }
@@ -255,8 +255,8 @@ static int learn_peer(struct ctx *c, const uint8_t *pub, const uint8_t *mac)
     }
     mac_str(mac, ms);
     pub_str(pub, ps);
-    printf("af69d: aprendi pub %s do MAC %s -> registrada%s\n", ps, ms,
-           c->peer_file ? " no peer-file" : " (so memoria)");
+    printf("af69d: learned pub %s from MAC %s -> registered%s\n", ps, ms,
+           c->peer_file ? " to peer-file" : " (memory only)");
     return 1;
 }
 
@@ -423,14 +423,14 @@ int cmd_dhcpd(int argc, char **argv)
         strcmp(argv[2], "--peer") && strcmp(argv[2], "--peer-file") &&
         strcmp(argv[2], "--key") && strcmp(argv[2], "--learn"))
         if (parse_ipv69_addr(argv[2], &c.pool_start) < 0) {
-            fprintf(stderr, "pool_start invalido\n");
+            fprintf(stderr, "invalid pool_start\n");
             return 1;
         }
     if (argc > 3 && strcmp(argv[3], "--allow") &&
         strcmp(argv[3], "--peer") && strcmp(argv[3], "--peer-file") &&
         strcmp(argv[3], "--key") && strcmp(argv[3], "--learn"))
         if (parse_ipv69_addr(argv[3], &c.pool_end) < 0) {
-            fprintf(stderr, "pool_end invalido\n");
+            fprintf(stderr, "invalid pool_end\n");
             return 1;
         }
     if (argc > 4 && strcmp(argv[4], "--allow") &&
@@ -445,26 +445,26 @@ int cmd_dhcpd(int argc, char **argv)
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--allow") && i + 1 < argc) {
             if (c.n_allow >= MAX_PEERS) {
-                fprintf(stderr, "allow: limite %d\n", MAX_PEERS);
+                fprintf(stderr, "allow: limit %d\n", MAX_PEERS);
                 return 1;
             }
             if (sscanf(argv[++i], "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
                        &c.allow[c.n_allow][0], &c.allow[c.n_allow][1],
                        &c.allow[c.n_allow][2], &c.allow[c.n_allow][3],
                        &c.allow[c.n_allow][4], &c.allow[c.n_allow][5]) != 6) {
-                fprintf(stderr, "allow: MAC invalido %s\n", argv[i]);
+                fprintf(stderr, "allow: invalid MAC %s\n", argv[i]);
                 return 1;
             }
             c.n_allow++;
         } else if (!strcmp(argv[i], "--peer") && i + 1 < argc) {
             if (c.n_peers >= MAX_PEERS) {
-                fprintf(stderr, "peer: limite %d\n", MAX_PEERS);
+                fprintf(stderr, "peer: limit %d\n", MAX_PEERS);
                 return 1;
             }
             if (ipv69_addr_parse_peer(argv[++i], c.peers[c.n_peers].pub,
                                       &c.peers[c.n_peers].base,
                                       &c.peers[c.n_peers].prefix) != 0) {
-                fprintf(stderr, "peer: pubkey invalida (%s) — PUB[/prefixo]\n",
+                fprintf(stderr, "peer: invalid pubkey (%s) — PUB[/prefix]\n",
                         argv[i]);
                 return 1;
             }
@@ -479,7 +479,7 @@ int cmd_dhcpd(int argc, char **argv)
         } else if (!strcmp(argv[i], "--key") && i + 1 < argc) {
             uint8_t seed[32];
             if (hex_decode(argv[++i], seed, 32) != 32) {
-                fprintf(stderr, "key: privkey invalida (32 bytes hex)\n");
+                fprintf(stderr, "key: invalid private key (32 bytes hex)\n");
                 return 1;
             }
             /* sk[64] = seed || pub (keypair layout) */
@@ -500,8 +500,8 @@ int cmd_dhcpd(int argc, char **argv)
             c.has_sk = 1;
             printf("af69d: keyring %s (%s)\n", kpath, comment);
         } else {
-            fprintf(stderr, "af69d: aviso: sem chave do servidor "
-                    "(OFFER/ACK nao assinados); use --key ou crie com "
+            fprintf(stderr, "af69d: warning: no server key "
+                    "(OFFER/ACK unsigned); use --key or create one with "
                     "'ipv69 keygen'\n");
         }
     }
@@ -513,8 +513,8 @@ int cmd_dhcpd(int argc, char **argv)
            argv[1], (unsigned long long)c.pool_start,
            (unsigned long long)c.pool_end, c.lease_sec);
     printf("af69d: allow=%d mac(s), peers=%d pubkey(s), learn=%s, server-key=%s\n",
-           c.n_allow, c.n_peers, c.learn ? "sim" : "nao",
-           c.has_sk ? "sim" : "nao");
+           c.n_allow, c.n_peers, c.learn ? "yes" : "no",
+           c.has_sk ? "yes" : "no");
 #ifndef _WIN32
     if (c.peer_file)
         signal(SIGHUP, on_hup);
@@ -530,14 +530,14 @@ int cmd_dhcpd(int argc, char **argv)
             if (stat(c.peer_file, &nst) == 0 &&
                 (nst.st_mtime != pst.st_mtime || nst.st_size != pst.st_size)) {
                 pst = nst;
-                printf("af69d: peer-file mudou, recarregando...\n");
+                printf("af69d: peer-file changed, reloading...\n");
                 peer_file_load(&c, c.peer_file);
             }
         }
 #ifndef _WIN32
         if (g_reload && c.peer_file) {
             g_reload = 0;
-            printf("af69d: SIGHUP, recarregando peers...\n");
+            printf("af69d: SIGHUP, reloading peers...\n");
             peer_file_load(&c, c.peer_file);
         }
 #endif
@@ -573,11 +573,11 @@ int cmd_dhcpd(int argc, char **argv)
         now = time(NULL);
 
         if (!mac_allowed(&c, mac)) {
-            printf("af69d: %s nao esta na allowlist -> ignorado\n", ms);
+            printf("af69d: %s not in allowlist -> ignored\n", ms);
             continue;
         }
         if (!check_msg(&c, buf, plen, mac)) {
-            printf("af69d: %s assinatura/pubkey invalida -> ignorado\n", ms);
+            printf("af69d: %s: invalid signature/pubkey -> ignored\n", ms);
             continue;
         }
 
@@ -585,7 +585,7 @@ int cmd_dhcpd(int argc, char **argv)
             size_t olen = 16;
             uint64_t oaddr;
             if (!lease_alloc(&c, mac, now)) {
-                printf("af69d: pool cheio, DISCOVER de %s ignorado\n", ms);
+                printf("af69d: pool full, DISCOVER from %s ignored\n", ms);
                 continue;
             }
             struct lease *l = lease_find(&c, mac);
@@ -642,7 +642,7 @@ int cmd_dhcpd(int argc, char **argv)
                 printf("af69d: REQUEST %s -> ACK %016llx\n",
                        ms, (unsigned long long)req_addr);
             } else {
-                printf("af69d: REQUEST %s pediu %016llx != lease -> negado\n",
+                printf("af69d: REQUEST %s asked %016llx != lease -> denied\n",
                        ms, (unsigned long long)req_addr);
             }
         } else {                    /* RELEASE */

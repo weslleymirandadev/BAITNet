@@ -9,7 +9,7 @@
  *
  * Usage:
  *   ./icsp_chat server <ifname> [port|:port] [--peer HEX] [--echo]
- *   ./icsp_chat client <ifname> <dst:porta> [--peer HEX] [--echo]
+ *   ./icsp_chat client <ifname> <dst:port> [--peer HEX] [--echo]
  *
  * stdin = send (stream 1), socket = receive. Ctrl-D ends the chat
  * with a graceful SHUTDOWN. The session key (printed on both sides)
@@ -30,11 +30,11 @@ static void chat_usage(void)
         "\n"
         "Usage: icsp_chat <server|client> <ifname> [port|:port] "
         "[--peer HEX] [--echo]\n"
-        "       icsp_chat client <ifname> <dst:porta> [--peer HEX] [--echo]\n"
+        "       icsp_chat client <ifname> <dst:port> [--peer HEX] [--echo]\n"
         "\n"
         "  server  wait for a connection (persistent; replies unicast to\n"
         "          the peer MAC, so it works across Wi-Fi APs)\n"
-        "  client  connect to <dst:porta> (address-less port form ok)\n"
+        "  client  connect to <dst:port> (address-less port form ok)\n"
         "\n"
         "Options:\n"
         "  --peer HEX   allowlist: accept only this identity (repeatable)\n"
@@ -60,18 +60,18 @@ static void on_data(struct icsp_assoc *a, uint16_t stream,
 /* the whole chat: relay stdin <-> stream 1 until close/dead/EOF */
 static int chat_run(struct icsp_assoc *a, int echo_mode)
 {
-    printf("chat: conectado! digite e Enter envia (Ctrl-D fecha)\n");
+    printf("chat: connected! type and press Enter to send (Ctrl-D closes)\n");
     fflush(stdout);
     int r = icsp_relay(a, 1, 1, on_data, &echo_mode);
     if (r == ICSP_POLL_DEAD)
-        printf("chat: sem resposta do peer ha %ds — encerrando\n",
+        printf("chat: no response from the peer for %ds — shutting down\n",
                a->dead_timeout_s);
     else if (r == ICSP_POLL_CLOSED)
-        printf("chat: o outro lado fechou\n");
+        printf("chat: the other side closed\n");
     else if (r == ICSP_POLL_ERR)
         return 1;
     icsp_shutdown_send(a);
-    printf("chat: encerrado\n");
+    printf("chat: closed\n");
     return 0;
 }
 
@@ -84,7 +84,7 @@ int main(int argc, char **argv)
 
     setvbuf(stdout, NULL, _IOLBF, 0);
     if (plat_sock_init() < 0) {
-        fprintf(stderr, "chat: winsock init falhou\n");
+        fprintf(stderr, "chat: winsock init failed\n");
         return 1;
     }
 
@@ -99,7 +99,7 @@ int main(int argc, char **argv)
         }
         if (!strcmp(argv[i], "--peer") && i + 1 < argc) {
             if (hex_decode(argv[++i], peers[n_peers], 32) != 32) {
-                fprintf(stderr, "chat: --peer invalido\n");
+                fprintf(stderr, "chat: invalid --peer\n");
                 return 1;
             }
             n_peers++;
@@ -108,7 +108,7 @@ int main(int argc, char **argv)
         }
     }
     if (icsp_endpoint_open(&a, argv[2], sk) < 0) {
-        fprintf(stderr, "chat: sem identidade (ipv69 keygen)\n");
+        fprintf(stderr, "chat: no identity (ipv69 keygen)\n");
         return 1;
     }
 
@@ -120,13 +120,13 @@ int main(int argc, char **argv)
             port = (uint16_t)atoi(argv[i]);
             break;
         }
-        /* also accept `:porta` (address-less form) */
+        /* also accept `:port` (address-less form) */
         for (int i = 3; i < argc; i++)
             if (argv[i][0] == ':' && argv[i][1]) {
                 port = (uint16_t)atoi(argv[i] + 1);
                 break;
             }
-        printf("chat: servidor em %s:%u (peers=%d)\n", argv[2], port,
+        printf("chat: server on %s:%u (peers=%d)\n", argv[2], port,
                n_peers);
         /* serve associations forever: accept, chat, then accept again */
         for (;;) {
@@ -138,7 +138,7 @@ int main(int argc, char **argv)
                    a.send_key[0], a.send_key[1],
                    a.send_key[30], a.send_key[31]);
             chat_run(&a, echo_mode);
-            printf("chat: aguardando proxima associacao...\n");
+            printf("chat: waiting for the next association...\n");
         }
     }
 
@@ -146,10 +146,10 @@ int main(int argc, char **argv)
         uint64_t dst;
         uint16_t port;
         if (argc < 4 || parse_ipv69_addr_port(argv[3], &dst, &port) < 0) {
-            fprintf(stderr, "chat client: precisa <dst:porta>\n");
+            fprintf(stderr, "chat client: requires <dst:port>\n");
             return 1;
         }
-        printf("chat: cliente -> %016llx:%u\n",
+        printf("chat: client -> %016llx:%u\n",
                (unsigned long long)dst, port);
         if (icsp_client_handshake(&a, dst, port, sk, NULL) < 0)
             return 1;
@@ -161,6 +161,6 @@ int main(int argc, char **argv)
         return chat_run(&a, echo_mode);
     }
 
-    fprintf(stderr, "chat: modo desconhecido '%s'\n", argv[1]);
+    fprintf(stderr, "chat: unknown mode '%s'\n", argv[1]);
     return 1;
 }

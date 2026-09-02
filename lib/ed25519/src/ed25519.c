@@ -123,8 +123,8 @@ int ed25519_keyfile_load_or_create(const char *path,
 #endif
     fprintf(f, "%s\n", seedhex);
     fclose(f);
-    printf("ipv69: chave gerada em %s\n", path);
-    printf("ipv69: registre esta PUBKEY no servidor (--peer ou --peer-file):\n");
+    printf("ipv69: key generated at %s\n", path);
+    printf("ipv69: register this PUBKEY on the server (--peer or --peer-file):\n");
     for (int i = 0; i < ED25519_PUB_LEN; i++)
         printf("%02x", pub[i]);
     printf("\n");

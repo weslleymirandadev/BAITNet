@@ -70,7 +70,7 @@ int cmd_ip69(int argc, char **argv)
         else
             return 1;
     } else {
-        fprintf(stderr, "comando desconhecido: %s\n", argv[1]);
+        fprintf(stderr, "unknown command: %s\n", argv[1]);
         return 1;
     }
     return 0;

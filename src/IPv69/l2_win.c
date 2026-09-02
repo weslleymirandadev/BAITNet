@@ -109,7 +109,7 @@ int l2_open(const char *ifname, l2_handle *h, int *ifindex,
     struct bpf_program fp;
 
     if (find_pcap_dev(ifname, &dev) < 0) {
-        fprintf(stderr, "l2: adapter '%s' nao encontrado no Npcap\n",
+        fprintf(stderr, "l2: adapter '%s' not found in Npcap\n",
                 ifname);
         return -1;
     }
@@ -122,11 +122,11 @@ int l2_open(const char *ifname, l2_handle *h, int *ifindex,
     if (pcap_compile(p, &fp, "ether proto 0x6969", 1,
                      PCAP_NETMASK_UNKNOWN) == 0) {
         if (pcap_setfilter(p, &fp) < 0)
-            fprintf(stderr, "l2: aviso: BPF falhou, filtrando no userspace\n");
+            fprintf(stderr, "l2: warning: BPF failed, filtering in userspace\n");
         pcap_freecode(&fp);
     }
     if (adapter_mac(ifname, src_mac) < 0) {
-        fprintf(stderr, "l2: MAC do adapter '%s' nao encontrado\n", ifname);
+        fprintf(stderr, "l2: MAC of adapter '%s' not found\n", ifname);
         pcap_close(p);
         return -1;
     }

@@ -232,7 +232,7 @@ int icsp_keepalive_tick(struct icsp_assoc *a)
         a->state == ICSP_ST_ESTABLISHED &&
         now - a->key_ts >= a->rekey_interval_s) {
         if (icsp_rekey_start(a) == 0)
-            printf("icsp: rekey iniciado (nova assoc=%u)\n", a->assoc_id);
+            printf("icsp: rekey started (new assoc=%u)\n", a->assoc_id);
     }
     return 0;
 }

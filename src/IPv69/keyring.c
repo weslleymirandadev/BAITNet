@@ -282,7 +282,7 @@ static int load_encrypted(const char *path, uint8_t sk[64],
             return 0;
         }
         if (tries++ >= 2 || getenv("IPV69_PASSPHRASE")) {
-            fprintf(stderr, "keyring: passphrase invalida\n");
+            fprintf(stderr, "keyring: invalid passphrase\n");
             return -1;
         }
         pass = NULL;
@@ -345,8 +345,8 @@ int keyring_load_or_create(const char *key, const char *pub,
         return -1;
     if (keyring_load_or_create(key, pub, sk, pubkey, comment, commentsz) < 0)
         return -1;
-    printf("ipv69: chave gerada em %s\n", key);
-    printf("ipv69: registre esta PUBKEY no servidor (--peer ou --peer-file):\n");
+    printf("ipv69: key generated at %s\n", key);
+    printf("ipv69: register this PUBKEY on the server (--peer or --peer-file):\n");
     for (int i = 0; i < 32; i++)
         printf("%02x", pubkey[i]);
     printf("\n");
