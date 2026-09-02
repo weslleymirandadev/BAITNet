@@ -38,16 +38,16 @@
 #include <errno.h>
 #include <signal.h>
 #include <sys/stat.h>
-#include <poll.h>
+#ifdef _WIN32
+#include "IPv69/plat.h"   /* winsock: WSAStartup + socket types */
+#else
 #include <sys/socket.h>
-#include <sys/ioctl.h>
 #include <net/if.h>
-#include <netpacket/packet.h>
-#include <net/ethernet.h>
-#include <arpa/inet.h>
+#endif
 #include "IPv69/af69.h"
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
+#include "IPv69/l2.h"
 #include "ed25519.h"
 #include "IPv69/keyring.h"
 
@@ -58,22 +58,6 @@
 #define SIG_LEN 64
 #define IPV69_BCAST_ADDR 0xFFFFFFFFFFULL
 
-static int hex_decode(const char *hex, uint8_t *out, size_t max)
-{
-    size_t hl = strlen(hex);
-
-    if (hl % 2 || hl / 2 > max)
-        return -1;
-    for (size_t j = 0; j < hl / 2; j++) {
-        unsigned v;
-        if (sscanf(hex + 2 * j, "%2x", &v) != 1)
-            return -1;
-        out[j] = (uint8_t)v;
-    }
-    return (int)(hl / 2);
-}
-
-
 
 struct lease {
     uint8_t mac[6];
@@ -83,8 +67,8 @@ struct lease {
 };
 
 struct ctx {
-    int mode;                 /* 0 = AF_69 socket, 1 = raw AF_PACKET */
-    int fd;
+    int mode;                 /* 0 = AF_69 socket, 1 = raw L2 */
+    l2_handle fd;
     int ifindex;
     uint8_t mac[6];           /* own MAC (raw mode) */
     uint64_t pool_start, pool_end;
@@ -103,11 +87,13 @@ struct ctx {
 
 static volatile sig_atomic_t g_reload = 0;
 
+#ifndef _WIN32
 static void on_hup(int sig)
 {
     (void)sig;
     g_reload = 1;
 }
+#endif
 
 /* (re)load pubkeys from a file: one hex key per line, '#' comments.
  * Polled via mtime every loop iteration, so edits take effect without
@@ -257,7 +243,9 @@ static int learn_peer(struct ctx *c, const uint8_t *pub, const uint8_t *mac)
 }
 
 /* tell the kernel module who owns a leased address (dgram source auth).
- * Best effort: on kernels without AF_69 there is nothing to update. */
+ * Best effort: on kernels without AF_69 there is nothing to update.
+ * (Linux only — the AF_69 socket and ioctls do not exist on Windows.) */
+#ifndef _WIN32
 static void binding_update(const uint8_t *mac, uint64_t addr,
                            uint32_t lease_sec, int del)
 {
@@ -276,6 +264,7 @@ static void binding_update(const uint8_t *mac, uint64_t addr,
                 del ? "DEL" : "ADD", strerror(errno));
     close(fd);
 }
+#endif
 
 /* ---- lease table ----------------------------------------------------- */
 
@@ -338,6 +327,7 @@ static void lease_release(struct ctx *c, const uint8_t *mac, uint64_t addr)
 static int send_ctrl(struct ctx *c, const uint8_t *payload, size_t plen,
                      const uint8_t *dst_mac)
 {
+#ifndef _WIN32
     if (c->mode == 0) {
         struct sockaddr_69 sa;
         memset(&sa, 0, sizeof(sa));
@@ -352,37 +342,16 @@ static int send_ctrl(struct ctx *c, const uint8_t *payload, size_t plen,
             perror("af69d sendto");
         return r;
     }
-    /* raw AF_PACKET: build the full Ethernet frame */
+#endif
+    /* raw L2: build the full Ethernet frame and send it */
     const uint8_t bcast[6] = BCAST_MAC;
     const uint8_t *dmac = dst_mac ? dst_mac : bcast;
     uint8_t frame[1600];
-    struct ethernet_header *eth = (struct ethernet_header *)frame;
-    struct ipv69_header *h = (struct ipv69_header *)(frame + 14);
-    struct sockaddr_ll sll;
 
-    memset(frame, 0, sizeof(frame));
-    memcpy(eth->dst_mac, dmac, 6);
-    memcpy(eth->src_mac, c->mac, 6);
-    eth->ethertype = htons(ETHERTYPE_IPV69);
-    memset(h, 0, IPV69_HEADER_LEN);
-    h->ver_traffic = (IPV69_VERSION << 4) | IPV69_TRAFFIC_CLASS;
-    wr_be16(&h->payload_len, plen);
-    wr_be16(&h->flow_id, 1);
-    h->next_header = IPV69_NEXT_CONTROL;
-    h->hop_limit = 64;
-    h->flags = IPV69_FLAG_NOFRAG;
-    put_addr40(h->source, IPV69_SERVER_ADDR);
-    put_addr40(h->dest, IPV69_BCAST_ADDR);
-    memcpy(frame + 14 + IPV69_HEADER_LEN, payload, plen);
-
-    memset(&sll, 0, sizeof(sll));
-    sll.sll_family = AF_PACKET;
-    sll.sll_protocol = htons(ETHERTYPE_IPV69);
-    sll.sll_ifindex = c->ifindex;
-    sll.sll_halen = 6;
-    memcpy(sll.sll_addr, dmac, 6);
-    return sendto(c->fd, frame, 14 + IPV69_HEADER_LEN + plen, 0,
-                  (struct sockaddr *)&sll, sizeof(sll));
+    size_t len = build_frame(frame, dmac, c->mac, IPV69_SERVER_ADDR,
+                             IPV69_BCAST_ADDR, IPV69_NEXT_CONTROL,
+                             64, 0, 0, payload, plen);
+    return l2_send(c->fd, c->ifindex, dmac, frame, len);
 }
 
 /* ---- rx (returns payload pointer + len) ------------------------------ */
@@ -391,14 +360,19 @@ static size_t recv_ctrl(struct ctx *c, uint8_t *buf, size_t bufsz)
 {
     ssize_t n;
 
+#ifndef _WIN32
     if (c->mode == 0) {
         struct sockaddr_69 from;
         socklen_t flen = sizeof(from);
+        struct timeval tv = { 1, 0 };
+        setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         n = recvfrom(c->fd, buf, bufsz, 0,
                      (struct sockaddr *)&from, &flen);
         return n > 0 ? (size_t)n : 0;
     }
-    n = recv(c->fd, buf, bufsz, 0);
+#endif
+    /* raw: 1s tick so the peer-file mtime check runs without traffic */
+    n = l2_recv(c->fd, buf, bufsz, 1000);
     if (n < 14 + IPV69_HEADER_LEN + 1)
         return 0;
     {
@@ -455,12 +429,16 @@ int cmd_dhcpd(int argc, char **argv)
         return 1;
     }
     idx = atoi(argv[1]);
+#ifndef _WIN32
     if (idx > 0) {
         c.ifindex = idx;
     } else {
         c.ifindex = if_nametoindex(argv[1]);
         if (!c.ifindex) { perror("if_nametoindex"); return 1; }
     }
+#else
+    (void)idx;              /* Windows resolves the iface via l2_open */
+#endif
     /* positional pool/lease (argv 2/3/4), flags anywhere */
     if (argc > 2 && strcmp(argv[2], "--raw") && strcmp(argv[2], "--allow") &&
         strcmp(argv[2], "--peer") && strcmp(argv[2], "--peer-file") &&
@@ -531,6 +509,9 @@ int cmd_dhcpd(int argc, char **argv)
             c.has_sk = 1;
         }
     }
+#ifdef _WIN32
+    (void)force_raw;        /* raw L2 is the only mode on Windows */
+#endif
 
     /* no --key: auto-load (or generate) the SSH-style keyring
        (~/.hosts69/key, optional passphrase via IPV69_PASSPHRASE) */
@@ -549,10 +530,13 @@ int cmd_dhcpd(int argc, char **argv)
         }
     }
 
-    /* AF_69 socket by default; --raw forces AF_PACKET */
-    c.mode = 0;
+    /* AF_69 socket by default (Linux kernel module); --raw forces the
+       portable L2 backend. Windows has no AF_69 socket — always raw. */
+    c.mode = 1;
+#ifndef _WIN32
     c.fd = socket(AF_69, SOCK_DGRAM, 0);
     if (c.fd >= 0 && !force_raw) {
+        c.mode = 0;
         struct sockaddr_69 sa;
         memset(&sa, 0, sizeof(sa));
         sa.sa_family = AF_69;
@@ -564,30 +548,22 @@ int cmd_dhcpd(int argc, char **argv)
         printf("af69d: AF_69 socket (ifindex %d), pool %016llx-%016llx lease %us\n",
                c.ifindex, (unsigned long long)c.pool_start,
                (unsigned long long)c.pool_end, c.lease_sec);
-    } else {
-        c.mode = 1;
-        c.fd = socket(AF_PACKET, SOCK_RAW, htons(ETHERTYPE_IPV69));
-        if (c.fd < 0) { perror("socket(AF_PACKET)"); return 1; }
-        struct ifreq ifr;
-        memset(&ifr, 0, sizeof(ifr));
-        strncpy(ifr.ifr_name, argv[1], IFNAMSIZ - 1);
-        if (ioctl(c.fd, SIOCGIFHWADDR, &ifr) < 0) { perror("SIOCGIFHWADDR"); return 1; }
-        memcpy(c.mac, ifr.ifr_hwaddr.sa_data, 6);
-        struct sockaddr_ll sll = {
-            .sll_family = AF_PACKET,
-            .sll_protocol = htons(ETHERTYPE_IPV69),
-            .sll_ifindex = c.ifindex,
-        };
-        if (bind(c.fd, (struct sockaddr *)&sll, sizeof(sll)) < 0) { perror("bind"); return 1; }
-        printf("af69d: raw AF_PACKET (ifindex %d), pool %016llx-%016llx lease %us\n",
-               c.ifindex, (unsigned long long)c.pool_start,
+    }
+#endif
+    if (c.mode != 0) {
+        if (l2_open(argv[1], &c.fd, &c.ifindex, c.mac) < 0)
+            return 1;
+        printf("af69d: raw L2 (%s), pool %016llx-%016llx lease %us\n",
+               argv[1], (unsigned long long)c.pool_start,
                (unsigned long long)c.pool_end, c.lease_sec);
     }
     printf("af69d: allow=%d mac(s), peers=%d pubkey(s), learn=%s, server-key=%s\n",
            c.n_allow, c.n_peers, c.learn ? "sim" : "nao",
            c.has_sk ? "sim" : "nao");
+#ifndef _WIN32
     if (c.peer_file)
         signal(SIGHUP, on_hup);
+#endif
     struct stat pst = { 0 };
     if (c.peer_file)
         stat(c.peer_file, &pst);
@@ -603,17 +579,15 @@ int cmd_dhcpd(int argc, char **argv)
                 peer_file_load(&c, c.peer_file);
             }
         }
+#ifndef _WIN32
         if (g_reload && c.peer_file) {
             g_reload = 0;
             printf("af69d: SIGHUP, recarregando peers...\n");
             peer_file_load(&c, c.peer_file);
         }
-        /* poll with timeout: lets the peer-file mtime check run even
-           without traffic, so edits take effect within ~1s */
-        struct pollfd pf = { .fd = c.fd, .events = POLLIN };
-        int pr = poll(&pf, 1, 1000);
-        if (pr <= 0)
-            continue;               /* timeout or EINTR: recheck mtime */
+#endif
+        /* recv_ctrl blocks up to 1s: the peer-file mtime check above
+           runs even without traffic, so edits take effect within ~1s */
         size_t plen = recv_ctrl(&c, buf, sizeof(buf));
         uint8_t *mac;
         char ms[18];
@@ -675,7 +649,9 @@ int cmd_dhcpd(int argc, char **argv)
                 put_be32(ack + 12, c.lease_sec);
                 alen = sign_msg(&c, ack, alen);
                 send_ctrl(&c, ack, alen, mac);
+#ifndef _WIN32
                 binding_update(mac, req_addr, c.lease_sec, 0);
+#endif
                 printf("af69d: REQUEST %s -> ACK %016llx\n",
                        ms, (unsigned long long)req_addr);
             } else {
@@ -685,8 +661,10 @@ int cmd_dhcpd(int argc, char **argv)
         } else {                    /* RELEASE */
             uint64_t rel_addr = plen >= 12 ? get_addr40(buf + 7) : 0;
             lease_release(&c, mac, rel_addr);
+#ifndef _WIN32
             if (rel_addr)
                 binding_update(mac, rel_addr, 0, 1);
+#endif
             printf("af69d: RELEASE %s %016llx\n",
                    ms, (unsigned long long)rel_addr);
         }
