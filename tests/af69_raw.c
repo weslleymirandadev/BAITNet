@@ -576,8 +576,9 @@ int cmd_raw(int argc, char **argv)
         return 0;
     }
 
-    /* `net up <ifname>` — bring the device up (WireGuard style):
-       keygen if missing, DHCP lease with backoff, print the bind. */
+    /* `net up <ifname>` — one-shot bring-up (keygen + DHCP lease, prints
+       and exits). Linux dispatches this to the keepalive daemon (cmd_tun
+       in ip69d.c) BEFORE cmd_raw; here it is the Windows path only. */
     if (!strcmp(argv[1], "net") && argc >= 4 && !strcmp(argv[2], "up")) {
         uint64_t addr;
         if (load_auto_key(sk) < 0) {
