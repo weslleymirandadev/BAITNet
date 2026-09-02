@@ -35,6 +35,8 @@
 #define IPV69_CTRL_GW_ANN        12  /* announce: [udp_port 2] */
 #define IPV69_CTRL_GW_Q          13  /* query:    [addr 5] */
 #define IPV69_CTRL_GW_R          14  /* reply:    [addr 5][ip4 4][port 2] */
+/* gateway federation (links): host routes between gateways */
+#define IPV69_CTRL_GW_ROUTE      15  /* [addr 5][prefix 1][ip4 4][port 2] */
 
 /* DHCP69 addressing (see docs/dhcp69-spec.md) */
 #define IPV69_SERVER_ADDR        1       /* 00.00.00.00.01 */
