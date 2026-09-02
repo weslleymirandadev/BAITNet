@@ -92,25 +92,58 @@ int icsp_send_pkt(struct icsp_assoc *a, const uint8_t *chunk,
                    a->has_peer_mac ? a->peer_mac : bcast, frame, len);
 }
 
-/* --- session key derivation (spec §5) ---
+/* --- session key derivation (spec §5, WireGuard-style) ---
  * shared = X25519(eph_priv, peer_eph_pub)
- * session_key = SHA-512(shared || assoc_id_be || "icsp-v1")[0..31] */
+ * HKDF-like: prk = HMAC-SHA512("icsp-v1", shared), then directional
+ * keys send/recv = HMAC(prk, label || 0x01)[0..31]. The initiator uses
+ * send_key for TX and recv_key for RX; the responder swaps them, so the
+ * two directions never share a key/nonce space. */
 int icsp_derive_key(struct icsp_assoc *a, const uint8_t eph_priv[32])
 {
     uint8_t shared[32];
-    uint8_t h[64];
-    uint8_t buf[32 + 4 + 8];
+    uint8_t prk[64], okm[64];
+    uint8_t new_send[32], new_recv[32];
+    uint8_t info[16];
+    static const uint8_t salt[] = "icsp-v1";
+    static const uint8_t l_send[] = "icsp-send";
+    static const uint8_t l_recv[] = "icsp-recv";
 
     if (ed25519_scalarmult(shared, eph_priv, a->peer_eph) != 0)
         return -1;
-    memcpy(buf, shared, 32);
-    buf[32] = (uint8_t)(a->assoc_id >> 24);
-    buf[33] = (uint8_t)(a->assoc_id >> 16);
-    buf[34] = (uint8_t)(a->assoc_id >> 8);
-    buf[35] = (uint8_t)a->assoc_id;
-    memcpy(buf + 36, "icsp-v1", 8);
-    ed25519_sha512(h, buf, sizeof(buf));
-    memcpy(a->session_key, h, 32);
+    /* extract: prk = HMAC(salt, ikm=shared) */
+    ed25519_hmac_sha512(prk, shared, 32, salt, sizeof(salt) - 1);
+
+    /* expand: send = HMAC(prk, "icsp-send" || 1) */
+    memcpy(info, l_send, sizeof(l_send) - 1);
+    info[sizeof(l_send) - 1] = 1;
+    ed25519_hmac_sha512(okm, info, sizeof(l_send), prk, 64);
+    memcpy(new_send, okm, 32);
+
+    /* expand: recv = HMAC(prk, "icsp-recv" || 1) */
+    memcpy(info, l_recv, sizeof(l_recv) - 1);
+    info[sizeof(l_recv) - 1] = 1;
+    ed25519_hmac_sha512(okm, info, sizeof(l_recv), prk, 64);
+    memcpy(new_recv, okm, 32);
+
+    /* responder swaps: our TX uses the peer's "send" slot, so the two
+       directions never share a key/nonce space (WG directional keys) */
+    if (!a->is_initiator) {
+        uint8_t tmp[32];
+        memcpy(tmp, new_send, 32);
+        memcpy(new_send, new_recv, 32);
+        memcpy(new_recv, tmp, 32);
+    }
+
+    /* zero the old keys before installing the new ones (WG discipline) */
+    if (a->has_key) {
+        memset(a->send_key, 0, 32);
+        memset(a->recv_key, 0, 32);
+    }
+    memcpy(a->send_key, new_send, 32);
+    memcpy(a->recv_key, new_recv, 32);
+    memset(shared, 0, sizeof(shared));
+    memset(prk, 0, sizeof(prk));
     a->has_key = 1;
+    a->key_ts = time(NULL);
     return 0;
 }
