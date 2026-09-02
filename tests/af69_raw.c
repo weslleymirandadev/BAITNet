@@ -1,43 +1,40 @@
-/* af69_raw - IPv69 (ethertype 0x6969) over AF_PACKET, no kernel module.
- * For devices whose kernel lacks the AF_69 patch (e.g. stock Android).
- * Same wire format as the af69.ko module: Ethernet + 32B IPv69 header
- * (ports native at offsets 10/12) + [payload] for the dgram protocol.
- * Usage: af69_raw recv <ifname> [src_port_hex]
- *        af69_raw send <ifname> <dst> <src_port_hex> <dst_port_hex> [payload]
+/* af69_raw - IPv69 (ethertype 0x6969) client over raw L2, no kernel
+ * module. For devices whose kernel lacks the AF_69 patch (e.g. stock
+ * Android) and for Windows (Npcap backend). Same wire format as the
+ * af69.ko module: Ethernet + 32B IPv69 header + payload.
+ *
+ * The L2 endpoint is the portable l2_* API (l2.c / l2_win.c); the UDP
+ * tunnel (--remote) rides on top with plain sockets (plat.h).
+ *
+ * Usage: af69_raw recv <ifname> [src_addr[:port]]
+ *        af69_raw send <ifname> <dst[:port]> <src_port> [payload]
  *        af69_raw ping <ifname> <dst> [payload]   (echo request/reply)
  *        af69_raw dhcp <ifname>                   (lease from DHCP69 server)
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <net/if.h>
-#include <netpacket/packet.h>
-#include <net/ethernet.h>
-#include <arpa/inet.h>
-#include <sys/time.h>
-#include <netdb.h>
-#include <errno.h>
 #include <time.h>
+#ifdef _WIN32
+#include "IPv69/plat.h"
+#else
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#endif
 #include "IPv69/af69.h"
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
-#include "ed25519.h"
+#include "IPv69/plat.h"
 #include "IPv69/l2.h"
 #include "IPv69/keyring.h"
-
-#define IPV69_CTRL_ECHO_REQUEST 3
-#define IPV69_CTRL_ECHO_REPLY   4
-#define IPV69_BCAST_ADDR        0xFFFFFFFFFFULL
-
-/* hex_decode comes from l2.c (see l2.h) */
+#include "ed25519.h"
 
 /* ---- UDP tunnel backend (--remote gw1,gw2:port) ---------------------- */
 #define MAX_GW 4
 
-static int g_udp_fd = -1;               /* UDP socket (tunnel) */
+static sock_t g_udp_fd = SOCK_INVALID;      /* UDP socket (tunnel) */
+static l2_handle g_l2;                      /* raw L2 endpoint (local) */
+static int g_ifindex = 0;                   /* local ifindex */
 static struct sockaddr_storage g_gw[MAX_GW];
 static socklen_t g_gwlen[MAX_GW];
 static int g_ngw = 0;
@@ -91,12 +88,12 @@ static int gw_query(uint64_t addr, struct sockaddr_storage *ep,
     q[3] = (addr >> 32) & 0xff; q[4] = (addr >> 24) & 0xff;
     q[5] = (addr >> 16) & 0xff; q[6] = (addr >> 8) & 0xff; q[7] = addr & 0xff;
     for (int i = 0; i < g_ngw; i++) {
-        sendto(g_udp_fd, q, sizeof(q), 0,
+        sendto(g_udp_fd, (const char *)q, sizeof(q), 0,
                (struct sockaddr *)&g_gw[i], g_gwlen[i]);
     }
-    setsockopt(g_udp_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(g_udp_fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
     for (;;) {
-        ssize_t n = recvfrom(g_udp_fd, ans, sizeof(ans), 0,
+        ssize_t n = recvfrom(g_udp_fd, (char *)ans, sizeof(ans), 0,
                              (struct sockaddr *)ep, eplen);
         if (n < 0)
             break;              /* timeout: no answer */
@@ -137,45 +134,52 @@ static int gw_query(uint64_t addr, struct sockaddr_storage *ep,
     return 0;
 }
 
-/* build_frame comes from l2.c (see l2.h). Tunnel-aware wrappers: */
+/* ---- endpoint: UDP tunnel when --remote, raw L2 otherwise ------------ */
 
-/* tunnel-aware raw socket: UDP when --remote gateways are set, else
- * the plain AF_PACKET socket from l2.c. Same API as l2 raw_socket. */
-int raw_socket_tun(const char *ifname, int *ifindex, uint8_t *src_mac)
+/* open the endpoint. Tunnel mode uses one UDP socket (family of gw[0])
+ * and still reads the local MAC via l2_open (the frames carry it). */
+static int tun_open(const char *ifname, int *ifindex, uint8_t *src_mac)
 {
     if (g_ngw > 0) {
-        /* UDP tunnel mode: one socket, any local port, family of gw[0] */
         g_udp_fd = socket(g_gw[0].ss_family, SOCK_DGRAM, 0);
-        if (g_udp_fd < 0) { perror("socket(UDP)"); return -1; }
-        struct ifreq ifr;
-        int probe = socket(AF_INET, SOCK_DGRAM, 0);
-        if (probe >= 0) {
-            memset(&ifr, 0, sizeof(ifr));
-            strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
-            if (ioctl(probe, SIOCGIFHWADDR, &ifr) == 0)
-                memcpy(src_mac, ifr.ifr_hwaddr.sa_data, 6);
-            close(probe);
-        }
-        *ifindex = 0;
-        return g_udp_fd;
+        if (g_udp_fd == SOCK_INVALID) { perror_sock("socket(UDP)"); return -1; }
+        l2_handle probe;
+        if (l2_open(ifname, &probe, ifindex, src_mac) == 0)
+            l2_close(probe);            /* local MAC for the frames */
+        return 0;
     }
-    return raw_socket(ifname, ifindex, src_mac);
+    if (l2_open(ifname, &g_l2, ifindex, src_mac) < 0)
+        return -1;
+    g_ifindex = *ifindex;
+    return 0;
 }
 
-/* tunnel-aware send: broadcast to every gateway (failover) when
- * --remote is set, else plain L2 send_frame. */
-int send_frame_tun(int fd, int ifindex, const uint8_t *dst_mac,
-                   const uint8_t *frame, size_t len)
+/* send one frame: to every gateway (failover) in tunnel mode, else L2. */
+static int tun_send(const uint8_t *dst_mac, const uint8_t *frame, size_t len)
 {
     if (g_ngw > 0) {
         int sent = 0;
         for (int i = 0; i < g_ngw; i++)
-            if (sendto(g_udp_fd, frame, len, 0,
+            if (sendto(g_udp_fd, (const char *)frame, len, 0,
                        (struct sockaddr *)&g_gw[i], g_gwlen[i]) >= 0)
                 sent++;
         return sent > 0 ? (int)len : -1;
     }
-    return send_frame(fd, ifindex, dst_mac, frame, len);
+    return l2_send(g_l2, g_ifindex, dst_mac, frame, len);
+}
+
+/* receive one frame, waiting up to timeout_ms (0 = forever).
+ * Returns the frame length, 0 on timeout, -1 on error. */
+static ssize_t tun_recv(uint8_t *frame, size_t maxlen, int timeout_ms)
+{
+    if (g_ngw > 0) {
+        struct timeval tv = { timeout_ms / 1000,
+                              (timeout_ms % 1000) * 1000 };
+        setsockopt(g_udp_fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+        ssize_t n = recvfrom(g_udp_fd, (char *)frame, maxlen, 0, NULL, NULL);
+        return n < 0 ? 0 : n;           /* timeout counts as "nothing" */
+    }
+    return l2_recv(g_l2, frame, maxlen, timeout_ms);
 }
 
 static void dump_frame(const uint8_t *frame, size_t len)
@@ -203,31 +207,21 @@ static void dump_frame(const uint8_t *frame, size_t len)
     putchar('\n');
 }
 
-/* DHCP69 client: DISCOVER -> OFFER -> REQUEST -> ACK, then bind(src).
- * Same wire format for raw and AF_69 paths; client filters by its MAC.
- * With --key the messages are signed (Ed25519):
- *   DISCOVER [7][mac][pub 32][sig 64]  REQUEST [9][mac][addr][pub][sig]
- *   OFFER/ACK [8|10][mac][addr][lease][pub][sig] signed by the server;
- *   --server-pub validates them (rogue-server protection). */
 /* silent DHCP69 lease acquisition: DISCOVER -> OFFER -> REQUEST -> ACK.
- * Used by `send` to discover the real src address (anti-spoofing: the
- * src is never user-chosen; it is the lease the server actually gave
- * this MAC, which also registers the kernel binding). Returns 0 with
- * *out_addr set, -1 on timeout/failure. */
-static int dhcp_discover(int fd, int ifindex, const uint8_t src_mac[6],
+ * Used by `send`/`recv` to discover the real src address (anti-spoofing:
+ * the src is never user-chosen; it is the lease the server actually gave
+ * this MAC). Returns 0 with *out_addr set, -1 on timeout/failure. */
+static int dhcp_discover(const uint8_t src_mac[6],
                          const uint8_t *sk, int has_sk,
                          const uint8_t *server_pub, int has_server_pub,
                          uint64_t *out_addr)
 {
     const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
     uint8_t frame[1600], pkt[1 + 6 + 5 + 4 + 32 + 64];
-    struct timeval tv = { 3, 0 };
     uint64_t addr = 0;
     ssize_t n;
     size_t len;
     const size_t SIGSZ = has_server_pub ? (32 + 64) : 0;
-
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     /* DISCOVER [7][mac] + pub + sig */
     pkt[0] = IPV69_CTRL_DHCP_DISCOVER;
@@ -240,13 +234,13 @@ static int dhcp_discover(int fd, int ifindex, const uint8_t src_mac[6],
     }
     len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
                       IPV69_NEXT_CONTROL, 64, 0, 0, pkt, dlen);
-    if (send_frame_tun(fd, ifindex, bcast, frame, len) < 0)
+    if (tun_send(bcast, frame, len) < 0)
         return -1;
 
     /* wait OFFER [8][mac][addr5][lease4] + pub + sig */
     for (;;) {
-        n = recv(fd, frame, sizeof(frame), 0);
-        if (n < 0) return -1;                   /* timeout */
+        n = tun_recv(frame, sizeof(frame), 3000);
+        if (n <= 0) return -1;                  /* timeout */
         if (n < 14 + IPV69_HEADER_LEN + 16 + (ssize_t)SIGSZ) continue;
         const struct ipv69_header *h = (const struct ipv69_header *)(frame + 14);
         const uint8_t *p = frame + 14 + IPV69_HEADER_LEN;
@@ -275,13 +269,13 @@ static int dhcp_discover(int fd, int ifindex, const uint8_t src_mac[6],
     }
     len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
                       IPV69_NEXT_CONTROL, 64, 0, 0, pkt, rlen);
-    if (send_frame_tun(fd, ifindex, bcast, frame, len) < 0)
+    if (tun_send(bcast, frame, len) < 0)
         return -1;
 
     /* wait ACK [10][mac][addr5][lease4] + pub + sig */
     for (;;) {
-        n = recv(fd, frame, sizeof(frame), 0);
-        if (n < 0) return -1;                   /* timeout */
+        n = tun_recv(frame, sizeof(frame), 3000);
+        if (n <= 0) return -1;                  /* timeout */
         if (n < 14 + IPV69_HEADER_LEN + 16 + (ssize_t)SIGSZ) continue;
         const struct ipv69_header *h = (const struct ipv69_header *)(frame + 14);
         const uint8_t *p = frame + 14 + IPV69_HEADER_LEN;
@@ -319,30 +313,28 @@ static int load_auto_key(uint8_t sk[64])
 
 /* interactive DHCP69 client: runs dhcp_discover, prints the flow and
  * holds the address for a few seconds. */
-static int dhcp_client(int fd, int ifindex, const uint8_t src_mac[6],
+static int dhcp_client(const uint8_t src_mac[6],
                        const uint8_t *sk, int has_sk,
                        const uint8_t *server_pub, int has_server_pub)
 {
     uint8_t frame[1600];
-    struct timeval tv = { 5, 0 };
     uint64_t addr;
     ssize_t n;
     printf("dhcp: MAC %02x:%02x:%02x:%02x:%02x:%02x%s\n",
            src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5],
            has_sk ? " (Ed25519)" : "");
-    if (dhcp_discover(fd, ifindex, src_mac, sk, has_sk,
-                      server_pub, has_server_pub, &addr) < 0) {
+    if (dhcp_discover(src_mac, sk, has_sk, server_pub, has_server_pub,
+                      &addr) < 0) {
         printf("dhcp: nao foi possivel obter lease (timeout/recusado)\n");
         return 1;
     }
     printf("dhcp: ACK %016llx — configurado!\n", (unsigned long long)addr);
 
     /* keep receiving for a few seconds to show it works */
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     printf("dhcp: bound src=%016llx, ouvindo 5s...\n", (unsigned long long)addr);
     for (;;) {
-        n = recv(fd, frame, sizeof(frame), 0);
-        if (n < 0) break;
+        n = tun_recv(frame, sizeof(frame), 5000);
+        if (n <= 0) break;
         dump_frame(frame, (size_t)n);
     }
     return 0;
@@ -424,21 +416,18 @@ int cmd_raw(int argc, char **argv)
             }
             /* DAD: ND request pro proprio endereco; reply = colisao */
             uint8_t req[1 + 5] = { IPV69_CTRL_ND_REQUEST };
-            struct timeval tv = { 1, 0 };
             memcpy(req + 1, derived, 5);
-            int dfd = raw_socket_tun(argv[2], &ifindex, src_mac);
-            if (dfd < 0)
+            if (tun_open(argv[2], &ifindex, src_mac) < 0)
                 return 1;
             size_t len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
                                      IPV69_NEXT_CONTROL, 64, 0, 0, req, sizeof(req));
-            if (send_frame_tun(dfd, ifindex, bcast, frame, len) < 0) {
-                perror("sendto(DAD)"); return 1;
+            if (tun_send(bcast, frame, len) < 0) {
+                perror_sock("sendto(DAD)"); return 1;
             }
-            setsockopt(dfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
             int collision = 0;
             for (;;) {
-                ssize_t n = recv(dfd, frame, sizeof(frame), 0);
-                if (n < 0) break;
+                ssize_t n = tun_recv(frame, sizeof(frame), 1000);
+                if (n <= 0) break;
                 if (n >= 14 + IPV69_HEADER_LEN + 1) {
                     const struct ipv69_header *h =
                         (const struct ipv69_header *)(frame + 14);
@@ -454,24 +443,24 @@ int cmd_raw(int argc, char **argv)
 
     if (argc < 3) {
         fprintf(stderr,
-                "Usage: %s recv <ifname> [src_addr] [src_port_hex]\n"
-                "       %s send <ifname> <dst> <src_port_hex> <dst_port_hex> [payload] [src_addr]\n"
+                "Usage: %s recv <ifname> [src_addr[:port]]\n"
+                "       %s send <ifname> <dst[:port]> <src_port> [payload]\n"
                 "       %s ping <ifname> <dst> [payload]\n"
                 "       %s dhcp <ifname> [--key PRIV_HEX] [--server-pub PUB_HEX]\n"
-                "  --key:        your Ed25519 privkey (ipv69-keygen) - signs DHCP msgs\n"
+                "  --remote gw:port[,gw:port]  tunnel through a gateway\n"
+                "  --key:        your Ed25519 privkey (ipv69 keygen) - signs DHCP msgs\n"
                 "  --server-pub: server pubkey - validates OFFER/ACK (rogue-server guard)\n",
                 argv[0], argv[0], argv[0], argv[0]);
         return 1;
     }
 
-    int fd = raw_socket_tun(argv[2], &ifindex, src_mac);
-    if (fd < 0) return 1;
+    if (tun_open(argv[2], &ifindex, src_mac) < 0) return 1;
     printf("iface=%s ifindex=%d mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
            argv[2], ifindex, src_mac[0], src_mac[1], src_mac[2],
            src_mac[3], src_mac[4], src_mac[5]);
 
     if (!strcmp(argv[1], "recv")) {
-        /* optional bind: recv [ifname] [src_addr[:porta_hex]] — without
+        /* optional bind: recv [ifname] [src_addr[:port]] — without
            an address, it discovers the lease via silent DHCP (local) or
            derives it from the identity (tunnel). */
         uint64_t my_addr = 0;
@@ -493,12 +482,11 @@ int cmd_raw(int argc, char **argv)
         } else if (!my_addr) {
             /* local: discover the lease silently (registers the kernel
                binding for this MAC) — the address is never user-chosen.
-               Load the auto-key so the DISCOVER is signed (servers with
-               an allowlist reject unsigned ones). */
+               Load the auto-key so the DISCOVER is signed. */
             if (!has_sk && load_auto_key(sk) < 0)
                 return 1;
             has_sk = 1;
-            if (dhcp_discover(fd, ifindex, src_mac, sk, has_sk,
+            if (dhcp_discover(src_mac, sk, has_sk,
                               server_pub, has_server_pub, &my_addr) < 0) {
                 fprintf(stderr, "recv: sem servidor DHCP na rede local; "
                         "suba um dhcpd ou use --remote\n");
@@ -510,8 +498,6 @@ int cmd_raw(int argc, char **argv)
         if (my_addr)
             printf("bound src=%016llx port=%04x (filtrando)\n",
                    (unsigned long long)my_addr, my_port);
-        struct timeval atv = { 2, 0 };
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &atv, sizeof(atv));
         time_t last_ann = 0;
         for (;;) {
             /* announce: ND request for ourselves -> gateway learns us */
@@ -521,15 +507,12 @@ int cmd_raw(int argc, char **argv)
                 size_t l = build_frame(frame, bcast, src_mac, my_addr,
                                        0xFFFFFFFFFFULL, IPV69_NEXT_CONTROL,
                                        64, 0, 0, req, sizeof(req));
-                send_frame_tun(fd, ifindex, bcast, frame, l);
+                tun_send(bcast, frame, l);
                 last_ann = time(NULL);
             }
-            ssize_t n = recv(fd, frame, sizeof(frame), 0);
-            if (n < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK)
-                    continue;       /* timeout tick: announce or keep waiting */
-                perror("recv"); return 1;
-            }
+            ssize_t n = tun_recv(frame, sizeof(frame), 2000);
+            if (n <= 0)
+                continue;       /* timeout tick: announce or keep waiting */
             if (n < 14 + IPV69_HEADER_LEN)
                 continue;
             const struct ipv69_header *h =
@@ -563,8 +546,7 @@ int cmd_raw(int argc, char **argv)
             return 1;
         }
         /* src automatico (anti-spoofing): never user-chosen.
-           local: silent DHCP discovers the real lease (and registers
-           the kernel binding for this MAC);
+           local: silent DHCP discovers the real lease;
            tunnel: derived from the identity (class C). */
         if (g_ngw > 0) {
             uint8_t sk[64], derived[5];
@@ -578,7 +560,7 @@ int cmd_raw(int argc, char **argv)
             if (!has_sk && load_auto_key(sk) < 0)
                 return 1;
             has_sk = 1;
-            if (dhcp_discover(fd, ifindex, src_mac, sk, has_sk,
+            if (dhcp_discover(src_mac, sk, has_sk,
                               server_pub, has_server_pub, &src) < 0) {
                 fprintf(stderr, "send: sem servidor DHCP na rede local; "
                         "suba um dhcpd ou use --remote\n");
@@ -590,7 +572,7 @@ int cmd_raw(int argc, char **argv)
         plen = dlen;
         if (g_ngw > 0 && dst != 0xFFFFFFFFFFULL) {
             /* announce first so the gateway knows us (QUERY gate).
-               Uses `frame`; the dgram is built AFTER, in its own buffer,
+               Uses `af`; the dgram is built AFTER, in its own buffer,
                so the announce does not clobber it. */
             uint8_t ann[1 + 5] = { IPV69_CTRL_ND_REQUEST };
             uint8_t af[1600];
@@ -598,7 +580,7 @@ int cmd_raw(int argc, char **argv)
             size_t alen = build_frame(af, bcast, src_mac, src,
                                       0xFFFFFFFFFFULL, IPV69_NEXT_CONTROL,
                                       64, 0, 0, ann, sizeof(ann));
-            send_frame_tun(fd, ifindex, bcast, af, alen);
+            tun_send(bcast, af, alen);
             /* P2P: ask the gateway where dst lives; send direct if known */
             struct sockaddr_storage ep;
             socklen_t eplen = sizeof(ep);
@@ -606,7 +588,7 @@ int cmd_raw(int argc, char **argv)
                 size_t len = build_frame(frame, bcast, src_mac, src, dst,
                                          IPV69_NEXT_DGRAM, 64, sp, dp,
                                          (const uint8_t *)data, plen);
-                if (sendto(g_udp_fd, frame, len, 0,
+                if (sendto(g_udp_fd, (const char *)frame, len, 0,
                            (struct sockaddr *)&ep, eplen) >= 0) {
                     printf("sent %zu bytes (dgram P2P, dst=%016llx src=%016llx)\n",
                            dlen, (unsigned long long)dst, (unsigned long long)src);
@@ -617,7 +599,7 @@ int cmd_raw(int argc, char **argv)
         }
         size_t len = build_frame(frame, bcast, src_mac, src, dst, IPV69_NEXT_DGRAM,
                                  64, sp, dp, (const uint8_t *)data, plen);
-        if (send_frame_tun(fd, ifindex, bcast, frame, len) < 0) { perror("sendto"); return 1; }
+        if (tun_send(bcast, frame, len) < 0) { perror_sock("sendto"); return 1; }
         printf("sent %zu bytes (dgram, dst=%016llx src=%016llx)\n",
                dlen, (unsigned long long)dst, (unsigned long long)src);
         return 0;
@@ -626,7 +608,6 @@ int cmd_raw(int argc, char **argv)
     if (!strcmp(argv[1], "ping")) {
         uint64_t dst;
         uint8_t req[1 + 512];
-        struct timeval tv = { 2, 0 };
         if (argc < 4 || parse_ipv69_addr(argv[3], &dst) < 0) {
             fprintf(stderr, "ping: precisa <dst> [payload]\n");
             return 1;
@@ -637,13 +618,12 @@ int cmd_raw(int argc, char **argv)
         memcpy(req + 1, data, dlen);
         size_t len = build_frame(frame, bcast, src_mac, 1, dst, IPV69_NEXT_CONTROL,
                                  64, 0, 0, req, 1 + dlen);
-        if (send_frame_tun(fd, ifindex, bcast, frame, len) < 0) { perror("sendto"); return 1; }
+        if (tun_send(bcast, frame, len) < 0) { perror_sock("sendto"); return 1; }
         printf("ping enviado para %016llx, aguardando reply...\n",
                (unsigned long long)dst);
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         for (;;) {
-            ssize_t n = recv(fd, frame, sizeof(frame), 0);
-            if (n < 0) { perror("recvfrom: timeout?"); return 1; }
+            ssize_t n = tun_recv(frame, sizeof(frame), 2000);
+            if (n <= 0) { fprintf(stderr, "ping: timeout\n"); return 1; }
             if (n >= 14 + IPV69_HEADER_LEN + 1) {
                 const struct ipv69_header *h =
                     (const struct ipv69_header *)(frame + 14);
@@ -669,7 +649,7 @@ int cmd_raw(int argc, char **argv)
                 return 1;
             has_sk = 1;
         }
-        return dhcp_client(fd, ifindex, src_mac, sk, has_sk, server_pub, has_server_pub);
+        return dhcp_client(src_mac, sk, has_sk, server_pub, has_server_pub);
     }
 
     fprintf(stderr, "modo desconhecido: %s\n", argv[1]);
