@@ -18,9 +18,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "IPv69/parse.h"
-#include "IPv69/l2.h"
 #include "IPv69/plat.h"
+#include "IPv69/l2.h"
+#include "IPv69/gwfile.h"
+#include "IPv69/parse.h"
 #include "ICSP/icsp.h"
 
 static void chat_usage(void)
@@ -28,20 +29,24 @@ static void chat_usage(void)
     fprintf(stderr,
         "icsp_chat - example chat built on the ICSP API\n"
         "\n"
-        "Usage: icsp_chat <server|client> <ifname> [port|:port] "
-        "[--peer HEX]\n"
-        "       icsp_chat client <ifname> <dst:port> [--peer HEX]\n"
-        "\n"
-        "  server  wait for a connection (persistent; replies unicast to\n"
-        "          the peer MAC, so it works across Wi-Fi APs)\n"
-        "  client  connect to <dst:port> (address-less port form ok)\n"
-        "\n"
-        "Options:\n"
-        "  --peer HEX   allowlist: accept only this identity (repeatable)\n"
-        "\n"
-        "Identity: ~/.hosts69 keyring (ipv69 keygen). Both sides print\n"
-        "the session key — identical = authenticated ECDH handshake.\n"
-        "Ctrl-D closes gracefully (SHUTDOWN).\n");
+        "      Usage: icsp_chat <server|client> <ifname> [port|:port] "
+            "[--peer HEX] [--remote gw:port]\n"
+            "       icsp_chat client <ifname> <dst:port> [--peer HEX]\n"
+            "                              [--remote gw:port]\n"
+            "\n"
+            "  server  wait for a connection (persistent; replies unicast to\n"
+            "          the peer MAC, so it works across Wi-Fi APs)\n"
+            "  client  connect to <dst:port> (address-less port form ok)\n"
+            "\n"
+            "Options:\n"
+            "  --peer HEX   allowlist: accept only this identity (repeatable)\n"
+            "  --remote gw  tunnel through this gateway (overrides the\n"
+            "               ~/.hosts69/gateways file; host or IP:port, the\n"
+            "               built-in DNS resolves domains; default port 6969)\n"
+            "\n"
+            "Identity: ~/.hosts69 keyring (ipv69 keygen). Both sides print\n"
+            "the session key — identical = authenticated ECDH handshake.\n"
+            "Ctrl-D closes gracefully (SHUTDOWN).\n");
 }
 
 /* incoming DATA: print it */
@@ -89,10 +94,15 @@ int main(int argc, char **argv)
         chat_usage();
         return 1;
     }
+    const char *remote = NULL;
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
             chat_usage();
             return 0;
+        }
+        if (!strcmp(argv[i], "--remote") && i + 1 < argc) {
+            remote = argv[++i];
+            continue;
         }
         if (!strcmp(argv[i], "--peer") && i + 1 < argc) {
             if (hex_decode(argv[++i], peers[n_peers], 32) != 32) {
@@ -102,7 +112,27 @@ int main(int argc, char **argv)
             n_peers++;
         }
     }
-    if (icsp_endpoint_open(&a, argv[2], sk) < 0) {
+    /* endpoint: --remote wins; otherwise the ~/.hosts69/gateways file
+       (any gateway = tunnel); without either, plain local L2. */
+    int n_gw = 0;
+    struct sockaddr_storage gws[GWFILE_MAX];
+    socklen_t gwlen[GWFILE_MAX];
+    if (!remote)
+        n_gw = gwfile_load(gws, gwlen, GWFILE_MAX);
+    if (remote) {
+        if (icsp_endpoint_open_remote(&a, remote, sk) < 0) {
+            fprintf(stderr, "chat: invalid --remote (%s)\n", remote);
+            return 1;
+        }
+        printf("chat: tunnel via --remote %s\n", remote);
+    } else if (n_gw > 0) {
+        if (icsp_endpoint_open_gw(&a, &gws[0], gwlen[0], sk) < 0) {
+            fprintf(stderr, "chat: cannot open the gateway tunnel\n");
+            return 1;
+        }
+        printf("chat: tunnel via ~/.hosts69/gateways (%d gateway(s))\n",
+               n_gw);
+    } else if (icsp_endpoint_open(&a, argv[2], sk) < 0) {
         fprintf(stderr, "chat: no identity (ipv69 keygen)\n");
         return 1;
     }
@@ -123,6 +153,12 @@ int main(int argc, char **argv)
             }
         printf("chat: server on %s:%u (peers=%d)\n", argv[2], port,
                n_peers);
+        /* tunnel server: keep our route alive at the gateway (the
+           accept wait + session re-announce every announce_s) */
+        if (a.tunnel) {
+            a.announce_s = 2;
+            icsp_announce_send(&a);
+        }
         /* serve associations forever: accept, chat, then accept again */
         for (;;) {
             if (icsp_server_accept(&a, port, sk, peers, n_peers, 0) < 0)
