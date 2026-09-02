@@ -25,6 +25,8 @@
 #endif
 #include "IPv69/header.h"
 #include "IPv69/l2.h"
+#include "IPv69/af69.h"
+#include "IPv69/gwfile.h"
 #include "IPv69/keyring.h"
 #include "IPv69/parse.h"    /* ipv69_addr_derive for tunnel mode */
 #include "ed25519.h"
@@ -51,8 +53,11 @@ int icsp_endpoint_open(struct icsp_assoc *a, const char *ifname,
 /* open an ICSP endpoint in tunnel mode (--remote gw:port): frames go to
  * the gateway over UDP. The local MAC and address are derived from the
  * identity (the gateway learns us from the signed INIT/announce). */
-int icsp_endpoint_open_remote(struct icsp_assoc *a, const char *gwstr,
-                              uint8_t sk[64])
+/* open a tunnel endpoint to a resolved gateway (sockaddr). Shared by
+ * --remote (string form) and the ~/.hosts69/gateways file. */
+int icsp_endpoint_open_gw(struct icsp_assoc *a,
+                          const struct sockaddr_storage *gw,
+                          socklen_t gwlen, uint8_t sk[64])
 {
     char key[512], kpub[512], dir[256], comment[128];
     uint8_t pub[32];
@@ -65,39 +70,9 @@ int icsp_endpoint_open_remote(struct icsp_assoc *a, const char *gwstr,
     memcpy(a->id_pub, pub, 32);
     memcpy(a->sk, sk, 64);      /* rekey signs with the identity */
 
-    char hp[256];
-    snprintf(hp, sizeof(hp), "%s", gwstr);
-    char *colon = strrchr(hp, ':');
-    if (!colon)
-        return -1;
-    *colon = 0;
-    int gport = atoi(colon + 1);
-    char *host = hp;
-    if (host[0] == '[') {       /* [v6]:port */
-        host++;
-        char *rb = strchr(host, ']');
-        if (rb)
-            *rb = 0;
-    }
-    struct sockaddr_in g4;
-    struct sockaddr_in6 g6;
-    int fam;
-    if (inet_pton(AF_INET, host, &g4.sin_addr) == 1) {
-        g4.sin_family = AF_INET;
-        g4.sin_port = htons(gport);
-        memcpy(&a->gw, &g4, sizeof(g4));
-        a->gwlen = sizeof(g4);
-        fam = AF_INET;
-    } else if (inet_pton(AF_INET6, host, &g6.sin6_addr) == 1) {
-        g6.sin6_family = AF_INET6;
-        g6.sin6_port = htons(gport);
-        memcpy(&a->gw, &g6, sizeof(g6));
-        a->gwlen = sizeof(g6);
-        fam = AF_INET6;
-    } else {
-        return -1;
-    }
-    a->tfd = socket(fam, SOCK_DGRAM, 0);
+    memcpy(&a->gw, gw, gwlen);
+    a->gwlen = gwlen;
+    a->tfd = socket(gw->ss_family, SOCK_DGRAM, 0);
     if (a->tfd == SOCK_INVALID)
         return -1;
     a->tunnel = 1;
@@ -110,6 +85,37 @@ int icsp_endpoint_open_remote(struct icsp_assoc *a, const char *gwstr,
         ipv69_addr_derive(derived, pub, 'C');
         a->src_addr = get_addr40(derived);
     }
+    return 0;
+}
+
+int icsp_endpoint_open_remote(struct icsp_assoc *a, const char *gwstr,
+                              uint8_t sk[64])
+{
+    struct sockaddr_storage gw;
+    socklen_t gwlen = sizeof(gw);
+    if (gwfile_resolve(gwstr, &gw, &gwlen) < 0)
+        return -1;              /* unknown host / bad literal */
+    return icsp_endpoint_open_gw(a, &gw, gwlen, sk);
+}
+
+/* signed ND announce to the gateway: it learns our address range from
+ * authenticated control traffic only (cryptokey routing). A tunnel
+ * server must re-announce periodically so the route does not expire. */
+int icsp_announce_send(struct icsp_assoc *a)
+{
+    const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+    uint8_t ann[1 + 5 + 32 + 64] = { IPV69_CTRL_ND_REQUEST };
+    uint8_t frame[512];
+    put_addr40(ann + 1, a->src_addr);
+    memcpy(ann + 6, a->sk + 32, 32);
+    ed25519_sign(ann + 38, ann, 6, a->sk);
+    size_t l = build_frame(frame, bcast, a->src_mac, a->src_addr,
+                           0xFFFFFFFFFFULL, IPV69_NEXT_CONTROL,
+                           64, 0, 0, ann, sizeof(ann));
+    if (sendto(a->tfd, (const char *)frame, l, 0,
+               (struct sockaddr *)&a->gw, a->gwlen) < 0)
+        return -1;
+    a->last_ann = time(NULL);
     return 0;
 }
 
@@ -241,6 +247,11 @@ int icsp_keepalive_tick(struct icsp_assoc *a)
         icsp_heartbeat_send(a);
         a->last_hb = now;
     }
+    /* tunnel server: keep our route alive at the gateway (cryptokey
+     * routing expires it otherwise); harmless while a client is up. */
+    if (a->tunnel && a->announce_s > 0 &&
+        now - a->last_ann >= a->announce_s)
+        icsp_announce_send(a);
     /* time-based rekey: only the initiator starts it (WG REKEY_AFTER_TIME) */
     if (a->rekey_interval_s > 0 && a->is_initiator &&
         a->state == ICSP_ST_ESTABLISHED &&
