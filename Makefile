@@ -22,7 +22,7 @@ ED25519 := lib/ed25519/src/ed25519.c lib/ed25519/src/tweetnacl.c lib/ed25519/src
 IPV69_SRC := src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c \
 	src/IPv69/ipv69gw.c src/IPv69/ip69d.c src/IPv69/ip69.c \
 	src/IPv69/keygen.c src/IPv69/keyring.c src/IPv69/l2.c \
-	src/IPv69/help.c \
+	src/IPv69/mac1.c src/IPv69/ratelimit.c src/IPv69/help.c \
 	tests/af69_raw.c \
 	tests/icsp_test.c src/ICSP/icsp.c src/ICSP/icsp_handshake.c \
 	src/ICSP/icsp_data.c src/ICSP/icsp_life.c src/ICSP/icsp_session.c
@@ -39,7 +39,7 @@ $(BUILD)/ipv69: $(IPV69_SRC) $(ED25519) include/IPv69/af69.h include/IPv69/parse
 ICSP_SRC := src/ICSP/icsp.c src/ICSP/icsp_handshake.c \
 	src/ICSP/icsp_data.c src/ICSP/icsp_life.c src/ICSP/icsp_session.c
 CHAT_SRC := examples/icsp_chat.c src/IPv69/keyring.c src/IPv69/parse.c \
-	src/IPv69/l2.c $(ICSP_SRC) $(ED25519)
+	src/IPv69/l2.c src/IPv69/mac1.c src/IPv69/ratelimit.c $(ICSP_SRC) $(ED25519)
 
 chat: $(BUILD)/icsp_chat
 
@@ -65,10 +65,11 @@ WIN_CFLAGS := -Wall -Wextra -O2 -static -Iinclude -Ilib/ed25519/include \
 	-I$(WIN_SDK)/Include
 WIN_LIBS   := $(WIN_SDK)/Lib/x64/wpcap.lib -lws2_32 -liphlpapi -lbcrypt
 WIN_SRC    := examples/icsp_chat.c src/IPv69/keyring.c src/IPv69/parse.c \
-	src/IPv69/l2_win.c $(ICSP_SRC) $(ED25519)
+	src/IPv69/l2_win.c src/IPv69/mac1.c src/IPv69/ratelimit.c $(ICSP_SRC) $(ED25519)
 IPV69_WIN_SRC := src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c \
 	src/IPv69/ipv69gw.c src/IPv69/keygen.c src/IPv69/keyring.c \
-	src/IPv69/l2_win.c src/IPv69/help.c \
+	src/IPv69/l2_win.c src/IPv69/mac1.c src/IPv69/ratelimit.c \
+	src/IPv69/help.c \
 	tests/af69_raw.c tests/icsp_test.c $(ICSP_SRC) $(ED25519)
 
 win: $(BUILD)/ipv69.exe $(BUILD)/icsp_chat.exe
