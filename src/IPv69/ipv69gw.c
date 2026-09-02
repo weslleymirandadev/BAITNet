@@ -24,17 +24,20 @@
 #include <unistd.h>
 #include <errno.h>
 #include <time.h>
-#include <poll.h>
-#include <sys/socket.h>
+#include "IPv69/af69.h"
+#include "IPv69/header.h"
+#include "IPv69/parse.h"
+#include "IPv69/plat.h"
+#ifdef _WIN32
+/* the optional local L2 bridge (--iface) is AF_PACKET: Linux only */
+#else
 #include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <netpacket/packet.h>
 #include <net/ethernet.h>
-#include "IPv69/af69.h"
-#include "IPv69/header.h"
-#include "IPv69/parse.h"
+#endif
 
 #define MAX_PEERS 256
 #define PEER_TIMEOUT 300        /* seconds without traffic -> forget */
@@ -120,7 +123,7 @@ static struct peer *peer_learn(uint64_t addr, const uint8_t *mac,
     return &peers[slot];
 }
 
-static void send_udp(int fd, const void *buf, size_t len,
+static void send_udp(sock_t fd, const void *buf, size_t len,
                      const struct endpoint *ep)
 {
     sendto(fd, buf, len, 0, (struct sockaddr *)&ep->ss, ep->slen);
@@ -138,9 +141,12 @@ int cmd_gw(int argc, char **argv)
 {
     int port = 6969;
     const char *iface = NULL;
-    int ifindex = 0, l2fd = -1;
+    int l2fd = -1;
     int allow_private = 0;          /* --private: route class A/B too */
+#ifndef _WIN32
+    int ifindex = 0;
     uint8_t l2mac[6];
+#endif
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--port") && i + 1 < argc)
@@ -163,12 +169,12 @@ int cmd_gw(int argc, char **argv)
     }
 
     /* UDP listener */
-    int fd = socket(AF_INET6, SOCK_DGRAM, 0);
+    sock_t fd = socket(AF_INET6, SOCK_DGRAM, 0);
     int v6only = 0;
-    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
-    if (fd < 0) {
+    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v6only, sizeof(v6only));
+    if (fd == SOCK_INVALID) {
         fd = socket(AF_INET, SOCK_DGRAM, 0);
-        if (fd < 0) { perror("socket"); return 1; }
+        if (fd == SOCK_INVALID) { perror_sock("socket"); return 1; }
     }
     struct sockaddr_in6 sa6 = {
         .sin6_family = AF_INET6,
@@ -186,8 +192,13 @@ int cmd_gw(int argc, char **argv)
         }
     }
 
-    /* optional local L2 bridge */
+    /* optional local L2 bridge (AF_PACKET — Linux only) */
     if (iface) {
+#ifdef _WIN32
+        fprintf(stderr, "ipv69gw: --iface nao e suportado no Windows "
+                        "(bridge L2 local usa AF_PACKET)\n");
+        return 1;
+#else
         l2fd = socket(AF_PACKET, SOCK_RAW, htons(ETHERTYPE_IPV69));
         if (l2fd < 0) { perror("socket(AF_PACKET)"); return 1; }
         struct ifreq ifr;
@@ -205,6 +216,7 @@ int cmd_gw(int argc, char **argv)
         if (bind(l2fd, (struct sockaddr *)&sll, sizeof(sll)) < 0) {
             perror("bind(AF_PACKET)"); return 1;
         }
+#endif
     }
 
     printf("ipv69gw: listening on udp/%d%s%s\n", port,
@@ -218,7 +230,7 @@ int cmd_gw(int argc, char **argv)
             { .fd = l2fd, .events = POLLIN },
         };
         int npf = l2fd >= 0 ? 2 : 1;
-        int pr = poll(pf, npf, 1000);
+        int pr = plat_poll(pf, npf, 1000);
         if (pr <= 0)
             continue;
 
@@ -226,7 +238,7 @@ int cmd_gw(int argc, char **argv)
         if (pf[0].revents & POLLIN) {
             struct sockaddr_storage ss;
             socklen_t slen = sizeof(ss);
-            ssize_t n = recvfrom(fd, buf, sizeof(buf), 0,
+            ssize_t n = recvfrom(fd, (char *)buf, sizeof(buf), 0,
                                  (struct sockaddr *)&ss, &slen);
             if (n <= 0)
                 continue;
@@ -302,7 +314,7 @@ int cmd_gw(int argc, char **argv)
                     if (peers[i].addr && peers[i].addr != src)
                         send_udp(fd, buf, n, &peers[i].ep);
                 if (l2fd >= 0)
-                    sendto(l2fd, buf, n, 0, NULL, 0);
+                    sendto(l2fd, (const char *)buf, n, 0, NULL, 0);
                 continue;
             }
 
@@ -316,7 +328,7 @@ int cmd_gw(int argc, char **argv)
             }
             /* unknown: try the local L2 bridge (maybe the DHCP server) */
             if (l2fd >= 0) {
-                sendto(l2fd, buf, n, 0, NULL, 0);
+                sendto(l2fd, (const char *)buf, n, 0, NULL, 0);
                 continue;
             }
             fprintf(stderr, "ipv69gw: sem destino para %016llx\n",
@@ -325,7 +337,7 @@ int cmd_gw(int argc, char **argv)
 
         /* ---- local L2 side: frames from the bridge into tunnels ---- */
         if (l2fd >= 0 && (pf[1].revents & POLLIN)) {
-            ssize_t n = recv(l2fd, buf, sizeof(buf), 0);
+            ssize_t n = recv(l2fd, (char *)buf, sizeof(buf), 0);
             if (n < 14 + IPV69_HEADER_LEN + 1)
                 continue;
             const struct ethernet_header *eth =
