@@ -9,7 +9,7 @@ Source of ideas: WireGuard protocol design
 problems IPv69 has: handshake DoS, per-packet crypto cost, state
 allocation before authentication, and configuration pain.
 
-## Status: P0-P4 IMPLEMENTED (see USAGE.md §7 and §12)
+## Status: P0-P5 IMPLEMENTED (see USAGE.md §7 and §12)
 
 - P0 anti-DoS: mac1 pre-auth filter (Poly1305 over the dest addr),
   per-sender token buckets (ICSP INIT / dhcpd / gw broadcast+learn).
@@ -31,6 +31,12 @@ allocation before authentication, and configuration pain.
   (GW_ROUTE), so QUERY resolves from the route table with no mesh
   round-trip and data routes only to the owning link (P4b). The link
   carrier can be IPv6-only — zero IPv4 on the path.
+- P5 internet between 2 hosts: `ipv69 icsp server/client --remote
+  gw:port` runs the whole ICSP stack (handshake, data, rekey) over the
+  gateway tunnel, so two hosts behind NATs get a full stream
+  association through one seed; the gateway adds hole-punch
+  introduction (GW_CALL: the target is told who asked and probes
+  back), so NATs open and the traffic goes P2P when possible.
 
 This document below remains the design rationale + the phase-by-phase
 breakdown that was implemented.

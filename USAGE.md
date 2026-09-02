@@ -430,6 +430,29 @@ route expires, 90s). This is the IPv69 equivalent of a routing
 protocol: route by prefix, verify by range — still no per-packet
 crypto anywhere.
 
+### Internet between 2 hosts (P5): --remote on ICSP + hole punching
+
+Two hosts in different places talk through a gateway seed (a host with
+a public IP, or v6). Datagrams already worked (`send`/`recv --remote`);
+now the whole stack does:
+
+```bash
+# the seed: any host with a public IP
+./ipv69 gw --port 6969 --peer <PUB_A> --peer <PUB_B>
+
+# host A: ICSP server (stream/chat) behind its NAT
+./ipv69 icsp server eth0 :6969 --remote <SEED>:6969
+
+# host B: ICSP client — full handshake + data through the gateway
+./ipv69 icsp client eth0 <addr_A>:6969 "oi" --echo --remote <SEED>:6969
+```
+
+The gateway introduces peers: when a QUERY is answered it also sends a
+**GW_CALL** to the target (the asker's endpoint), and the target probes
+the asker directly — both NATs open (hole punching) and the traffic
+goes P2P, gateway-free; if the direct path can't open, the gateway
+relays and the association still works.
+
 ---
 
 ## 8. Build
