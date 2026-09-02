@@ -1,10 +1,11 @@
-/* ip69 - query the ip69d daemon (like `ip addr` for IPv69).
+/* ip69 - query the ip69d bring-up daemon (like `ip addr` for IPv69).
  *
  * Usage:
- *   ip69 addr show    print the leased 40-bit address + TAP state
- *   ip69 lease        seconds remaining until renewal
- *   ip69 renew        force a lease renewal (SIGUSR1 to the daemon)
- *   ip69 -s <path>    use a different control socket (default /tmp/ip69.sock)
+ *   ipv69 status              print the leased 40-bit address + state
+ *   ipv69 lease               seconds remaining until renewal
+ *   ipv69 renew               force a lease renewal
+ *   ipv69 <cmd> -s PATH       use a different control socket
+ *                             (default /tmp/ip69.sock)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,35 +43,36 @@ static int query(const char *cmd, char *out, size_t outsz)
 int cmd_ip69(int argc, char **argv)
 {
     char buf[512];
+    const char *cmd;
 
-    if (argc >= 3 && !strcmp(argv[1], "-s")) {
-        sockpath = argv[2];
-        argc -= 2;
-        argv += 2;
-    }
+    /* `-s PATH` anywhere after the subcommand */
+    for (int i = 2; i < argc - 1; i++)
+        if (!strcmp(argv[i], "-s"))
+            sockpath = argv[i + 1];
     if (argc < 2) {
         fprintf(stderr,
-                "Usage: %s [-s <sock>] {addr show|lease|renew}\n", argv[0]);
+                "Usage: %s <status|lease|renew> [-s PATH]\n", argv[0]);
         return 1;
     }
-    if (!strcmp(argv[1], "addr")) {
+    cmd = argv[1];
+    if (!strcmp(cmd, "status")) {
         if (query("show", buf, sizeof(buf)) == 0)
             fputs(buf, stdout);
         else
             return 1;
-    } else if (!strcmp(argv[1], "lease")) {
+    } else if (!strcmp(cmd, "lease")) {
         if (query("lease", buf, sizeof(buf)) == 0) {
             buf[strcspn(buf, "\n")] = 0;   /* daemon appends \n */
             printf("lease: %s seconds\n", buf);
         } else
             return 1;
-    } else if (!strcmp(argv[1], "renew")) {
+    } else if (!strcmp(cmd, "renew")) {
         if (query("renew", buf, sizeof(buf)) == 0)
             fputs(buf, stdout);
         else
             return 1;
     } else {
-        fprintf(stderr, "unknown command: %s\n", argv[1]);
+        fprintf(stderr, "unknown command: %s\n", cmd);
         return 1;
     }
     return 0;
