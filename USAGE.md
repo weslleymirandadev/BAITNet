@@ -389,6 +389,34 @@ sudo ./ipv69 gw --port 6969 --iface eth0
 sudo ./ipv69 gw --port 6969 --iface eth0   # another host, same segment
 ```
 
+### Federation across islands (`--peer-gw PUB@endpoint`)
+
+Two gateways in DIFFERENT L2 islands (different LANs, different
+buildings, different ISPs) federate over a UDP link: each gateway
+declares the other's Ed25519 identity and listener. The link is
+authenticated — the peer's periodic GW_ANN carries a signature checked
+against the configured PUB — and the mesh (QUERY forwarding, data
+relay) runs over it exactly like on the L2, so a client behind gateway
+B finds a client behind gateway A and talks P2P:
+
+```bash
+# gateway A (ilha A): PUB_B is B's keyring pubkey
+sudo ./ipv69 gw --port 6969 --iface eth0 \
+    --peer-gw <PUB_B>@203.0.113.11:6969
+# gateway B (ilha B): PUB_A is A's keyring pubkey
+sudo ./ipv69 gw --port 6969 --iface eth1 \
+    --peer-gw <PUB_A>@203.0.113.10:6969
+# peers on each island just use their local gateway (--remote), the
+# islands act as one network; the link can be IPv6-only (zero IPv4):
+#   --peer-gw <PUB_B>@[2001:db8::11]:6969
+```
+
+The link endpoint is fixed (WG-style): datagrams from any other source
+are ignored, so spoofing requires being on-path, and the GW_ANN
+signature binds the link to the configured identity. This is the
+building block of a gateway-to-gateway mesh: add one `--peer-gw` per
+neighbor (max 8) and QUERYs propagate hop by hop.
+
 ---
 
 ## 8. Build
