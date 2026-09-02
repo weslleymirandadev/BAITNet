@@ -21,10 +21,12 @@ allocation before authentication, and configuration pain.
   PUB[/prefix]` allowlist (AllowedIPs); dhcpd O(1) hash allocation +
   range-bounded signed REQUESTs.
 - P3 self-containment: `ipv69 net up` (keygen-if-missing + DHCP
-  backoff); dgram auth `--auth`/`--peer-file` (Poly1305 over static
+  backoff) ends in the keepalive daemon (renew loop + lease/renew/status
+  socket); dgram auth `--auth`/`--peer-file` (Poly1305 over static
   X25519, edwards->montgomery conversion); gateway mesh (GW_ANN
   discovery, GW_Q/GW_R QUERY forwarding, P2P across federated
-  gateways).
+  gateways). `ipv69 tun` is the same daemon (compat alias); the TAP is
+  optional (`--tap`), no longer created by default.
 - P4 federation across islands: `gw --peer-gw PUB@endpoint` links two
   gateways in different L2 islands over an authenticated UDP tunnel
   (P4a); each gateway announces host routes for its clients
@@ -209,8 +211,10 @@ Poly1305/HMAC (~µs vs ~1.7 ms).
 ### P3 — Self-contained network + UX
 - [ ] gateway discovery over L2 + QUERY across gateways (mesh)
 - [ ] dgram Poly1305 auth from static X25519 (2.6)
-- [ ] `ipv69 net up`: keygen-if-missing → discover dhcpd (retry with
-  backoff/jitter) → lease → raw/tun → keepalive loop (B8, WG bring-up)
+- [x] `ipv69 net up`: keygen-if-missing → discover dhcpd (retry with
+  backoff/jitter) → lease → keepalive daemon (renew loop +
+  lease/renew/status socket) (B8, WG bring-up) — `ipv69 tun` is the
+  same daemon, TAP optional via `--tap`
 - [ ] docs: architecture + security model update
 
 ## 5. Non-goals
