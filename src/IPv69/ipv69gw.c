@@ -29,6 +29,7 @@
 #include "IPv69/parse.h"
 #include "IPv69/plat.h"
 #include "IPv69/ratelimit.h"
+#include "IPv69/l2.h"       /* build_frame */
 #include "ed25519.h"        /* INIT signature check (cryptokey routing) */
 #ifdef _WIN32
 /* the optional local L2 bridge (--iface) is AF_PACKET: Linux only */
@@ -276,6 +277,182 @@ static int gw_src_ok(const struct ipv69_header *h)
     return peer_find_addr(src) != NULL;
 }
 
+/* gateway mesh: federated gateways on the same L2 discover each other
+ * with GW_ANN broadcasts; a QUERY the local table cannot answer is
+ * forwarded to the L2 (GW_Q) and the reply (GW_R) is relayed back to
+ * the UDP asker, so clients behind different gateways still find each
+ * other P2P (WireGuard-style roaming across federated endpoints). */
+struct gw_neigh {
+    uint8_t mac[6];
+    time_t last;
+};
+static struct gw_neigh gwn[MAX_PEERS];
+static int n_gwn;
+
+struct gw_pend {
+    uint64_t addr;
+    struct endpoint asker;
+    time_t ts;
+};
+static struct gw_pend gwp[16];
+static int n_gwp;
+
+static struct gw_neigh *gw_neigh_find(const uint8_t *mac)
+{
+    for (int i = 0; i < n_gwn; i++)
+        if (!memcmp(gwn[i].mac, mac, 6))
+            return &gwn[i];
+    return NULL;
+}
+
+/* broadcast a mesh control frame on the L2 (eth dst comes from the
+ * frame header — the AF_PACKET bind has no sll_addr) */
+static void gw_mesh_send(int l2fd, const uint8_t l2mac[6],
+                         const uint8_t *pkt, size_t plen)
+{
+    const uint8_t bcast_mac[6] = BCAST_MAC;
+    uint8_t frame[128];
+
+    size_t len = build_frame(frame, bcast_mac, l2mac, 0,
+                             0xFFFFFFFFFFULL, IPV69_NEXT_CONTROL,
+                             64, 0, 0, pkt, plen);
+    sendto(l2fd, (const char *)frame, len, 0, NULL, 0);
+}
+
+/* handle mesh control on the L2 side: learn neighbors, answer GW_Q,
+ * relay GW_R to the pending UDP asker. Returns 1 when consumed. */
+static int gw_mesh_handle(sock_t udp_fd, int l2fd,
+                          const uint8_t l2mac[6],
+                          const uint8_t *buf, ssize_t n)
+{
+    const struct ethernet_header *eth =
+        (const struct ethernet_header *)buf;
+    const struct ipv69_header *h =
+        (const struct ipv69_header *)(buf + 14);
+    const uint8_t *p = buf + 14 + IPV69_HEADER_LEN;
+    size_t plen = (size_t)n - 14 - IPV69_HEADER_LEN;
+
+    if (h->next_header != IPV69_NEXT_CONTROL || plen < 1)
+        return 0;
+    if (p[0] == IPV69_CTRL_GW_ANN) {
+        /* learn/refresh the announcing gateway */
+        if (!gw_neigh_find(eth->src_mac) && n_gwn < MAX_PEERS) {
+            memcpy(gwn[n_gwn].mac, eth->src_mac, 6);
+            gwn[n_gwn].last = time(NULL);
+            n_gwn++;
+            printf("ipv69gw: mesh: vizinho %02x:%02x:%02x:%02x:%02x:%02x\n",
+                   eth->src_mac[0], eth->src_mac[1], eth->src_mac[2],
+                   eth->src_mac[3], eth->src_mac[4], eth->src_mac[5]);
+            fflush(stdout);
+        } else if (gw_neigh_find(eth->src_mac)) {
+            gw_neigh_find(eth->src_mac)->last = time(NULL);
+        }
+        return 1;
+    }
+    if (p[0] == IPV69_CTRL_GW_Q && plen >= 6) {
+        uint64_t q = get_addr40(p + 1);
+        struct peer *t = peer_find_addr(q);
+        /* reply with the target's endpoint. The UDP listener is
+           AF_INET6 dual-stack: IPv4 clients arrive v4-mapped, so reduce
+           to a plain 4-byte address (the mesh reply is v4 only). */
+        if (t && t->ep.slen > 0) {
+            const struct sockaddr *sa =
+                (const struct sockaddr *)&t->ep.ss;
+            uint8_t ip4[4];
+            uint16_t qport = 0;
+            int have4 = 0;
+            if (sa->sa_family == AF_INET) {
+                const struct sockaddr_in *si = (const struct sockaddr_in *)sa;
+                memcpy(ip4, &si->sin_addr, 4);
+                qport = ntohs(si->sin_port);
+                have4 = 1;
+            } else if (sa->sa_family == AF_INET6) {
+                const struct sockaddr_in6 *si6 =
+                    (const struct sockaddr_in6 *)sa;
+                if (IN6_IS_ADDR_V4MAPPED(&si6->sin6_addr)) {
+                    memcpy(ip4, &si6->sin6_addr.s6_addr[12], 4);
+                    qport = ntohs(si6->sin6_port);
+                    have4 = 1;
+                }
+            }
+            if (have4) {
+                uint8_t rpkt[1 + 5 + 4 + 2];
+                rpkt[0] = IPV69_CTRL_GW_R;
+                put_addr40(rpkt + 1, q);
+                memcpy(rpkt + 6, ip4, 4);
+                rpkt[10] = (uint8_t)(qport >> 8);
+                rpkt[11] = (uint8_t)qport;
+                gw_mesh_send(l2fd, l2mac, rpkt, sizeof(rpkt));
+                printf("ipv69gw: mesh: respondi %016llx\n",
+                       (unsigned long long)q);
+                fflush(stdout);
+            }
+        }
+        return 1;
+    }
+    if (p[0] == IPV69_CTRL_GW_R && plen >= 12) {
+        uint64_t q = get_addr40(p + 1);
+        for (int i = 0; i < n_gwp; i++) {
+            if (gwp[i].addr == q) {
+                struct sockaddr_in sin;
+                memset(&sin, 0, sizeof(sin));
+                sin.sin_family = AF_INET;
+                memcpy(&sin.sin_addr, p + 6, 4);
+                memcpy(&sin.sin_port, p + 10, 2);
+                /* same wire format as the local QUERY answer:
+                   "E69" + raw addr40 + "ip:port" text */
+                char ans[128] = EMAGIC;
+                ans[3] = (char)(q >> 32);
+                ans[4] = (char)(q >> 24);
+                ans[5] = (char)(q >> 16);
+                ans[6] = (char)(q >> 8);
+                ans[7] = (char)q;
+                snprintf(ans + 8, sizeof(ans) - 8, "%s:%d",
+                         inet_ntoa(sin.sin_addr), ntohs(sin.sin_port));
+                sendto(udp_fd, ans, strlen(ans), 0,
+                       (struct sockaddr *)&gwp[i].asker.ss,
+                       gwp[i].asker.slen);
+                /* drop the pending entry */
+                gwp[i] = gwp[--n_gwp];
+                printf("ipv69gw: mesh: relayei %016llx -> asker\n",
+                       (unsigned long long)q);
+                fflush(stdout);
+                break;
+            }
+        }
+        return 1;
+    }
+    return 0;
+}
+
+/* a QUERY the local table cannot answer: remember the asker and ask the
+ * L2 mesh (once per addr, 2s expiry). Returns 1 when forwarded. */
+static int gw_mesh_query(uint64_t q, const struct endpoint *asker,
+                         int l2fd, const uint8_t l2mac[6])
+{
+    if (n_gwn == 0)
+        return 0;
+    for (int i = 0; i < n_gwp; i++)
+        if (gwp[i].addr == q)
+            return 1;               /* already asked */
+    if (n_gwp < 16) {
+        gwp[n_gwp].addr = q;
+        gwp[n_gwp].asker = *asker;
+        gwp[n_gwp].ts = time(NULL);
+        n_gwp++;
+    }
+    {
+        uint8_t qpkt[6];
+        qpkt[0] = IPV69_CTRL_GW_Q;
+        put_addr40(qpkt + 1, q);
+        gw_mesh_send(l2fd, l2mac, qpkt, sizeof(qpkt));
+    }
+    printf("ipv69gw: mesh: forwardei QUERY %016llx\n",
+           (unsigned long long)q);
+    fflush(stdout);
+    return 1;
+}
+
 static void send_udp(sock_t fd, const void *buf, size_t len,
                      const struct endpoint *ep)
 {
@@ -296,9 +473,9 @@ int cmd_gw(int argc, char **argv)
     const char *iface = NULL;
     int l2fd = -1;
     int allow_private = 0;          /* --private: route class A/B too */
+    uint8_t l2mac[6] = { 0 };       /* L2 bridge state (Linux only) */
 #ifndef _WIN32
     int ifindex = 0;
-    uint8_t l2mac[6];
 #endif
 
     for (int i = 1; i < argc; i++) {
@@ -395,7 +572,32 @@ int cmd_gw(int argc, char **argv)
     fflush(stdout);
 
     uint8_t buf[1700];
+    time_t last_ann = 0;
+    time_t boot = time(NULL);
     for (;;) {
+        /* gateway mesh: announce ourselves on the L2 every 30s; retry
+           every 2s during the first 6s so a gateway booting right
+           after us still learns us (handshake retry, WG-style) */
+        int ann_int = time(NULL) - boot < 6 ? 2 : 30;
+        if (l2fd >= 0 && time(NULL) - last_ann >= ann_int) {
+            uint8_t apkt[3];
+            apkt[0] = IPV69_CTRL_GW_ANN;
+            apkt[1] = (uint8_t)(port >> 8);
+            apkt[2] = (uint8_t)port;
+            gw_mesh_send(l2fd, l2mac, apkt, sizeof(apkt));
+            printf("ipv69gw: mesh: anunciado na L2 (udp/%d)\n", port);
+            fflush(stdout);
+            last_ann = time(NULL);
+        }
+        /* expire mesh pending queries (2s) */
+        {
+            time_t now = time(NULL);
+            for (int i = 0; i < n_gwp;)
+                if (now - gwp[i].ts > 2)
+                    gwp[i] = gwp[--n_gwp];
+                else
+                    i++;
+        }
         struct pollfd pf[2] = {
             { .fd = fd, .events = POLLIN },
             { .fd = l2fd, .events = POLLIN },
@@ -426,6 +628,11 @@ int cmd_gw(int argc, char **argv)
                 uint64_t qaddr = get_addr40(buf + 3);
                 struct peer *asker = peer_find_endpoint(&ep);
                 struct peer *q = peer_find_addr(qaddr);
+                /* L2-learned entries have no UDP endpoint: they are
+                   reachable only through their owning gateway, so the
+                   mesh must be asked instead of answering garbage */
+                if (q && q->ep.slen == 0)
+                    q = NULL;
                 char ans[128] = EMAGIC;
                 memcpy(ans + 3, buf + 3, 5);
                 char qcls = ipv69_addr_class(qaddr);
@@ -447,6 +654,11 @@ int cmd_gw(int argc, char **argv)
                     }
                     size_t l = strlen(ans);
                     snprintf(ans + l, sizeof(ans) - l, "%s:%u", host, qport);
+                } else if (!q && n_gwn > 0 && asker) {
+                    /* mesh: a federated gateway on the L2 may know the
+                       target — forward instead of answering "-" */
+                    gw_mesh_query(qaddr, &ep, l2fd, l2mac);
+                    continue;       /* wait for the mesh reply */
                 } else {
                     size_t l = strlen(ans);
                     snprintf(ans + l, sizeof(ans) - l, "-");
@@ -538,6 +750,10 @@ int cmd_gw(int argc, char **argv)
             const struct ipv69_header *h =
                 (const struct ipv69_header *)(buf + 14);
             if (rd_be16(&eth->ethertype) != ETHERTYPE_IPV69)
+                continue;
+            /* gateway mesh control (GW_ANN/GW_Q/GW_R): consume it,
+               never replicate it to the tunnels */
+            if (gw_mesh_handle(fd, l2fd, l2mac, buf, n))
                 continue;
             uint64_t src = get_addr40(h->source);
             uint64_t dst = get_addr40(h->dest);
