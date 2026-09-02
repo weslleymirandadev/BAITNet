@@ -161,6 +161,11 @@ struct icsp_assoc {
     int      sack_loss_pct;     /* fault injection: skip SACK N% (tests) */
     time_t   last_rx;           /* any frame from the peer */
     time_t   last_hb;
+    /* tunnel server: signed ND announce to the gateway so it learns
+     * our route (cryptokey routing). announce_s = interval (0 = off);
+     * the server re-announces during the accept wait and the session. */
+    int      announce_s;
+    time_t   last_ann;
 };
 
 /* --- public API (Phase 1: handshake) --- */
@@ -282,6 +287,17 @@ int icsp_endpoint_open(struct icsp_assoc *a, const char *ifname,
  * The local MAC and class-C address are derived from the identity. */
 int icsp_endpoint_open_remote(struct icsp_assoc *a, const char *gwstr,
                               uint8_t sk[64]);
+
+/* same, with the gateway already resolved to a sockaddr (used by the
+ * ~/.hosts69/gateways file loader). */
+int icsp_endpoint_open_gw(struct icsp_assoc *a,
+                          const struct sockaddr_storage *gw,
+                          socklen_t gwlen, uint8_t sk[64]);
+
+/* tunnel server: send the signed ND announce to the gateway (cryptokey
+ * routing). a->announce_s > 0 makes icsp_keepalive_tick and the accept
+ * wait re-announce every announce_s seconds so the route stays alive. */
+int icsp_announce_send(struct icsp_assoc *a);
 
 /* receive + parse one nh=2 frame on a->fd. Returns the frame length,
  * 0 for noise (short frame / wrong next_header), -1 on recv error.
