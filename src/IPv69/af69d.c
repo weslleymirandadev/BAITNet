@@ -66,6 +66,15 @@ struct lease {
     uint64_t addr;
     time_t expiry;
     int used;
+    uint8_t key[32];            /* authenticated identity pub (signed) */
+};
+
+/* pubkey allowlist entry with an AllowedIPs-style range (WireGuard):
+ * the base is derived from the key (class C), /prefix narrows it. */
+struct peer_entry {
+    uint8_t  pub[32];
+    uint64_t base;
+    int      prefix;
 };
 
 struct ctx {
@@ -78,7 +87,7 @@ struct ctx {
     struct lease leases[MAX_LEASES];
     uint8_t allow[MAX_PEERS][6];      /* MAC allowlist (optional) */
     int n_allow;
-    uint8_t peers[MAX_PEERS][PUB_LEN]; /* pubkey allowlist (optional) */
+    struct peer_entry peers[MAX_PEERS]; /* pubkey allowlist + ranges */
     int n_peers;
     int auth_enabled;                 /* --peer/--peer-file given */
     int learn;                        /* --learn: auto-register pubkeys */
@@ -116,7 +125,9 @@ static void peer_file_load(struct ctx *c, const char *path)
         if (*p == '#' || *p == '\n' || *p == 0)
             continue;
         line[strcspn(line, "\n")] = 0;
-        if (hex_decode(p, c->peers[c->n_peers], PUB_LEN) == PUB_LEN)
+        if (ipv69_addr_parse_peer(p, c->peers[c->n_peers].pub,
+                                  &c->peers[c->n_peers].base,
+                                  &c->peers[c->n_peers].prefix) == 0)
             c->n_peers++;
         else
             fprintf(stderr, "af69d: peer-file: linha invalida ignorada: %s\n", p);
@@ -178,7 +189,7 @@ static int check_msg(struct ctx *c, const uint8_t *msg, size_t plen,
     sig = msg + body + PUB_LEN;
     pub_str(pub, ps);
     for (int i = 0; i < c->n_peers; i++)
-        if (!memcmp(c->peers[i], pub, PUB_LEN)) {
+        if (!memcmp(c->peers[i].pub, pub, PUB_LEN)) {
             if (ed25519_verify(msg, body, sig, pub) == 0)
                 return 1;
             printf("af69d: assinatura invalida de %s\n", ps);
@@ -221,14 +232,21 @@ static int learn_peer(struct ctx *c, const uint8_t *pub, const uint8_t *mac)
     char ps[65], ms[18];
 
     for (int i = 0; i < c->n_peers; i++)
-        if (!memcmp(c->peers[i], pub, PUB_LEN))
+        if (!memcmp(c->peers[i].pub, pub, PUB_LEN))
             return 0;               /* already known */
     if (c->n_peers >= MAX_PEERS) {
         fprintf(stderr, "af69d: learn: tabela de peers cheia (%d)\n",
                 MAX_PEERS);
         return 0;
     }
-    memcpy(c->peers[c->n_peers++], pub, PUB_LEN);
+    memcpy(c->peers[c->n_peers].pub, pub, PUB_LEN);
+    {
+        uint8_t derived[5];
+        ipv69_addr_derive(derived, pub, 'C');
+        c->peers[c->n_peers].base = get_addr40(derived);
+        c->peers[c->n_peers].prefix = 40;
+    }
+    c->n_peers++;
     if (c->peer_file) {
         FILE *f = fopen(c->peer_file, "a");
         if (f) {
@@ -263,31 +281,42 @@ static int lease_addr_taken(struct ctx *c, uint64_t addr, time_t now)
     return 0;
 }
 
-/* pick a free pool address for mac; renews an existing lease if any */
+/* pick a free pool address for mac; renews an existing lease if any.
+ * O(1) allocation: hash the MAC into the pool + linear probe, so full
+ * class-C pools (2^32) allocate without a linear scan. */
 static int lease_alloc(struct ctx *c, const uint8_t *mac, time_t now)
 {
     struct lease *l = lease_find(c, mac);
-    uint64_t a;
+    uint64_t span, h, a;
 
     if (l) {                        /* renew: same address */
         l->expiry = now + c->lease_sec;
         return 1;
     }
-    for (a = c->pool_start; a <= c->pool_end; a++) {
-        if (lease_addr_taken(c, a, now))
-            continue;
-        for (int i = 0; i < MAX_LEASES; i++) {
-            if (!c->leases[i].used || c->leases[i].expiry <= now) {
-                c->leases[i].used = 1;
-                memcpy(c->leases[i].mac, mac, 6);
-                c->leases[i].addr = a;
-                c->leases[i].expiry = now + c->lease_sec;
-                return 1;
-            }
-        }
-        return 0;                   /* table full */
+    span = c->pool_end - c->pool_start + 1;
+    h = 0;
+    for (int i = 0; i < 6; i++)
+        h = (h * 31 + mac[i]) & 0xFFFFFFFFu;
+    a = c->pool_start + (h % span);
+    for (int probe = 0; probe < 64; probe++) {
+        if (!lease_addr_taken(c, a, now))
+            break;
+        a++;
+        if (a > c->pool_end)
+            a = c->pool_start;
     }
-    return 0;                       /* pool full */
+    if (lease_addr_taken(c, a, now))
+        return 0;                   /* pool full */
+    for (int i = 0; i < MAX_LEASES; i++) {
+        if (!c->leases[i].used || c->leases[i].expiry <= now) {
+            c->leases[i].used = 1;
+            memcpy(c->leases[i].mac, mac, 6);
+            c->leases[i].addr = a;
+            c->leases[i].expiry = now + c->lease_sec;
+            return 1;
+        }
+    }
+    return 0;                       /* table full */
 }
 
 static void lease_release(struct ctx *c, const uint8_t *mac, uint64_t addr)
@@ -468,8 +497,11 @@ int cmd_dhcpd(int argc, char **argv)
                 fprintf(stderr, "peer: limite %d\n", MAX_PEERS);
                 return 1;
             }
-            if (hex_decode(argv[++i], c.peers[c.n_peers], PUB_LEN) != PUB_LEN) {
-                fprintf(stderr, "peer: pubkey invalida (32 bytes hex)\n");
+            if (ipv69_addr_parse_peer(argv[++i], c.peers[c.n_peers].pub,
+                                      &c.peers[c.n_peers].base,
+                                      &c.peers[c.n_peers].prefix) != 0) {
+                fprintf(stderr, "peer: pubkey invalida (%s) — PUB[/prefixo]\n",
+                        argv[i]);
                 return 1;
             }
             c.n_peers++;
@@ -618,6 +650,9 @@ int cmd_dhcpd(int argc, char **argv)
             }
             struct lease *l = lease_find(&c, mac);
             oaddr = l->addr;
+            /* remember the authenticated identity (signed DISCOVER) */
+            if (plen >= 7 + PUB_LEN + SIG_LEN + MAC1_LEN)
+                memcpy(l->key, buf + 7, PUB_LEN);
             offer[0] = IPV69_CTRL_DHCP_OFFER;
             memcpy(offer + 1, mac, 6);
             put_addr40(offer + 7, oaddr);
@@ -640,8 +675,24 @@ int cmd_dhcpd(int argc, char **argv)
                 l->expiry = now + c.lease_sec;
             }
             /* client asked for a specific address; confirm it matches
-               the lease (else keep the leased one) */
-            if (req_addr == l->addr) {
+               the lease — or, with a signed REQUEST, allow any free
+               address inside the peer's AllowedIPs range (WireGuard
+               cryptokey routing: the key authorizes a sub-prefix) */
+            int in_range = 0;
+            if (plen >= 12 + PUB_LEN + SIG_LEN + MAC1_LEN) {
+                const uint8_t *pub = buf + 12;
+                for (int i = 0; i < c.n_peers; i++)
+                    if (!memcmp(c.peers[i].pub, pub, PUB_LEN) &&
+                        ipv69_addr_in_range(req_addr, c.peers[i].base,
+                                            c.peers[i].prefix))
+                        in_range = 1;
+            }
+            if ((in_range && !lease_addr_taken(&c, req_addr, now)) ||
+                req_addr == l->addr) {
+                if (l->addr != req_addr)
+                    l->addr = req_addr;
+                if (plen >= 12 + PUB_LEN + SIG_LEN + MAC1_LEN)
+                    memcpy(l->key, buf + 12, PUB_LEN);
                 ack[0] = IPV69_CTRL_DHCP_ACK;
                 memcpy(ack + 1, mac, 6);
                 put_addr40(ack + 7, req_addr);
