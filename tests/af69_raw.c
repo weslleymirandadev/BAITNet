@@ -26,6 +26,7 @@
 #include "IPv69/parse.h"
 #include "IPv69/plat.h"
 #include "IPv69/l2.h"
+#include "IPv69/mac1.h"
 #include "IPv69/keyring.h"
 #include "ed25519.h"
 
@@ -217,13 +218,18 @@ static int dhcp_discover(const uint8_t src_mac[6],
                          uint64_t *out_addr)
 {
     const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
-    uint8_t frame[1600], pkt[1 + 6 + 5 + 4 + 32 + 64];
+    uint8_t frame[1600], pkt[1 + 6 + 5 + 4 + 32 + 64 + MAC1_LEN];
     uint64_t addr = 0;
     ssize_t n;
     size_t len;
     const size_t SIGSZ = has_server_pub ? (32 + 64) : 0;
+    uint8_t mkey[32];
 
-    /* DISCOVER [7][mac] + pub + sig */
+    /* mac1 pre-auth filter key: bound to the frame's dst (broadcast for
+       DHCP) — the server re-derives it from the received frame. */
+    mac1_key(IPV69_BCAST_ADDR, mkey);
+
+    /* DISCOVER [7][mac] + pub + sig + mac1 */
     pkt[0] = IPV69_CTRL_DHCP_DISCOVER;
     memcpy(pkt + 1, src_mac, 6);
     size_t dlen = 7;
@@ -232,6 +238,8 @@ static int dhcp_discover(const uint8_t src_mac[6],
         ed25519_sign(pkt + 7 + 32, pkt, 7, sk);
         dlen += 32 + 64;
     }
+    mac1_compute(mkey, pkt, dlen, pkt + dlen);
+    dlen += MAC1_LEN;
     len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
                       IPV69_NEXT_CONTROL, 64, 0, 0, pkt, dlen);
     if (tun_send(bcast, frame, len) < 0)
@@ -257,7 +265,7 @@ static int dhcp_discover(const uint8_t src_mac[6],
         break;
     }
 
-    /* REQUEST [9][mac][addr5] + pub + sig */
+    /* REQUEST [9][mac][addr5] + pub + sig + mac1 */
     pkt[0] = IPV69_CTRL_DHCP_REQUEST;
     memcpy(pkt + 1, src_mac, 6);
     put_addr40(pkt + 7, addr);
@@ -267,6 +275,8 @@ static int dhcp_discover(const uint8_t src_mac[6],
         ed25519_sign(pkt + 12 + 32, pkt, 12, sk);
         rlen += 32 + 64;
     }
+    mac1_compute(mkey, pkt, rlen, pkt + rlen);
+    rlen += MAC1_LEN;
     len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
                       IPV69_NEXT_CONTROL, 64, 0, 0, pkt, rlen);
     if (tun_send(bcast, frame, len) < 0)
