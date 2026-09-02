@@ -148,10 +148,10 @@ the gateways form the backbone, and the link carrier can be IPv6-only —
 IPv4 disappears from the network path entirely.
 
 ```
- ilha A (L2)             ilha B (L2)
+ island A (L2)         island B (L2)
  X ---- gwA ──link── gwB ---- Y
           \                 /
-           QUERY X? -> fwd -> respondi (X via gwA) -> relay -> P2P X<->Y
+           QUERY X? -> fwd -> answered (X via gwA) -> relay -> P2P X<->Y
 ```
 
 ## 4. Traffic: P2P after bootstrap

@@ -130,7 +130,7 @@ Expected server log:
 
 ```
 af69d: raw L2 (eth0), pool 0000000000000010-00000000000000fe lease 3600s
-af69d: allow=1 mac(s), peers=1 pubkey(s), server-key=sim
+af69d: allow=1 mac(s), peers=1 pubkey(s), server-key=yes
 af69d: DISCOVER 00:08:22:9c:03:fc -> OFFER 0000000000000010
 af69d: REQUEST 00:08:22:9c:03:fc -> ACK 0000000000000010
 ```
@@ -138,14 +138,14 @@ af69d: REQUEST 00:08:22:9c:03:fc -> ACK 0000000000000010
 Rejected client (unknown key or unlisted MAC) — server logs and ignores:
 
 ```
-af69d: pub f38f9008... nao esta na allowlist -> ignorado
-af69d: 0a:a6:50:c5:86:17 assinatura/pubkey invalida -> ignorado
+af69d: pub f38f9008... not in allowlist -> ignored
+af69d: 0a:a6:50:c5:86:17 invalid signature/pubkey -> ignored
 ```
 
 Client rejecting a rogue server:
 
 ```
-dhcp: OFFER assinatura invalida
+dhcp: OFFER invalid signature
 ```
 
 ## Files touched

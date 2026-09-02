@@ -96,7 +96,7 @@ identity — like `~/.ssh/id_ed25519`.
 
 ```bash
 # create a key with a comment (name) and a passphrase, like ssh-keygen:
-./ipv69 keygen -f ~/.hosts69/key -C "meu-servidor" -N "minha-senha"
+./ipv69 keygen -f ~/.hosts69/key -C "my-server" -N "my-passphrase"
 #   Enter passphrase (empty for no passphrase):   ← prompted if -N omitted
 #   Enter same passphrase again:                  ← typed with NO echo
 
@@ -134,7 +134,7 @@ on clients) — auto-key is bypassed when `--key` is given.
 sudo ./ipv69 dhcpd eth0 --peer-file /home/kali/peers.txt --learn
 
 # log:
-#   af69d: keyring /root/.hosts69/key (servidor)
+#   af69d: keyring /root/.hosts69/key (server)
 #   af69d: learned pub 8566295b... from MAC 00:08:22:9c:03:fc -> registered in peer-file
 #   af69d: DISCOVER 00:08:22:9c:03:fc -> OFFER 0000000000000010
 #   af69d: REQUEST 00:08:22:9c:03:fc -> ACK 0000000000000010
@@ -238,9 +238,11 @@ from the identity when using `--remote`. Ports are **decimal, glued to
 the address** (`addr:port`):
 
 ```bash
-# send dgram: dst:port + src_port (decimal; src is automatic):
-/root/bin/ipv69 send wlan0 00.00.00.00.10:16 1 "hi"
-#                          ^dst:port(16)   ^src_port(1)
+# send dgram to dst:port. src_port is optional (decimal): omit it and
+# an ephemeral port is picked. src (the address) is always automatic:
+/root/bin/ipv69 send wlan0 00.00.00.00.10:16 "hi"      # ephemeral src_port
+/root/bin/ipv69 send wlan0 00.00.00.00.10:16 1 "hi"     # explicit src_port
+#                          ^dst:port(16)  ^src_port(1)
 #   send: src = lease 0000000000000010 (auto)
 
 # listen on your address and port (decimal). Without an address the
@@ -248,7 +250,7 @@ the address** (`addr:port`):
 /root/bin/ipv69 recv wlan0
 /root/bin/ipv69 recv wlan0 00.00.00.00.10:16
 
-# ping (echo request → reply from the VM module):
+# ping (echo request → reply):
 /root/bin/ipv69 ping wlan0 00.00.00.00.02 "hi"
 ```
 
@@ -257,14 +259,10 @@ the address** (`addr:port`):
 ## 4. VM: talk to the phone
 
 ```bash
-# on the VM, with the module loaded:
-./ipv69 test recv 2 00.00.00.00.10:16     # listen on the phone's address, port 16
-./ipv69 test send 2 00.00.00.00.10:16 1 "hi phone"   # dst:port + src_port, decimal
-./ipv69 test ping 2 00.00.00.00.10 "hi"   # echo request
-
-# without the module (raw, like the phone):
+# on the VM (raw L2, like the phone):
 ./ipv69 recv eth0 00.00.00.00.10:16
-./ipv69 send eth0 00.00.00.00.10:16 1 "hi"
+./ipv69 send eth0 00.00.00.00.10:16 "hi"
+./ipv69 ping eth0 00.00.00.00.10 "hi"   # echo request
 ```
 
 > The interface is given by **name** (e.g. `eth0`, `wlan0`), resolved
@@ -346,8 +344,9 @@ binary has no DNS):
 
 # send via the tunnel: the gateway relays it, or answers QUERY with the
 # peer's endpoint and the frame goes direct (P2P, gateway leaves path).
-# src is derived from the identity automatically; dst:port in decimal:
-./ipv69 send wlan0 <dst_addr>:16 1 "hi" \
+# src is derived from the identity automatically; src_port optional
+# (ephemeral); dst:port in decimal:
+./ipv69 send wlan0 <dst_addr>:16 "hi" \
     --remote 203.0.113.10:6969,203.0.113.11:6969
 ```
 
@@ -413,10 +412,10 @@ relay) runs over it exactly like on the L2, so a client behind gateway
 B finds a client behind gateway A and talks P2P:
 
 ```bash
-# gateway A (ilha A): PUB_B is B's keyring pubkey
+# gateway A (island A): PUB_B is B's keyring pubkey
 sudo ./ipv69 gw --port 6969 --iface eth0 \
     --peer-gw <PUB_B>@203.0.113.11:6969
-# gateway B (ilha B): PUB_A is A's keyring pubkey
+# gateway B (island B): PUB_A is A's keyring pubkey
 sudo ./ipv69 gw --port 6969 --iface eth1 \
     --peer-gw <PUB_A>@203.0.113.10:6969
 # peers on each island just use their local gateway (--remote), the
@@ -528,12 +527,12 @@ Notes:
 `build/icsp_chat` is a **standalone example** (NOT part of the `ipv69`
 binary) showing how to build a tool on the ICSP API — authenticated
 handshake, encrypted messages, multi-stream, heartbeat, graceful
-close. Port syntax is `addr:porta` (decimal), like send/recv:
+close. Port syntax is `addr:port` (decimal), like send/recv:
 
 ```bash
 make chat        # builds build/icsp_chat separately
 
-# server (address-less; :porta or plain port):
+# server (address-less; :port or plain port):
 ./build/icsp_chat server eth0 :6969 --peer <client_pub_hex>
 ./build/icsp_chat server eth0 6969
 
@@ -562,9 +561,8 @@ natively on Windows with **MinGW + Npcap**. Architecture:
 - `src/IPv69/l2_win.c` — libpcap backend for the portable `l2_*` API
   (the same one the Linux build uses on AF_PACKET).
 - `addr`, `keygen`, `dhcpd`, `dhcp`, `send`, `recv`, `ping`, `gw`,
-  `icsp` work. `tun`, `lease/renew/status`, `test` report
-  "nao suportado no Windows" (they need TAP, unix sockets or a kernel
-  module); `gw --iface` too.
+  `icsp` work. `tun`, `lease/renew/status` report
+  "not supported on Windows" (they need TAP or unix sockets); `gw --iface` too.
 - RNG is BCrypt, the keyring uses `%USERPROFILE%` and a console no-echo
   prompt, `--remote` tunnels use Winsock.
 
@@ -577,7 +575,7 @@ make win        # -> build/ipv69.exe + build/icsp_chat.exe
 # adapter is matched by substring of the friendly name:
 WSLENV=HOME HOME='C:/Users/you' ./build/ipv69.exe addr
 ./build/ipv69.exe dhcp "Host-Only"
-./build/ipv69.exe send "Host-Only" 00.00.00.00.10:16 4242 oi
+./build/ipv69.exe send "Host-Only" 00.00.00.00.10:16 oi
 ./build/icsp_chat.exe client "Host-Only" 00.00.00.00.01:6969
 ```
 
@@ -604,7 +602,7 @@ design. Summary of what to type:
 
 # datagram auth: MAC every frame with X25519(our key, dst pub).
 # sender: --auth <dst PUBKEY>; receiver: --peer/--peer-file <trusted pubs>
-./ipv69 send wlan0 <dst>:16 1 "hi" --auth <PUBKEY_DST>
+./ipv69 send wlan0 <dst>:16 "hi" --auth <PUBKEY_DST>
 ./ipv69 recv wlan0 <my_addr> --peer-file /etc/ipv69/peers
 
 # dhcpd allowlist with AllowedIPs-style ranges (key authorizes a range):
