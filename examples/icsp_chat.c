@@ -8,8 +8,8 @@
  * heartbeat + dead-peer detection on its own.
  *
  * Usage:
- *   ./icsp_chat server <ifname> [port|:port] [--peer HEX] [--echo]
- *   ./icsp_chat client <ifname> <dst:port> [--peer HEX] [--echo]
+ *   ./icsp_chat server <ifname> [port|:port] [--peer HEX]
+ *   ./icsp_chat client <ifname> <dst:port> [--peer HEX]
  *
  * stdin = send (stream 1), socket = receive. Ctrl-D ends the chat
  * with a graceful SHUTDOWN. The session key (printed on both sides)
@@ -29,8 +29,8 @@ static void chat_usage(void)
         "icsp_chat - example chat built on the ICSP API\n"
         "\n"
         "Usage: icsp_chat <server|client> <ifname> [port|:port] "
-        "[--peer HEX] [--echo]\n"
-        "       icsp_chat client <ifname> <dst:port> [--peer HEX] [--echo]\n"
+        "[--peer HEX]\n"
+        "       icsp_chat client <ifname> <dst:port> [--peer HEX]\n"
         "\n"
         "  server  wait for a connection (persistent; replies unicast to\n"
         "          the peer MAC, so it works across Wi-Fi APs)\n"
@@ -38,31 +38,28 @@ static void chat_usage(void)
         "\n"
         "Options:\n"
         "  --peer HEX   allowlist: accept only this identity (repeatable)\n"
-        "  --echo       echo received messages back (test mode)\n"
         "\n"
         "Identity: ~/.hosts69 keyring (ipv69 keygen). Both sides print\n"
         "the session key — identical = authenticated ECDH handshake.\n"
         "Ctrl-D closes gracefully (SHUTDOWN).\n");
 }
 
-/* incoming DATA: print, and echo back when --echo */
+/* incoming DATA: print it */
 static void on_data(struct icsp_assoc *a, uint16_t stream,
                     const uint8_t *data, size_t len, void *ud)
 {
-    int echo_mode = *(int *)ud;
+    (void)a; (void)stream; (void)ud;
     fwrite(data, 1, len, stdout);
     fputc('\n', stdout);
     fflush(stdout);
-    if (echo_mode)
-        icsp_data_send(a, stream, data, len);
 }
 
 /* the whole chat: relay stdin <-> stream 1 until close/dead/EOF */
-static int chat_run(struct icsp_assoc *a, int echo_mode)
+static int chat_run(struct icsp_assoc *a)
 {
     printf("chat: connected! type and press Enter to send (Ctrl-D closes)\n");
     fflush(stdout);
-    int r = icsp_relay(a, 1, 1, on_data, &echo_mode);
+    int r = icsp_relay(a, 1, 1, on_data, NULL);
     if (r == ICSP_POLL_DEAD)
         printf("chat: no response from the peer for %ds — shutting down\n",
                a->dead_timeout_s);
@@ -79,7 +76,7 @@ int main(int argc, char **argv)
 {
     uint8_t sk[64];
     uint8_t peers[64][32];
-    int n_peers = 0, echo_mode = 0;
+    int n_peers = 0;
     struct icsp_assoc a;
 
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -103,8 +100,6 @@ int main(int argc, char **argv)
                 return 1;
             }
             n_peers++;
-        } else if (!strcmp(argv[i], "--echo")) {
-            echo_mode = 1;
         }
     }
     if (icsp_endpoint_open(&a, argv[2], sk) < 0) {
@@ -137,7 +132,7 @@ int main(int argc, char **argv)
             printf("chat: session_key == %02x%02x..%02x%02x\n",
                    a.send_key[0], a.send_key[1],
                    a.send_key[30], a.send_key[31]);
-            chat_run(&a, echo_mode);
+            chat_run(&a);
             printf("chat: waiting for the next association...\n");
         }
     }
@@ -158,7 +153,7 @@ int main(int argc, char **argv)
         printf("chat: session_key == %02x%02x..%02x%02x\n",
                a.send_key[0], a.send_key[1],
                a.send_key[30], a.send_key[31]);
-        return chat_run(&a, echo_mode);
+        return chat_run(&a);
     }
 
     fprintf(stderr, "chat: unknown mode '%s'\n", argv[1]);
