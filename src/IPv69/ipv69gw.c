@@ -1108,6 +1108,31 @@ int cmd_gw(int argc, char **argv)
                     }
                     size_t l = strlen(ans);
                     snprintf(ans + l, sizeof(ans) - l, "%s:%u", host, qport);
+                    /* P5a: hole-punch introduction — tell the target who
+                       asked (and the asker's endpoint) so it probes back
+                       and both NATs open (Tailscale-style); the asker is
+                       an authenticated peer of ours */
+                    {
+                        uint8_t cpkt[1 + 5 + 4 + 2];
+                        uint8_t a4[4];
+                        uint16_t aport;
+                        const struct sockaddr *asa =
+                            (const struct sockaddr *)&asker->ep.ss;
+                        if (ep_v4(asa, a4, &aport)) {
+                            const uint8_t bmac[6] = BCAST_MAC;
+                            uint8_t cf[128];
+                            cpkt[0] = IPV69_CTRL_GW_CALL;
+                            put_addr40(cpkt + 1, asker->addr);
+                            memcpy(cpkt + 6, a4, 4);
+                            cpkt[10] = (uint8_t)(aport >> 8);
+                            cpkt[11] = (uint8_t)aport;
+                            size_t cl = build_frame(
+                                cf, bmac, g_l2mac, 0, qaddr,
+                                IPV69_NEXT_CONTROL, 64, 0, 0, cpkt,
+                                sizeof(cpkt));
+                            send_udp(g_udp_fd, cf, cl, &q->ep);
+                        }
+                    }
                 } else if (asker && r && (allow_private ||
                                           (qcls == 'C' && acls == 'C'))) {
                     char host[64];

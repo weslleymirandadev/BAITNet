@@ -169,6 +169,27 @@ static int tun_send(const uint8_t *dst_mac, const uint8_t *frame, size_t len)
     return l2_send(g_l2, g_ifindex, dst_mac, frame, len);
 }
 
+/* send our signed ND announce to a specific endpoint (the gateway, or
+ * a direct peer during hole punching — the announce lets the peer (or
+ * its gateway) validate who we are and opens our NAT toward it) */
+static void announce_to(const uint8_t sk[64], uint64_t my_addr,
+                        const uint8_t src_mac[6],
+                        const struct sockaddr_storage *to,
+                        socklen_t tolen)
+{
+    const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+    uint8_t ann[1 + 5 + 32 + 64] = { IPV69_CTRL_ND_REQUEST };
+    uint8_t frame[512];
+    put_addr40(ann + 1, my_addr);
+    memcpy(ann + 6, sk + 32, 32);
+    ed25519_sign(ann + 38, ann, 6, sk);
+    size_t l = build_frame(frame, bcast, src_mac, my_addr,
+                           0xFFFFFFFFFFULL, IPV69_NEXT_CONTROL,
+                           64, 0, 0, ann, sizeof(ann));
+    sendto(g_udp_fd, (const char *)frame, l, 0,
+           (struct sockaddr *)to, tolen);
+}
+
 /* receive one frame, waiting up to timeout_ms (0 = forever).
  * Returns the frame length, 0 on timeout, -1 on error. */
 static ssize_t tun_recv(uint8_t *frame, size_t maxlen, int timeout_ms)
@@ -659,14 +680,7 @@ int cmd_raw(int argc, char **argv)
             /* announce: signed ND request for ourselves -> the gateway
                learns our authenticated range (cryptokey routing) */
             if (g_ngw > 0 && my_addr && time(NULL) - last_ann >= 2) {
-                uint8_t ann[1 + 5 + 32 + 64] = { IPV69_CTRL_ND_REQUEST };
-                put_addr40(ann + 1, my_addr);
-                memcpy(ann + 6, sk + 32, 32);
-                ed25519_sign(ann + 38, ann, 6, sk);
-                size_t l = build_frame(frame, bcast, src_mac, my_addr,
-                                       0xFFFFFFFFFFULL, IPV69_NEXT_CONTROL,
-                                       64, 0, 0, ann, sizeof(ann));
-                tun_send(bcast, frame, l);
+                announce_to(sk, my_addr, src_mac, &g_gw[0], g_gwlen[0]);
                 last_ann = time(NULL);
             }
             ssize_t n = tun_recv(frame, sizeof(frame), 2000);
@@ -683,6 +697,30 @@ int cmd_raw(int argc, char **argv)
                 if (my_port && h->next_header == IPV69_NEXT_DGRAM &&
                     rd_be16(&h->dst_port) != my_port)
                     continue;
+            }
+            /* P5a: the gateway introduced us (hole punching): someone
+               asked where we are — probe the caller's endpoint directly
+               so both NATs open and the P2P path works */
+            if (h->next_header == IPV69_NEXT_CONTROL && g_ngw > 0 &&
+                my_addr) {
+                const uint8_t *payload =
+                    frame + 14 + IPV69_HEADER_LEN;
+                size_t plen = (size_t)n - 14 - IPV69_HEADER_LEN;
+                if (plen >= 12 && payload[0] == IPV69_CTRL_GW_CALL) {
+                    uint64_t caller = get_addr40(payload + 1);
+                    struct sockaddr_in c4;
+                    memset(&c4, 0, sizeof(c4));
+                    c4.sin_family = AF_INET;
+                    memcpy(&c4.sin_addr, payload + 6, 4);
+                    memcpy(&c4.sin_port, payload + 10, 2);
+                    announce_to(sk, my_addr, src_mac,
+                                (const struct sockaddr_storage *)&c4,
+                                sizeof(c4));
+                    printf("recv: call de %016llx — probe direto\n",
+                           (unsigned long long)caller);
+                    fflush(stdout);
+                    continue;
+                }
             }
             /* dgram auth (--peer/--peer-file): [0x01][pub 32][mac 16][data].
                Verify Poly1305(X25519(our sk, pub), eth+ipv69+[01][pub]+data)
