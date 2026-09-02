@@ -67,13 +67,15 @@ static int run_client(int argc, char **argv, struct icsp_assoc *a,
     uint64_t dst;
     uint16_t port;
     struct client_ctx ctx = { 0, 0 };
-    int hb_mode = 0, reset_mode = 0;
+    int hb_mode = 0, reset_mode = 0, rekey_s = 0;
     const char *msg = "hello icsp";
 
     for (int i = 4; i < argc; i++) {
         if (!strcmp(argv[i], "--echo")) ctx.echo_mode = 1;
         else if (!strcmp(argv[i], "--hb")) hb_mode = 1;
         else if (!strcmp(argv[i], "--reset")) reset_mode = 1;
+        else if (!strcmp(argv[i], "--rekey") && i + 1 < argc)
+            rekey_s = atoi(argv[++i]);
         else msg = argv[i];
     }
     if (argc < 4 || parse_ipv69_addr_port(argv[3], &dst, &port) < 0) {
@@ -85,11 +87,13 @@ static int run_client(int argc, char **argv, struct icsp_assoc *a,
         port = 6969;
     printf("icsp: cliente -> %016llx:%u\n", (unsigned long long)dst, port);
 
-    if (icsp_client_handshake(a, dst, port, sk) < 0)
+    if (icsp_client_handshake(a, dst, port, sk, NULL) < 0)
         return 1;
     printf("icsp: session_key == %02x%02x..%02x%02x\n",
-           a->session_key[0], a->session_key[1],
-           a->session_key[30], a->session_key[31]);
+           a->send_key[0], a->send_key[1],
+           a->send_key[30], a->send_key[31]);
+    if (rekey_s > 0)
+        a->rekey_interval_s = rekey_s;   /* WG-style time-based rekey */
 
     if (hb_mode) {
         printf("icsp: HEARTBEAT ->\n");
@@ -110,8 +114,9 @@ static int run_client(int argc, char **argv, struct icsp_assoc *a,
     printf("icsp: DATA enviado (tsn=%d, stream 1)\n", tsn);
     icsp_data_send(a, 2, (const uint8_t *)"msg na stream 2", 17);
 
-    /* wait for SACK (and echo when --echo); retransmit on idle */
-    time_t deadline = time(NULL) + 3;
+    /* wait for SACK (and echo when --echo); retransmit on idle.
+       With --rekey keep polling past the echo so the timer fires. */
+    time_t deadline = time(NULL) + 3 + (rekey_s > 0 ? rekey_s : 0);
     while (time(NULL) < deadline) {
         int r = icsp_poll(a, 200, client_on_data, &ctx);
         if (r == ICSP_POLL_CLOSED)
@@ -125,7 +130,8 @@ static int run_client(int argc, char **argv, struct icsp_assoc *a,
             if (rt > 0)
                 printf("icsp: retransmitiu DATA (%d)\n", rt);
         }
-        if ((ctx.got_echo || !ctx.echo_mode) && icsp_all_acked(a))
+        if (rekey_s == 0 &&
+            (ctx.got_echo || !ctx.echo_mode) && icsp_all_acked(a))
             break;
     }
     printf("icsp: sack=%d echo=%d\n", icsp_all_acked(a), ctx.got_echo);
@@ -179,8 +185,8 @@ static int run_server(int argc, char **argv, struct icsp_assoc *a,
     if (icsp_server_accept(a, port, sk, peers, n_peers, 30) < 0)
         return 1;
     printf("icsp: session_key == %02x%02x..%02x%02x\n",
-           a->session_key[0], a->session_key[1],
-           a->session_key[30], a->session_key[31]);
+           a->send_key[0], a->send_key[1],
+           a->send_key[30], a->send_key[31]);
     a->sack_loss_pct = loss_pct;        /* fault injection (auto-SACK) */
     printf("icsp: servidor escutando (ctrl-C para sair)\n");
 
@@ -199,8 +205,8 @@ static int run_server(int argc, char **argv, struct icsp_assoc *a,
             a->sack_loss_pct = loss_pct;
             printf("icsp: nova associação aceita — session_key == "
                    "%02x%02x..%02x%02x\n",
-                   a->session_key[0], a->session_key[1],
-                   a->session_key[30], a->session_key[31]);
+                   a->send_key[0], a->send_key[1],
+                   a->send_key[30], a->send_key[31]);
         }
     }
 }
