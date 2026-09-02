@@ -22,6 +22,8 @@
 #include <errno.h>
 #include "IPv69/header.h"
 #include "IPv69/l2.h"
+#include "IPv69/mac1.h"
+#include "IPv69/ratelimit.h"
 #include "ed25519.h"
 #include "ICSP/icsp.h"
 
@@ -124,10 +126,12 @@ int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
     if (ed25519_scalarmult_base(a->eph_pub, eph_priv) != 0)
         return -1;
 
-    /* INIT [ver][streams_in 2][streams_out 2][eph 32][id 32][sig 64] */
-    uint8_t chunk[ICSP_CHUNK_HDR + 1 + 4 + 32 + 32 + 64];
+    /* INIT [ver][streams_in 2][streams_out 2][eph 32][id 32][sig 64][mac1 16]
+     * mac1 = Poly1305(HASH("ipv69-mac1" || dst_addr), INIT..sig): the
+     * cheap pre-auth filter the server checks before any crypto. */
+    uint8_t chunk[ICSP_CHUNK_HDR + 1 + 4 + 32 + 32 + 64 + MAC1_LEN];
     uint8_t *d = icsp_chunk_put(chunk, ICSP_CHUNK_INIT,
-                                1 + 4 + 32 + 32 + 64);
+                                1 + 4 + 32 + 32 + 64 + MAC1_LEN);
     d[0] = ICSP_VERSION;
     d[1] = (uint8_t)(a->streams_in >> 8);
     d[2] = (uint8_t)a->streams_in;
@@ -136,7 +140,13 @@ int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
     memcpy(d + 5, a->eph_pub, 32);
     memcpy(d + 37, a->id_pub, 32);
     ed25519_sign(d + 69, d, 5 + 32 + 32, sk);
-    if (icsp_send_pkt(a, chunk, sizeof(chunk)) < 0) {
+    {
+        uint8_t mkey[32];
+        mac1_key(dst_addr, mkey);
+        mac1_compute(mkey, d, 5 + 32 + 32 + 64, d + 5 + 32 + 32 + 64);
+    }
+    if (icsp_send_pkt(a, chunk,
+                      ICSP_CHUNK_HDR + 1 + 4 + 32 + 32 + 64 + MAC1_LEN) < 0) {
         perror("icsp: send INIT");
         return -1;
     }
@@ -230,9 +240,28 @@ int icsp_server_accept(struct icsp_assoc *a, uint16_t port,
             continue;
         if (payload[ICSP_HEADER_LEN] != ICSP_CHUNK_INIT)
             continue;
+        const struct ipv69_header *fh =
+            (const struct ipv69_header *)(frame + 14);
         const uint8_t *cd = payload + ICSP_HEADER_LEN + ICSP_CHUNK_HDR;
         if (cd[0] != ICSP_VERSION)
             continue;
+        /* cheap pre-auth filter (WireGuard mac1): drop garbage and
+           throttled senders silently, BEFORE any signature/ECDH work */
+        if (plen < ICSP_HEADER_LEN + ICSP_CHUNK_HDR + 1 + 4 + 32 + 32 + 64 + MAC1_LEN)
+            continue;
+        {
+            uint8_t mkey[32];
+            mac1_key(get_addr40(fh->dest), mkey);
+            if (mac1_verify(mkey, cd, 1 + 4 + 32 + 32 + 64,
+                            cd + 1 + 4 + 32 + 32 + 64) != 0)
+                continue;               /* silent drop */
+        }
+        {
+            uint8_t rid[8] = { 0 };
+            memcpy(rid, frame + 6, 6);  /* sender MAC */
+            if (!rate_allow(rid, 10, 20, 1))
+                continue;               /* throttled: silent */
+        }
         a->assoc_id = (uint32_t)(((uint32_t)payload[6] << 24) |
                                  ((uint32_t)payload[7] << 16) |
                                  ((uint32_t)payload[8] << 8) |
