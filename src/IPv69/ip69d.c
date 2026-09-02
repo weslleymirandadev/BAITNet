@@ -1,18 +1,17 @@
-/* ip69d - IPv69 interface daemon.
+/* ip69d - IPv69 bring-up daemon (net up / tun).
  *
- * Owns a 40-bit address on behalf of the machine: runs the DHCP69
- * client on a real interface, keeps the address bound to a socket
- * (so it survives any single process), brings a TAP interface up
- * (ip69-0) and answers queries over a local unix socket.
+ * Brings the device up and keeps it up: runs the DHCP69 client on a
+ * real interface with retry + backoff, keeps the lease alive (renew on
+ * timer or SIGUSR1), optionally creates a TAP interface (--tap) and
+ * answers lease/renew/status queries over a local unix socket.
  *
- * Usage: ip69d <ifname|ifindex> [--tap NAME] [--sock PATH]
- *   --tap  TAP interface name (default ip69-0)
+ * Usage: ipv69 <net up|tun> <ifname|ifindex> [--tap NAME] [--sock PATH]
+ *   --tap  TAP interface name (optional: no TAP by default)
  *   --sock unix socket path (default /tmp/ip69.sock)
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <time.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -29,10 +28,15 @@
 #include "IPv69/af69.h"
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
+#include "IPv69/l2.h"
+#include "IPv69/plat.h"
+#include "IPv69/keyring.h"
+#include "IPv69/mac1.h"
 #include "ed25519.h"
 
 #define BCAST_MAC { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }
 #define DHCP_TIMEOUT_MS 3000
+#define DHCP_ATTEMPTS 3
 
 struct lease {
     uint64_t addr;
@@ -112,8 +116,6 @@ static int dhcp_raw_open(struct dhcp_raw *d, const char *ifname)
     if (bind(d->fd, (struct sockaddr *)&sll, sizeof(sll)) < 0) {
         perror("bind"); return -1;
     }
-    struct timeval tv = { .tv_sec = 0, .tv_usec = DHCP_TIMEOUT_MS * 1000 };
-    setsockopt(d->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     return 0;
 }
 
@@ -148,11 +150,16 @@ static int dhcp_raw_send(struct dhcp_raw *d, const uint8_t *pkt, size_t plen)
                   (struct sockaddr *)&sll, sizeof(sll));
 }
 
-/* wait for a DHCP control reply whose payload MAC matches ours */
-static ssize_t dhcp_raw_recv(struct dhcp_raw *d, uint8_t *buf, size_t bufsz)
+/* wait for a DHCP control reply whose payload MAC matches ours, up to
+ * timeout_ms (SO_RCVTIMEO is set per call so retries can back off) */
+static ssize_t dhcp_raw_recv(struct dhcp_raw *d, uint8_t *buf, size_t bufsz,
+                             int timeout_ms)
 {
     ssize_t n;
+    struct timeval tv = { timeout_ms / 1000,
+                          (timeout_ms % 1000) * 1000 };
 
+    setsockopt(d->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     for (;;) {
         n = recv(d->fd, buf, bufsz, 0);
         if (n < 14 + IPV69_HEADER_LEN + 7)
@@ -183,21 +190,6 @@ struct transport {
     uint8_t server_pub[32];   /* validate OFFER/ACK (optional) */
     int has_server_pub;
 };
-
-static int hex_decode(const char *hex, uint8_t *out, size_t max)
-{
-    size_t hl = strlen(hex);
-
-    if (hl % 2 || hl / 2 > max)
-        return -1;
-    for (size_t j = 0; j < hl / 2; j++) {
-        unsigned v;
-        if (sscanf(hex + 2 * j, "%2x", &v) != 1)
-            return -1;
-        out[j] = (uint8_t)v;
-    }
-    return (int)(hl / 2);
-}
 
 /* sign `plen` bytes at msg (type..lease); append pub + sig */
 static size_t sign_msg(const struct transport *t, uint8_t *msg, size_t plen)
@@ -232,12 +224,19 @@ static int check_reply(const struct transport *t, const uint8_t *msg,
     return ed25519_verify(msg, body, ssig, t->server_pub) == 0;
 }
 
+/* one DISCOVER->OFFER->REQUEST->ACK round with retry + backoff on each
+ * wait (WireGuard REKEY_TIMEOUT discipline, same as dhcp_discover).
+ * Every outgoing control carries the mac1 pre-auth tag the dhcpd
+ * requires before any Ed25519 work. Returns 0 with *l filled. */
 static int dhcp_acquire(struct transport *t, struct lease *l)
 {
-    uint8_t discover[1 + 6 + 32 + 64], req[1 + 6 + 5 + 32 + 64], buf[1600];
+    uint8_t discover[1 + 6 + 32 + 64 + MAC1_LEN];
+    uint8_t req[1 + 6 + 5 + 32 + 64 + MAC1_LEN];
+    uint8_t buf[1600], mkey[32];
     size_t dlen, rlen;
     ssize_t n;
     struct dhcp_raw dr;
+    int offer_ok = 0, ack_ok = 0;
 
     if (t->fd < 0) {
         if (dhcp_raw_open(&dr, t->ifname_s) < 0)
@@ -250,45 +249,83 @@ static int dhcp_acquire(struct transport *t, struct lease *l)
         memcpy(dr.mac, t->mac, 6);
     }
 
+    /* mac1 key is bound to the frame dst (broadcast for DHCP): the
+       server re-derives it from the received frame, zero config */
+    mac1_key(IPV69_BCAST_ADDR, mkey);
+
+    /* DISCOVER [7][mac] + pub + sig + mac1 */
     discover[0] = IPV69_CTRL_DHCP_DISCOVER;
     memcpy(discover + 1, t->mac, 6);
-    dlen = 7;
-    dlen = sign_msg(t, discover, dlen);
+    dlen = sign_msg(t, discover, 7);
+    mac1_compute(mkey, discover, dlen, discover + dlen);
+    dlen += MAC1_LEN;
     if (dhcp_raw_send(&dr, discover, dlen) < 0) {
         perror("send DISCOVER"); return -1;
     }
-    n = dhcp_raw_recv(&dr, buf, sizeof(buf));
-    if (n < 16 || buf[0] != IPV69_CTRL_DHCP_OFFER) {
+
+    for (int attempt = 0; attempt < DHCP_ATTEMPTS && !offer_ok; attempt++) {
+        if (attempt > 0) {
+            plat_sleep_ms(200 * attempt);
+            dhcp_raw_send(&dr, discover, dlen);     /* re-send DISCOVER */
+        }
+        uint64_t wait = (uint64_t)(1000 << attempt) + rand() % 200;
+        for (;;) {
+            n = dhcp_raw_recv(&dr, buf, sizeof(buf), (int)wait);
+            if (n <= 0) break;                      /* timeout: retry */
+            if (n < 16 || buf[0] != IPV69_CTRL_DHCP_OFFER) continue;
+            if (memcmp(buf + 1, t->mac, 6)) continue;
+            if (!check_reply(t, buf, (size_t)n)) {
+                fprintf(stderr, "ip69d: OFFER signature invalid\n");
+                return -1;
+            }
+            l->addr = get_addr40(buf + 7);
+            l->lease_sec = ((uint32_t)buf[12] << 24) | ((uint32_t)buf[13] << 16) |
+                           ((uint32_t)buf[14] << 8) | buf[15];
+            l->expiry = time(NULL) + l->lease_sec;
+            offer_ok = 1;
+            break;
+        }
+    }
+    if (!offer_ok) {
         fprintf(stderr, "ip69d: OFFER timeout\n");
         return -1;
     }
-    if (!check_reply(t, buf, (size_t)n)) {
-        fprintf(stderr, "ip69d: OFFER signature invalid\n");
-        return -1;
-    }
-    l->addr = get_addr40(buf + 7);
-    l->lease_sec = ((uint32_t)buf[12] << 24) | ((uint32_t)buf[13] << 16) |
-                   ((uint32_t)buf[14] << 8) | buf[15];
-    l->expiry = time(NULL) + l->lease_sec;
 
+    /* REQUEST [9][mac][addr5] + pub + sig + mac1 */
     req[0] = IPV69_CTRL_DHCP_REQUEST;
     memcpy(req + 1, t->mac, 6);
     put_addr40(req + 7, l->addr);
-    rlen = 12;
-    rlen = sign_msg(t, req, rlen);
+    rlen = sign_msg(t, req, 12);
+    mac1_compute(mkey, req, rlen, req + rlen);
+    rlen += MAC1_LEN;
     if (dhcp_raw_send(&dr, req, rlen) < 0) {
         perror("send REQUEST"); return -1;
     }
-    n = dhcp_raw_recv(&dr, buf, sizeof(buf));
-    if (n < 16 || buf[0] != IPV69_CTRL_DHCP_ACK) {
+
+    for (int attempt = 0; attempt < DHCP_ATTEMPTS && !ack_ok; attempt++) {
+        if (attempt > 0) {
+            plat_sleep_ms(200 * attempt);
+            dhcp_raw_send(&dr, req, rlen);          /* re-send REQUEST */
+        }
+        uint64_t wait = (uint64_t)(1000 << attempt) + rand() % 200;
+        for (;;) {
+            n = dhcp_raw_recv(&dr, buf, sizeof(buf), (int)wait);
+            if (n <= 0) break;
+            if (n < 16 || buf[0] != IPV69_CTRL_DHCP_ACK) continue;
+            if (memcmp(buf + 1, t->mac, 6)) continue;
+            if (!check_reply(t, buf, (size_t)n)) {
+                fprintf(stderr, "ip69d: ACK signature invalid\n");
+                return -1;
+            }
+            l->expiry = time(NULL) + l->lease_sec;
+            ack_ok = 1;
+            break;
+        }
+    }
+    if (!ack_ok) {
         fprintf(stderr, "ip69d: ACK timeout\n");
         return -1;
     }
-    if (!check_reply(t, buf, (size_t)n)) {
-        fprintf(stderr, "ip69d: ACK signature invalid\n");
-        return -1;
-    }
-    l->expiry = time(NULL) + l->lease_sec;
     printf("ip69d: address %016llx (lease %us)\n",
            (unsigned long long)l->addr, l->lease_sec);
     return 0;
@@ -314,7 +351,7 @@ static int sock_create(const char *path)
 }
 
 static void sock_serve(int sfd, const struct transport *t,
-                       const struct lease *l, const char *tapname)
+                       const struct lease *l, const char *showname)
 {
     int cfd = accept(sfd, NULL, NULL);
     char cmd[64];
@@ -337,7 +374,7 @@ static void sock_serve(int sfd, const struct transport *t,
                     "    inet69 %016llx/40 brd ffffffffff scope global dynamic\n"
                     "       valid_lft %ldsec preferred_lft %ldsec\n"
                     "    link ifindex %d mode raw\n",
-                    1, tapname, (unsigned long long)l->addr, remain, remain,
+                    1, showname, (unsigned long long)l->addr, remain, remain,
                     t->ifindex);
         }
     }
@@ -348,7 +385,7 @@ static void sock_serve(int sfd, const struct transport *t,
 
 int cmd_tun(int argc, char **argv)
 {
-    const char *ifname = NULL, *tapname = "ip69-0", *sockpath = "/tmp/ip69.sock";
+    const char *ifname = NULL, *tapname = NULL, *sockpath = "/tmp/ip69.sock";
     struct transport t;
     struct lease l;
     struct pollfd pfd[2];
@@ -375,15 +412,15 @@ int cmd_tun(int argc, char **argv)
         } else if (!ifname) ifname = argv[i];
         else {
             fprintf(stderr,
-                    "Usage: %s <ifname|ifindex> [--tap NAME] [--sock PATH]\n"
-                    "       [--key PRIV_HEX] [--server-pub PUB_HEX]\n",
-                    argv[0]);
+                    "Usage: ipv69 <net up|tun> <ifname|ifindex> [--tap NAME]\n"
+                    "       [--sock PATH] [--key PRIV_HEX] [--server-pub PUB_HEX]\n");
             return 1;
         }
     }
     if (!ifname) {
-        fprintf(stderr, "Usage: %s <ifname|ifindex> [--tap NAME] [--sock PATH]\n",
-                argv[0]);
+        fprintf(stderr,
+                "Usage: ipv69 <net up|tun> <ifname|ifindex> [--tap NAME]\n"
+                "       [--sock PATH] [--key PRIV_HEX] [--server-pub PUB_HEX]\n");
         return 1;
     }
 
@@ -400,28 +437,44 @@ int cmd_tun(int argc, char **argv)
     signal(SIGUSR1, on_sigusr1);
 
     if (!t.has_sk) {
-        /* auto: load ~/.ipv69/key or generate + register it */
-        char kpath[256];
-        ed25519_keyfile_default_path(kpath, sizeof(kpath));
-        if (ed25519_keyfile_load_or_create(kpath, t.sk, t.server_pub) < 0) {
+        /* auto: load/create the ~/.hosts69 keyring (same identity the
+           rest of the stack uses — dhcpd allowlists match this key) */
+        char kdir[256], kpath[512], kpub[512], comment[128];
+        uint8_t pub[32];
+        keyring_paths(kdir, sizeof(kdir), kpath, sizeof(kpath),
+                      kpub, sizeof(kpub));
+        if (keyring_load_or_create(kpath, kpub, t.sk, pub, comment,
+                                   sizeof(comment)) < 0) {
             fprintf(stderr, "ip69d: could not load/create key at %s\n", kpath);
             return 1;
         }
         t.has_sk = 1;
     }
 
-    tapfd = tap_create(tapname);
-    if (tapfd >= 0)
-        tap_up(tapname);
-    else
-        fprintf(stderr, "ip69d: no TAP (address still held by socket)\n");
+    /* the name status shows: the TAP when one was really created
+       (tapfd >= 0), the raw ifname otherwise */
+    const char *showname = ifname;
+    if (tapname) {
+        tapfd = tap_create(tapname);
+        if (tapfd >= 0) {
+            tap_up(tapname);
+            showname = tapname;
+        } else {
+            fprintf(stderr, "ip69d: could not create TAP %s "
+                    "(address still held by socket)\n", tapname);
+        }
+    } else {
+        fprintf(stderr, "ip69d: no TAP interface (use --tap NAME to create one)\n");
+    }
 
     if (dhcp_acquire(&t, &l) < 0)
         return 1;
 
     sfd = sock_create(sockpath);
     if (sfd < 0) return 1;
-    printf("ip69d: %s inet69 %016llx (sock %s)\n", tapname,
+    /* status shows the TAP name when one exists, the raw ifname otherwise */
+    printf("ip69d: %s inet69 %016llx (sock %s)\n",
+           showname,
            (unsigned long long)l.addr, sockpath);
 
     pfd[0].fd = sfd;  pfd[0].events = POLLIN;
@@ -439,7 +492,7 @@ int cmd_tun(int argc, char **argv)
         }
         if (poll(pfd, 2, to) > 0) {
             if (pfd[0].revents & POLLIN)
-                sock_serve(sfd, &t, &l, tapname);
+                sock_serve(sfd, &t, &l, showname);
             if (pfd[1].revents & POLLIN) {
                 uint8_t buf[1600];
                 recv(t.fd, buf, sizeof(buf), 0);  /* drain */
