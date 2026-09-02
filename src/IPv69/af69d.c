@@ -242,30 +242,6 @@ static int learn_peer(struct ctx *c, const uint8_t *pub, const uint8_t *mac)
     return 1;
 }
 
-/* tell the kernel module who owns a leased address (dgram source auth).
- * Best effort: on kernels without AF_69 there is nothing to update.
- * (Linux only — the AF_69 socket and ioctls do not exist on Windows.) */
-#ifndef _WIN32
-static void binding_update(const uint8_t *mac, uint64_t addr,
-                           uint32_t lease_sec, int del)
-{
-    struct ipv69_bind_req req;
-    int fd = socket(AF_69, SOCK_DGRAM, 0);
-
-    if (fd < 0)
-        return;
-    memset(&req, 0, sizeof(req));
-    memcpy(req.mac, mac, 6);
-    req.addr = addr;
-    req.lease_sec = lease_sec;
-    int rc = ioctl(fd, del ? IPV69_BIND_DEL : IPV69_BIND_ADD, &req);
-    if (rc < 0)
-        fprintf(stderr, "af69d: binding ioctl %s: %s\n",
-                del ? "DEL" : "ADD", strerror(errno));
-    close(fd);
-}
-#endif
-
 /* ---- lease table ----------------------------------------------------- */
 
 static struct lease *lease_find(struct ctx *c, const uint8_t *mac)
@@ -649,9 +625,6 @@ int cmd_dhcpd(int argc, char **argv)
                 put_be32(ack + 12, c.lease_sec);
                 alen = sign_msg(&c, ack, alen);
                 send_ctrl(&c, ack, alen, mac);
-#ifndef _WIN32
-                binding_update(mac, req_addr, c.lease_sec, 0);
-#endif
                 printf("af69d: REQUEST %s -> ACK %016llx\n",
                        ms, (unsigned long long)req_addr);
             } else {
@@ -661,10 +634,6 @@ int cmd_dhcpd(int argc, char **argv)
         } else {                    /* RELEASE */
             uint64_t rel_addr = plen >= 12 ? get_addr40(buf + 7) : 0;
             lease_release(&c, mac, rel_addr);
-#ifndef _WIN32
-            if (rel_addr)
-                binding_update(mac, rel_addr, 0, 1);
-#endif
             printf("af69d: RELEASE %s %016llx\n",
                    ms, (unsigned long long)rel_addr);
         }
