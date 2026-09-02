@@ -79,6 +79,8 @@ static int n_auth;
 
 static struct peer peers[MAX_PEERS];
 
+static int routes_dirty;        /* a local client was learned: re-advertise */
+
 
 /* longest-prefix match (WireGuard cryptokey routing): the most specific
  * range containing `addr` wins; exact /40 peers are the common case. */
@@ -183,6 +185,7 @@ static struct peer *peer_learn_auth(uint64_t addr, const uint8_t *mac,
     memcpy(peers[slot].key, key, 32);
     peers[slot].ep = *ep;
     peers[slot].last = time(NULL);
+    routes_dirty = 1;           /* advertise the new route promptly */
     return &peers[slot];
 }
 
@@ -1038,6 +1041,12 @@ int cmd_gw(int argc, char **argv)
                 else
                     i++;
             route_expire(now);
+        }
+        /* a new local client was learned: advertise its route now
+           (the periodic 30s announce is only a refresh) */
+        if (routes_dirty && n_glink > 0) {
+            gw_route_announce();
+            routes_dirty = 0;
         }
         struct pollfd pf[2] = {
             { .fd = fd, .events = POLLIN },
