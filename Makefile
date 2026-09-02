@@ -51,9 +51,16 @@ $(BUILD)/icsp_chat: $(CHAT_SRC) include/ICSP/icsp.h include/IPv69/keyring.h | $(
 # report "nao suportado no Windows".
 # gcc.exe runs through WSL interop: the CWD is translated, so relative
 # paths work, but the Npcap SDK needs a Windows-style path (fwd slashes).
-# Npcap SDK zip: https://npcap.com/dist/npcap-sdk-1.13.zip -> C:/Users/user/
-WIN_CC     ?= /mnt/c/ProgramData/mingw64/mingw64/bin/gcc.exe
-WIN_SDK    ?= C:/Users/user/npcap-sdk
+# Toolchain paths are probed, not hardcoded: override with
+#   make win WIN_CC=/path/to/gcc.exe WIN_SDK=C:/path/to/npcap-sdk
+# Npcap SDK zip: https://npcap.com/dist/npcap-sdk-1.13.zip
+WIN_USER   ?= $(shell cmd.exe /c echo %USERNAME% 2>/dev/null | tr -d '\r')
+WIN_CC     ?= $(or $(firstword $(wildcard \
+	/mnt/c/ProgramData/mingw64/mingw64/bin/gcc.exe \
+	/mnt/c/msys64/mingw64/bin/gcc.exe \
+	/mnt/c/mingw64/bin/gcc.exe \
+	/mnt/c/MinGW/bin/gcc.exe)),gcc.exe)
+WIN_SDK    ?= $(if $(WIN_USER),C:/Users/$(WIN_USER)/npcap-sdk,C:/npcap-sdk)
 WIN_CFLAGS := -Wall -Wextra -O2 -static -Iinclude -Ilib/ed25519/include \
 	-I$(WIN_SDK)/Include
 WIN_LIBS   := $(WIN_SDK)/Lib/x64/wpcap.lib -lws2_32 -liphlpapi -lbcrypt
