@@ -17,6 +17,44 @@ C with static libc — the focus remains working directly with memory, bytes,
 sockets and network interfaces, with no high-level abstractions beyond
 libc. The C implementation is portable to future phases (embedded, ESP32).
 
+## How the network fits together
+
+IPv69 is a link-layer protocol with its own addressing and security, so
+the network it forms is a set of **islands** — every place that shares a
+wire, a Wi-Fi network, or any L2 medium you control runs IPv69 natively,
+with no IP of any kind on the wire:
+
+```
+ island A (office LAN)              island B (home LAN)
+ ┌───────────────────┐              ┌───────────────────┐
+ │ phone             │              │ laptop            │
+ │ laptop        gw ─┼── internet ──┼── gw        phone │
+ └───────────────────┘              └───────────────────┘
+      native L2 (0x6969)                native L2 (0x6969)
+```
+
+To join islands that are in *different places*, each island runs a
+**gateway** (`ipv69 gw`) on any host with a public IP — a VPS, or a home
+connection with a forwarded port. A gateway is not a middlebox that all
+traffic passes through; it is an **entry point to the mesh** with two
+jobs:
+
+1. **Introduce** — when a client asks "where is address X?", the gateway
+   answers with X's endpoint (and tells X who asked), so the two peers
+   talk **directly** and the gateway leaves the path;
+2. **Relay as a fallback** — if a direct path cannot open (for example
+   two strict NATs), the gateway forwards the frames and the
+   communication still works.
+
+Gateways can know each other (`--peer-gw`): each one announces the
+clients it serves and learns the routes of its neighbours, so a client
+on island A reaches a client on island B the same way it reaches its
+own island. There is **no central server and no load balancer**: every
+gateway serves its own island, so load is distributed by construction,
+and clients keep a *list* of gateways (`--remote gw1:6969,gw2:6969`)
+purely for redundancy — if one is down they fail over. More gateways
+means more entry points to the mesh, never a bigger middlebox.
+
 ## Roadmap
 
 ### Phase 1 — Protocol
