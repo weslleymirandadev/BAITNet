@@ -4,16 +4,17 @@
  * cmd_* function from the project sources; argv[1] dispatches:
  *
  *   ipv69 gw       tunnel gateway (was ipv69gw)      [--port N] [--iface eth0]
- *   ipv69 tun      interface daemon: TAP + address   (Linux only)
+ *   ipv69 net up   bring the device up: lease + keepalive daemon (Linux)
+ *   ipv69 tun      same daemon as `net up` (alias, --tap optional)
  *   ipv69 addr     identity-derived address          [--dad]
  *   ipv69 keygen   generate Ed25519 key pairs
  *   ipv69 dhcpd    DHCP69 server (private nets)
- *   ipv69 dhcp     DHCP69 client
+ *   ipv69 dhcp     DHCP69 client (one-shot, for scripts)
  *   ipv69 send/recv/ping
  *   ipv69 lease/renew/status                         (Linux only)
  *
  * Windows build: the same binary minus the Linux-only commands
- * (tun/lease/status need TAP or unix sockets).
+ * (net up/tun/lease/status need TAP, unix sockets or a daemon).
  */
 #include <stdio.h>
 #include <string.h>
@@ -37,23 +38,25 @@ static void usage(void)
         "Usage: ipv69 <subcommand> [args]\n"
         "\n"
         "  gw     [--port N] [--iface eth0]   tunnel gateway (UDP, multi-peer)\n"
-        "  tun    <ifname> [--tap NAME] [--remote gw:port] [--server-pub HEX]\n"
-        "                                       hold address + create TAP (Linux)\n"
+        "  net up <ifname> [--tap NAME]       bring the device up: acquire a\n"
+        "                                       lease and keep it alive (Linux)\n"
+        "  tun    <ifname> [--tap NAME]       alias of `net up`\n"
         "  addr   [--dad]                      print identity-derived 40-bit address\n"
         "  keygen [count]                      generate Ed25519 key pairs\n"
         "  dhcpd  <ifname> [--allow MAC] [--peer HEX] [--peer-file F]\n"
         "         [--learn] [--key HEX] [pool_start pool_end lease_sec]\n"
         "                                       DHCP69 server (private networks)\n"
         "  dhcp   <ifname> [--server-pub HEX] [--key HEX] [--remote gw:port]\n"
-        "                                       DHCP69 client (get a lease)\n"
+        "                                       DHCP69 client (one-shot lease)\n"
         "  send   <ifname> <dst[:port]> [src_port] [payload] [--remote gws]\n"
         "  recv   <ifname> [addr[:port]] [--remote gws]   listen for dgrams\n"
         "  ping   <ifname> <dst> [payload]      echo request\n"
-        "  lease | renew | status [-s PATH]     query the tun daemon (Linux)\n"
+        "  lease | renew | status [-s PATH]     query the bring-up daemon (Linux)\n"
         "  icsp   <server|client> <ifname> [dst:port]    stream handshake (nh=2)\n"
         "\n"
         "Ports are DECIMAL and glued to the address (addr:16 = port 16).\n"
-        "On Windows, tun/lease/status are not available.\n");
+        "The keepalive daemon (net up/tun/lease/status) is Linux only;\n"
+        "on Windows 'net up' is a one-shot lease.\n");
 }
 
 int main(int argc, char **argv)
@@ -83,7 +86,15 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "keygen"))    return cmd_keygen(argc - 1, argv + 1);
     if (!strcmp(cmd, "dhcpd"))     return cmd_dhcpd(argc - 1, argv + 1);
     if (!strcmp(cmd, "dhcp"))      return cmd_raw(argc, argv);
-    if (!strcmp(cmd, "net"))       return cmd_raw(argc, argv);
+    if (!strcmp(cmd, "net")) {
+#ifndef _WIN32
+        /* `net up <ifname>` = the bring-up daemon (same as `tun`): the
+           one-shot lease code below is then only the Windows path. */
+        if (argc >= 4 && !strcmp(argv[2], "up"))
+            return cmd_tun(argc - 2, argv + 2);   /* [up, ifname, ...] */
+#endif
+        return cmd_raw(argc, argv);
+    }
     if (!strcmp(cmd, "send"))      return cmd_raw(argc, argv);
     if (!strcmp(cmd, "recv"))      return cmd_raw(argc, argv);
     if (!strcmp(cmd, "ping"))      return cmd_raw(argc, argv);
