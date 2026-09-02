@@ -3,10 +3,6 @@ CC      := gcc
 CFLAGS  := -Wall -Wextra -O2 -static -Iinclude -Ilib/ed25519/include
 BUILD   := build
 
-.PHONY: all ipv69 chat caps win
-
-all: ipv69 chat
-
 $(BUILD):
 	mkdir -p $(BUILD)
 
@@ -40,11 +36,24 @@ ICSP_SRC := src/ICSP/icsp.c src/ICSP/icsp_handshake.c \
 	src/ICSP/icsp_data.c src/ICSP/icsp_life.c src/ICSP/icsp_session.c
 CHAT_SRC := examples/icsp_chat.c src/IPv69/keyring.c src/IPv69/parse.c \
 	src/IPv69/l2.c src/IPv69/mac1.c src/IPv69/ratelimit.c $(ICSP_SRC) $(ED25519)
+# group-chat hub: same libs, multi-association server (POSIX poll —
+# Linux only, like tun)
+HUB_SRC := examples/icsp_hub.c src/IPv69/keyring.c src/IPv69/parse.c \
+	src/IPv69/l2.c src/IPv69/mac1.c src/IPv69/ratelimit.c $(ICSP_SRC) $(ED25519)
+
+.PHONY: all ipv69 chat hub win
+
+all: ipv69 chat
 
 chat: $(BUILD)/icsp_chat
 
 $(BUILD)/icsp_chat: $(CHAT_SRC) include/ICSP/icsp.h include/IPv69/keyring.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(CHAT_SRC)
+
+hub: $(BUILD)/icsp_hub
+
+$(BUILD)/icsp_hub: $(HUB_SRC) include/ICSP/icsp.h include/IPv69/keyring.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $(HUB_SRC)
 
 # --- Windows build (MinGW + Npcap): full ipv69.exe + chat, raw L2 via
 # libpcap. Linux-only commands (tun/lease/status) are excluded and
