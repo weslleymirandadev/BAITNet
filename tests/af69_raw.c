@@ -482,13 +482,14 @@ int cmd_raw(int argc, char **argv)
         if (g_ngw > 0 && !my_addr) {
             /* tunnel mode: derive the address from the identity when none
                given, and announce periodically so the gateway learns us */
-            uint8_t sk[64], derived[5];
+            uint8_t derived[5];
             if (load_auto_key(sk) == 0) {
                 ipv69_addr_derive(derived, sk + 32, 'C');
                 my_addr = get_addr40(derived);
                 printf("recv: addr derivado da identidade: %016llx (classe C)\n",
                        (unsigned long long)my_addr);
             }
+            has_sk = 1;
         } else if (!my_addr) {
             /* local: discover the lease silently (registers the kernel
                binding for this MAC) — the address is never user-chosen.
@@ -508,15 +509,24 @@ int cmd_raw(int argc, char **argv)
         if (my_addr)
             printf("bound src=%016llx port=%04x (filtrando)\n",
                    (unsigned long long)my_addr, my_port);
+        /* the signed announce needs the identity even with --remote */
+        if (g_ngw > 0 && !has_sk) {
+            if (load_auto_key(sk) < 0)
+                return 1;
+            has_sk = 1;
+        }
         time_t last_ann = 0;
         for (;;) {
-            /* announce: ND request for ourselves -> gateway learns us */
+            /* announce: signed ND request for ourselves -> the gateway
+               learns our authenticated range (cryptokey routing) */
             if (g_ngw > 0 && my_addr && time(NULL) - last_ann >= 2) {
-                uint8_t req[1 + 5] = { IPV69_CTRL_ND_REQUEST };
-                put_addr40(req + 1, my_addr);
+                uint8_t ann[1 + 5 + 32 + 64] = { IPV69_CTRL_ND_REQUEST };
+                put_addr40(ann + 1, my_addr);
+                memcpy(ann + 6, sk + 32, 32);
+                ed25519_sign(ann + 38, ann, 6, sk);
                 size_t l = build_frame(frame, bcast, src_mac, my_addr,
                                        0xFFFFFFFFFFULL, IPV69_NEXT_CONTROL,
-                                       64, 0, 0, req, sizeof(req));
+                                       64, 0, 0, ann, sizeof(ann));
                 tun_send(bcast, frame, l);
                 last_ann = time(NULL);
             }
@@ -559,13 +569,14 @@ int cmd_raw(int argc, char **argv)
            local: silent DHCP discovers the real lease;
            tunnel: derived from the identity (class C). */
         if (g_ngw > 0) {
-            uint8_t sk[64], derived[5];
+            uint8_t derived[5];
             if (load_auto_key(sk) == 0) {
                 ipv69_addr_derive(derived, sk + 32, 'C');
                 src = get_addr40(derived);
                 printf("send: src derivado da identidade: %016llx\n",
                        (unsigned long long)src);
             }
+            has_sk = 1;
         } else {
             if (!has_sk && load_auto_key(sk) < 0)
                 return 1;
@@ -581,12 +592,15 @@ int cmd_raw(int argc, char **argv)
         }
         plen = dlen;
         if (g_ngw > 0 && dst != 0xFFFFFFFFFFULL) {
-            /* announce first so the gateway knows us (QUERY gate).
-               Uses `af`; the dgram is built AFTER, in its own buffer,
-               so the announce does not clobber it. */
-            uint8_t ann[1 + 5] = { IPV69_CTRL_ND_REQUEST };
+            /* announce first so the gateway knows us (QUERY gate) —
+               signed, so the gateway can authenticate our range. Uses
+               `af`; the dgram is built AFTER, in its own buffer, so the
+               announce does not clobber it. */
+            uint8_t ann[1 + 5 + 32 + 64] = { IPV69_CTRL_ND_REQUEST };
             uint8_t af[1600];
             put_addr40(ann + 1, src);
+            memcpy(ann + 6, sk + 32, 32);
+            ed25519_sign(ann + 38, ann, 6, sk);
             size_t alen = build_frame(af, bcast, src_mac, src,
                                       0xFFFFFFFFFFULL, IPV69_NEXT_CONTROL,
                                       64, 0, 0, ann, sizeof(ann));
