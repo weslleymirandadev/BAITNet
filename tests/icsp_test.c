@@ -105,9 +105,11 @@ static int run_client(int argc, char **argv, struct icsp_assoc *a,
         icsp_stream_reset(a, 3, 0);
     }
 
-    /* send the message on stream 1 (and a second on stream 2) */
+    /* send the message on stream 1 (and a second on stream 2).
+       data_send returns the TSN (uint32 — may be negative as int with
+       the random initial TSN); only -1 means failure. */
     int tsn = icsp_data_send(a, 1, (const uint8_t *)msg, strlen(msg));
-    if (tsn < 0) {
+    if (tsn == -1) {
         fprintf(stderr, "icsp: data_send falhou\n");
         return 1;
     }
