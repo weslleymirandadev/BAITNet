@@ -25,11 +25,9 @@ static void usage_general(void)
         "  lease       show the lease held by the tun daemon\n"
         "  renew       renew the lease\n"
         "  status      tun daemon status\n"
-        "  test        AF_69 socket client (kernel module)\n"
         "  icsp        ICSP stream handshake + data (nh=2)\n"
         "\n"
-        "Legacy binary names also work as aliases (af69_raw, af69d, ip69d,\n"
-        "ip69, ipv69gw, ipv69-keygen, af69_test).\n");
+        "Ports are DECIMAL and glued to the address (addr:16 = port 16).\n");
 }
 
 static void usage_gw(void)
@@ -220,17 +218,6 @@ static void usage_ip69(void)
         "  status   daemon status\n");
 }
 
-static void usage_test(void)
-{
-    fprintf(stderr,
-        "ipv69 test - AF_69 socket client (kernel module af69)\n"
-        "\n"
-        "Usage: ipv69 test <ifindex> <recv|send|ping|dhcp> ...\n"
-        "\n"
-        "Exercises the in-kernel AF_69 protocol family (needs the af69\n"
-        "module loaded). Ifindex is the interface number (ip link show).\n");
-}
-
 static void usage_icsp(void)
 {
     fprintf(stderr,
@@ -279,8 +266,7 @@ int cmd_help(int argc, char **argv)
     else if (!strcmp(c, "ping"))  usage_ping();
     else if (!strcmp(c, "lease") || !strcmp(c, "renew") ||
              !strcmp(c, "status")) usage_ip69();
-    else if (!strcmp(c, "test"))  usage_test();
-    else if (!strcmp(c, "icsp"))  usage_icsp();
+    else if (!strcmp(c, "icsp"))   usage_icsp();
     else {
         fprintf(stderr, "IPv69: no help for '%s'\n", c);
         usage_general();
