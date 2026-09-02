@@ -560,6 +560,32 @@ make chat        # builds build/icsp_chat separately
 The example links only the ICSP core + keyring + ed25519 + l2.c —
 read `examples/icsp_chat.c` as the template for your own ICSP tool.
 
+### Group chat hub (`make hub`)
+
+`build/icsp_hub` is a second standalone example: a **multi-association
+group-chat server**. ICSP associations are 1:1, so a plain chat server
+can only talk to one client at a time. The hub opens **one association
+per L2 interface** (slot), accepts a client on each, and relays every
+line it receives to all the other slots — plus your own stdin goes to
+everyone. Use it when the clients live on different L2 islands (e.g. a
+Wi-Fi phone and a host-only Windows NIC) and you want them to see each
+other through the hub:
+
+```bash
+make hub          # builds build/icsp_hub separately (POSIX only)
+
+# hub: <iface>[:name] ... [port]  (name prefixes relayed lines)
+./build/icsp_hub eth0:phone eth1:windows 6969
+
+# clients are plain icsp_chat, one per slot/interface:
+./build/icsp_chat client wlan0 00.00.00.00.01:6969   # -> slot eth0
+```
+
+Each slot runs the same accept loop as the chat server (handshake,
+heartbeat, dead-peer drop, re-accept) and `icsp_handle_frame` relays
+`[name] line` to every other established slot. Linux-only: the loop
+multiplexes the per-slot raw fds with `poll()`.
+
 ---
 
 ## 11. Windows build (`make win`)
