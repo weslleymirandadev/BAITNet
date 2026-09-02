@@ -28,6 +28,7 @@
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
 #include "IPv69/plat.h"
+#include "IPv69/ratelimit.h"
 #ifdef _WIN32
 /* the optional local L2 bridge (--iface) is AF_PACKET: Linux only */
 #else
@@ -107,6 +108,14 @@ static struct peer *peer_learn(uint64_t addr, const uint8_t *mac,
         p->ep = *ep;
         p->last = time(NULL);
         return p;
+    }
+    /* WireGuard-style rate limit on learning NEW peers: one source MAC
+       cannot flood the table (256 slots) faster than we can evict. */
+    {
+        uint8_t rid[8] = { 0 };
+        memcpy(rid, mac, 6);
+        if (!rate_allow(rid, 5, 10, 1))
+            return NULL;
     }
     for (int i = 0; i < MAX_PEERS; i++) {
         if (!peers[i].addr || time(NULL) - peers[i].last > PEER_TIMEOUT) {
@@ -248,6 +257,10 @@ int cmd_gw(int argc, char **argv)
             /* query: "Q69" + addr40. Only answer peers we know, with a
                compatible class (no --private = public C only). */
             if (n >= 8 && !memcmp(buf, QMAGIC, 3)) {
+                uint8_t rid[8] = { 0 };
+                memcpy(rid, buf + 14 + 6, 6);   /* eth src of the frame */
+                if (!rate_allow(rid, 20, 40, 1))
+                    continue;                   /* query flood: silent */
                 uint64_t qaddr = get_addr40(buf + 3);
                 struct peer *asker = peer_find_endpoint(&ep);
                 struct peer *q = peer_find_addr(qaddr);
@@ -307,11 +320,18 @@ int cmd_gw(int argc, char **argv)
                 continue;
             }
 
-            /* broadcast: replicate to all other tunnels + local */
+            /* broadcast: replicate to all other tunnels + local, with
+               split horizon (never back to the sender's endpoint) and a
+               token bucket per source (amplification guard) */
             const uint8_t bcast_mac[6] = BCAST_MAC;
             if (!memcmp(eth->dst_mac, bcast_mac, 6)) {
+                uint8_t rid[8] = { 0 };
+                memcpy(rid, eth->src_mac, 6);
+                if (!rate_allow(rid, 20, 40, 1))
+                    continue;
+                struct peer *from = peer_find_endpoint(&ep);
                 for (int i = 0; i < MAX_PEERS; i++)
-                    if (peers[i].addr && peers[i].addr != src)
+                    if (peers[i].addr && &peers[i] != from)
                         send_udp(fd, buf, n, &peers[i].ep);
                 if (l2fd >= 0)
                     sendto(l2fd, (const char *)buf, n, 0, NULL, 0);
@@ -356,6 +376,10 @@ int cmd_gw(int argc, char **argv)
             const uint8_t bcast_mac[6] = BCAST_MAC;
             if (!memcmp(eth->dst_mac, bcast_mac, 6) ||
                 !peer_find_mac(eth->dst_mac)) {
+                uint8_t rid[8] = { 0 };
+                memcpy(rid, eth->src_mac, 6);
+                if (!rate_allow(rid, 20, 40, 1))
+                    continue;
                 /* broadcast / unknown: replicate to all tunnels */
                 for (int i = 0; i < MAX_PEERS; i++)
                     if (peers[i].addr)
