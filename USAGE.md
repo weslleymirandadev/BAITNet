@@ -476,6 +476,30 @@ the asker directly — both NATs open (hole punching) and the traffic
 goes P2P, gateway-free; if the direct path can't open, the gateway
 relays and the association still works.
 
+### Default gateways (`~/.hosts69/gateways`)
+
+The connection gateways can live in a file next to the keyring, so
+`send`/`recv`/`ping`, `ipv69 icsp` and the `icsp_chat` example use the
+tunnel **automatically** — no `--remote` needed on every command. One
+gateway per line: a **domain** (resolved by a built-in DNS A query —
+the static binary has no libc NSS — and used on port 6969) or an
+**IP:port** literal. `#` comments and empty lines are ignored:
+
+```bash
+$ cat ~/.hosts69/gateways
+# my VPS seed
+vps.example.com          # -> resolved to its IP, port 6969
+203.0.113.10:7000        # literal IP with a custom port
+203.0.113.11             # literal IP, default port 6969
+```
+
+Resolution order: an explicit `--remote gw:port` wins over the file;
+without it, a non-empty file switches the command to tunnel mode (the
+first gateway is used by the 1:1 ICSP/chat, all of them by
+`send`/`recv`/`ping` failover). No file = plain local L2, exactly as
+before. The built-in resolver reads the first nameserver of
+`/etc/resolv.conf` (Windows uses the native `getaddrinfo`).
+
 ---
 
 ## 8. Build
