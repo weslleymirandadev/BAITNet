@@ -135,8 +135,8 @@ int main(int argc, char **argv)
             a.hb_interval_s = 6;
             a.dead_timeout_s = 18;
             printf("chat: session_key == %02x%02x..%02x%02x\n",
-                   a.session_key[0], a.session_key[1],
-                   a.session_key[30], a.session_key[31]);
+                   a.send_key[0], a.send_key[1],
+                   a.send_key[30], a.send_key[31]);
             chat_run(&a, echo_mode);
             printf("chat: aguardando proxima associacao...\n");
         }
@@ -151,13 +151,13 @@ int main(int argc, char **argv)
         }
         printf("chat: cliente -> %016llx:%u\n",
                (unsigned long long)dst, port);
-        if (icsp_client_handshake(&a, dst, port, sk) < 0)
+        if (icsp_client_handshake(&a, dst, port, sk, NULL) < 0)
             return 1;
         a.hb_interval_s = 6;
         a.dead_timeout_s = 18;
         printf("chat: session_key == %02x%02x..%02x%02x\n",
-               a.session_key[0], a.session_key[1],
-               a.session_key[30], a.session_key[31]);
+               a.send_key[0], a.send_key[1],
+               a.send_key[30], a.send_key[31]);
         return chat_run(&a, echo_mode);
     }
 
