@@ -1,15 +1,14 @@
 /* icsp_test.c - ICSP test: handshake + data + lifecycle.
  *
  *   ipv69 icsp server <ifname> [port|:port] [--peer HEX] [--peer-file F]
- *          [--echo] [--loss N]
- *   ipv69 icsp client <ifname> <dst:port> [msg] [--echo] [--reset] [--hb]
+ *          [--loss N]
+ *   ipv69 icsp client <ifname> <dst:port> [msg] [--reset] [--hb]
  *
  * Handshake (Phase 1), then optionally exchanges data (Phase 2):
- *   server --echo answers back on the same stream;
- *   client sends the msg (or "hello icsp") and, with --echo, waits for
- *   the echo. --reset tests STREAM-RESET; --hb sends a heartbeat.
- *   --loss N% skips SACKs on the server (retransmission test).
- * Identity = the ~/.hosts69 keyring (same as DHCP).
+ *   client sends the msg (or "hello icsp") on streams 1+2 and waits
+ *   for the SACK (all_acked); --reset tests STREAM-RESET; --hb sends
+ *   a heartbeat. --loss N% skips SACKs on the server (retransmission
+ *   test). Identity = the ~/.hosts69 keyring (same as DHCP).
  * Built on the session layer: icsp_endpoint_open + icsp_poll.
  */
 #include <stdio.h>
@@ -47,36 +46,22 @@ static void server_announce(const struct icsp_assoc *a,
            (struct sockaddr *)&a->gw, a->gwlen);
 }
 
-/* client-side DATA callback: print + remember the echo */
-struct client_ctx {
-    int echo_mode;
-    int got_echo;
-};
-
+/* client-side DATA callback: print what came back */
 static void client_on_data(struct icsp_assoc *a, uint16_t stream,
                            const uint8_t *data, size_t len, void *ud)
 {
-    struct client_ctx *c = ud;
+    (void)a; (void)ud;
     printf("icsp: received %zu bytes (stream %u): \"%.*s\"\n",
            len, stream, (int)len, (char *)data);
-    if (c->echo_mode)
-        c->got_echo = 1;
-    (void)a;
 }
 
-/* server-side DATA callback: echo when --echo */
-struct server_ctx {
-    int echo_mode;
-};
-
+/* server-side DATA callback: log what arrived */
 static void server_on_data(struct icsp_assoc *a, uint16_t stream,
                            const uint8_t *data, size_t len, void *ud)
 {
-    struct server_ctx *c = ud;
+    (void)a; (void)ud;
     printf("icsp: received %zu bytes (stream %u): \"%.*s\"\n",
            len, stream, (int)len, (char *)data);
-    if (c->echo_mode)
-        icsp_data_send(a, stream, data, len);
 }
 
 /* client: handshake + optional data exchange */
@@ -85,13 +70,11 @@ static int run_client(int argc, char **argv, struct icsp_assoc *a,
 {
     uint64_t dst;
     uint16_t port;
-    struct client_ctx ctx = { 0, 0 };
     int hb_mode = 0, reset_mode = 0, rekey_s = 0;
     const char *msg = "hello icsp";
 
     for (int i = 4; i < argc; i++) {
-        if (!strcmp(argv[i], "--echo")) ctx.echo_mode = 1;
-        else if (!strcmp(argv[i], "--hb")) hb_mode = 1;
+        if (!strcmp(argv[i], "--hb")) hb_mode = 1;
         else if (!strcmp(argv[i], "--reset")) reset_mode = 1;
         else if (!strcmp(argv[i], "--rekey") && i + 1 < argc)
             rekey_s = atoi(argv[++i]);
@@ -101,7 +84,7 @@ static int run_client(int argc, char **argv, struct icsp_assoc *a,
     }
     if (argc < 4 || parse_ipv69_addr_port(argv[3], &dst, &port) < 0) {
         fprintf(stderr, "icsp client: requires <dst:port> [msg] "
-                        "[--echo|--hb|--reset]\n");
+                        "[--hb|--reset]\n");
         return 1;
     }
     if (port == 0)
@@ -137,11 +120,11 @@ static int run_client(int argc, char **argv, struct icsp_assoc *a,
     printf("icsp: DATA sent (tsn=%d, stream 1)\n", tsn);
     icsp_data_send(a, 2, (const uint8_t *)"msg on stream 2", 17);
 
-    /* wait for SACK (and echo when --echo); retransmit on idle.
-       With --rekey keep polling past the echo so the timer fires. */
+    /* wait for the SACKs; retransmit on idle. With --rekey keep
+       polling past the ack so the rekey timer fires. */
     time_t deadline = time(NULL) + 3 + (rekey_s > 0 ? rekey_s : 0);
     while (time(NULL) < deadline) {
-        int r = icsp_poll(a, 200, client_on_data, &ctx);
+        int r = icsp_poll(a, 200, client_on_data, NULL);
         if (r == ICSP_POLL_CLOSED)
             break;
         if (r == ICSP_POLL_ERR) {
@@ -153,11 +136,10 @@ static int run_client(int argc, char **argv, struct icsp_assoc *a,
             if (rt > 0)
                 printf("icsp: retransmitted DATA (%d)\n", rt);
         }
-        if (rekey_s == 0 &&
-            (ctx.got_echo || !ctx.echo_mode) && icsp_all_acked(a))
+        if (rekey_s == 0 && icsp_all_acked(a))
             break;
     }
-    printf("icsp: sack=%d echo=%d\n", icsp_all_acked(a), ctx.got_echo);
+    printf("icsp: sack=%d\n", icsp_all_acked(a));
 
     /* graceful close */
     icsp_shutdown_send(a);
@@ -165,19 +147,17 @@ static int run_client(int argc, char **argv, struct icsp_assoc *a,
     return 0;
 }
 
-/* server: handshake + echo data when --echo */
+/* server: handshake + log data, accept the next association */
 static int run_server(int argc, char **argv, struct icsp_assoc *a,
                       uint8_t sk[64])
 {
     uint8_t peers[64][32];
     int n_peers = 0;
-    struct server_ctx ctx = { 0 };
     int loss_pct = 0;
     uint16_t port = 6969;
 
     for (int i = 3; i < argc; i++) {
-        if (!strcmp(argv[i], "--echo")) ctx.echo_mode = 1;
-        else if (!strcmp(argv[i], "--loss") && i + 1 < argc)
+        if (!strcmp(argv[i], "--loss") && i + 1 < argc)
             loss_pct = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--peer") && i + 1 < argc) {
             if (hex_decode(argv[++i], peers[n_peers], 32) != 32) {
@@ -204,8 +184,8 @@ static int run_server(int argc, char **argv, struct icsp_assoc *a,
             port = (uint16_t)atoi(argv[i]);
         }
     }
-    printf("icsp: server on port %u (peers=%d, echo=%d, loss=%d%%)\n",
-           port, n_peers, ctx.echo_mode, loss_pct);
+    printf("icsp: server on port %u (peers=%d, loss=%d%%)\n",
+           port, n_peers, loss_pct);
 
     /* tunnel mode: announce ourselves to the gateway (signed ND
      * request) so it learns our address and can route the INIT to us */
@@ -227,7 +207,7 @@ static int run_server(int argc, char **argv, struct icsp_assoc *a,
             server_announce(a, sk);
             last_ann = time(NULL);
         }
-        int r = icsp_poll(a, 200, server_on_data, &ctx);
+        int r = icsp_poll(a, 200, server_on_data, NULL);
         if (r == ICSP_POLL_ERR) {
             perror("icsp: poll");
             return 1;
