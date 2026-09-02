@@ -1,8 +1,7 @@
 /* af69d - DHCP69 server daemon (spec: docs/dhcp69-spec.md).
  *
- * Leases 80-bit addresses over the IPv69 control channel. Works with the
- * AF_69 kernel module (socket(AF_69)) or, without it, raw AF_PACKET
- * (same wire format).
+ * Leases 80-bit addresses over the IPv69 control channel, on the
+ * portable raw L2 backend (AF_PACKET on Linux, Npcap on Windows).
  *
  * Security (Ed25519):
  *   --peer <pubkey_hex>   allowlist: only these public keys may get a
@@ -78,7 +77,6 @@ struct peer_entry {
 };
 
 struct ctx {
-    int mode;                 /* 0 = AF_69 socket, 1 = raw L2 */
     l2_handle fd;
     int ifindex;
     uint8_t mac[6];           /* own MAC (raw mode) */
@@ -328,28 +326,12 @@ static void lease_release(struct ctx *c, const uint8_t *mac, uint64_t addr)
 
 /* ---- tx -------------------------------------------------------------- */
 
-/* Send a control payload. In raw mode dst_mac (if non-NULL) is used
-   instead of broadcast: DHCP replies go unicast to the client MAC so
-   APs that filter wired->wireless broadcast still deliver them. */
+/* Send a control payload. dst_mac (if non-NULL) is used instead of
+   broadcast: DHCP replies go unicast to the client MAC so APs that
+   filter wired->wireless broadcast still deliver them. */
 static int send_ctrl(struct ctx *c, const uint8_t *payload, size_t plen,
                      const uint8_t *dst_mac)
 {
-#ifndef _WIN32
-    if (c->mode == 0) {
-        struct sockaddr_69 sa;
-        memset(&sa, 0, sizeof(sa));
-        sa.sa_family = AF_69;
-        sa.ifindex = c->ifindex;
-        sa.src = IPV69_SERVER_ADDR;
-        sa.dst = IPV69_BCAST_ADDR;
-        sa.next_header = IPV69_NEXT_CONTROL;
-        int r = sendto(c->fd, payload, plen, 0,
-                      (struct sockaddr *)&sa, sizeof(sa));
-        if (r < 0)
-            perror("af69d sendto");
-        return r;
-    }
-#endif
     /* raw L2: build the full Ethernet frame and send it */
     const uint8_t bcast[6] = BCAST_MAC;
     const uint8_t *dmac = dst_mac ? dst_mac : bcast;
@@ -368,19 +350,6 @@ static size_t recv_ctrl(struct ctx *c, uint8_t *buf, size_t bufsz,
 {
     ssize_t n;
 
-#ifndef _WIN32
-    if (c->mode == 0) {
-        struct sockaddr_69 from;
-        socklen_t flen = sizeof(from);
-        struct timeval tv = { 1, 0 };
-        setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-        n = recvfrom(c->fd, buf, bufsz, 0,
-                     (struct sockaddr *)&from, &flen);
-        if (dst)
-            *dst = IPV69_BCAST_ADDR;
-        return n > 0 ? (size_t)n : 0;
-    }
-#endif
     /* raw: 1s tick so the peer-file mtime check runs without traffic */
     n = l2_recv(c->fd, buf, bufsz, 1000);
     if (n < 14 + IPV69_HEADER_LEN + 1)
@@ -419,12 +388,10 @@ int cmd_dhcpd(int argc, char **argv)
     if (argc < 2) {
         fprintf(stderr,
                 "Usage: %s <ifname|ifindex> [pool_start] [pool_end] [lease_sec]\n"
-                "       [--raw] [--allow MAC]... [--peer PUBKEY_HEX]... [--peer-file PATH] [--key PRIVKEY_HEX]\n"
+                "       [--allow MAC]... [--peer PUBKEY_HEX]... [--peer-file PATH] [--key PRIVKEY_HEX]\n"
                 "       [--learn]\n"
                 "  pool_start/pool_end: ff.ff.ff.ff.ff or raw hex\n"
                 "  defaults: pool 00.00.00.00.10-00.00.00.00.fe, lease 3600s\n"
-                "  --raw:    force AF_PACKET (AP filtering wired->wireless\n"
-                "            broadcast requires unicast replies)\n"
                 "  --allow:  MAC allowlist (repeatable)\n"
                 "  --peer:   Ed25519 pubkey allowlist (repeatable) - only\n"
                 "            these devices may get a lease\n"
@@ -452,21 +419,21 @@ int cmd_dhcpd(int argc, char **argv)
     (void)idx;              /* Windows resolves the iface via l2_open */
 #endif
     /* positional pool/lease (argv 2/3/4), flags anywhere */
-    if (argc > 2 && strcmp(argv[2], "--raw") && strcmp(argv[2], "--allow") &&
+    if (argc > 2 && strcmp(argv[2], "--allow") &&
         strcmp(argv[2], "--peer") && strcmp(argv[2], "--peer-file") &&
         strcmp(argv[2], "--key") && strcmp(argv[2], "--learn"))
         if (parse_ipv69_addr(argv[2], &c.pool_start) < 0) {
             fprintf(stderr, "pool_start invalido\n");
             return 1;
         }
-    if (argc > 3 && strcmp(argv[3], "--raw") && strcmp(argv[3], "--allow") &&
+    if (argc > 3 && strcmp(argv[3], "--allow") &&
         strcmp(argv[3], "--peer") && strcmp(argv[3], "--peer-file") &&
         strcmp(argv[3], "--key") && strcmp(argv[3], "--learn"))
         if (parse_ipv69_addr(argv[3], &c.pool_end) < 0) {
             fprintf(stderr, "pool_end invalido\n");
             return 1;
         }
-    if (argc > 4 && strcmp(argv[4], "--raw") && strcmp(argv[4], "--allow") &&
+    if (argc > 4 && strcmp(argv[4], "--allow") &&
         strcmp(argv[4], "--peer") && strcmp(argv[4], "--peer-file") &&
         strcmp(argv[4], "--key") && strcmp(argv[4], "--learn")) {
         char *end;
@@ -475,11 +442,8 @@ int cmd_dhcpd(int argc, char **argv)
             c.lease_sec = (uint32_t)v;
     }
     /* flags in any position */
-    int force_raw = 0;
     for (int i = 2; i < argc; i++) {
-        if (!strcmp(argv[i], "--raw")) {
-            force_raw = 1;
-        } else if (!strcmp(argv[i], "--allow") && i + 1 < argc) {
+        if (!strcmp(argv[i], "--allow") && i + 1 < argc) {
             if (c.n_allow >= MAX_PEERS) {
                 fprintf(stderr, "allow: limite %d\n", MAX_PEERS);
                 return 1;
@@ -524,9 +488,6 @@ int cmd_dhcpd(int argc, char **argv)
             c.has_sk = 1;
         }
     }
-#ifdef _WIN32
-    (void)force_raw;        /* raw L2 is the only mode on Windows */
-#endif
 
     /* no --key: auto-load (or generate) the SSH-style keyring
        (~/.hosts69/key, optional passphrase via IPV69_PASSPHRASE) */
@@ -545,33 +506,12 @@ int cmd_dhcpd(int argc, char **argv)
         }
     }
 
-    /* AF_69 socket by default (Linux kernel module); --raw forces the
-       portable L2 backend. Windows has no AF_69 socket — always raw. */
-    c.mode = 1;
-#ifndef _WIN32
-    c.fd = socket(AF_69, SOCK_DGRAM, 0);
-    if (c.fd >= 0 && !force_raw) {
-        c.mode = 0;
-        struct sockaddr_69 sa;
-        memset(&sa, 0, sizeof(sa));
-        sa.sa_family = AF_69;
-        sa.ifindex = c.ifindex;
-        sa.src = IPV69_SERVER_ADDR;
-        if (bind(c.fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-            perror("bind(AF_69)"); return 1;
-        }
-        printf("af69d: AF_69 socket (ifindex %d), pool %016llx-%016llx lease %us\n",
-               c.ifindex, (unsigned long long)c.pool_start,
-               (unsigned long long)c.pool_end, c.lease_sec);
-    }
-#endif
-    if (c.mode != 0) {
-        if (l2_open(argv[1], &c.fd, &c.ifindex, c.mac) < 0)
-            return 1;
-        printf("af69d: raw L2 (%s), pool %016llx-%016llx lease %us\n",
-               argv[1], (unsigned long long)c.pool_start,
-               (unsigned long long)c.pool_end, c.lease_sec);
-    }
+    /* raw L2 backend (AF_PACKET on Linux, Npcap on Windows) */
+    if (l2_open(argv[1], &c.fd, &c.ifindex, c.mac) < 0)
+        return 1;
+    printf("af69d: raw L2 (%s), pool %016llx-%016llx lease %us\n",
+           argv[1], (unsigned long long)c.pool_start,
+           (unsigned long long)c.pool_end, c.lease_sec);
     printf("af69d: allow=%d mac(s), peers=%d pubkey(s), learn=%s, server-key=%s\n",
            c.n_allow, c.n_peers, c.learn ? "sim" : "nao",
            c.has_sk ? "sim" : "nao");
