@@ -327,6 +327,17 @@ static void gw_link_send_pkt(const struct gw_link *l,
                              const uint8_t *pkt, size_t plen);
 static void send_udp(sock_t fd, const void *buf, size_t len,
                      const struct endpoint *ep);
+struct gw_route {
+    uint64_t addr;
+    uint8_t prefix;
+    struct sockaddr_in ep;      /* v4 endpoint as seen by the owner */
+    int li;                     /* link index of the announcing gateway */
+    time_t last;
+};
+static struct gw_route routes[MAX_PEERS];
+static int n_routes;
+static void route_learn(const uint8_t *p, int li);
+static struct gw_route *route_find(uint64_t addr);
 
 static struct gw_neigh *gw_neigh_find(const uint8_t *mac)
 {
@@ -500,6 +511,27 @@ static int gw_mesh_query(uint64_t q, const struct endpoint *asker)
 
 /* ---- federated link transport ---- */
 
+/* reduce an endpoint to plain v4 (AF_INET or v4-mapped AF_INET6);
+ * port comes back in host order. Returns 1 when representable. */
+static int ep_v4(const struct sockaddr *sa, uint8_t ip4[4], uint16_t *port)
+{
+    if (sa->sa_family == AF_INET) {
+        const struct sockaddr_in *si = (const struct sockaddr_in *)sa;
+        memcpy(ip4, &si->sin_addr, 4);
+        *port = ntohs(si->sin_port);
+        return 1;
+    }
+    if (sa->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)sa;
+        if (IN6_IS_ADDR_V4MAPPED(&s6->sin6_addr)) {
+            memcpy(ip4, &s6->sin6_addr.s6_addr[12], 4);
+            *port = ntohs(s6->sin6_port);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* the dual-stack listener delivers v4 peers v4-mapped: match by
  * address+port regardless of AF_INET/AF_INET6 representation */
 static int link_ep_match(const struct endpoint *a, const struct gw_link *l)
@@ -507,39 +539,16 @@ static int link_ep_match(const struct endpoint *a, const struct gw_link *l)
     const struct sockaddr *sa = (const struct sockaddr *)&a->ss;
     const struct sockaddr *sl = (const struct sockaddr *)&l->ep.ss;
     uint8_t a4[4], l4[4];
-    uint16_t ap = 0, lp = 0;
-    if (sa->sa_family == AF_INET) {
-        const struct sockaddr_in *si = (const struct sockaddr_in *)sa;
-        memcpy(a4, &si->sin_addr, 4);
-        ap = si->sin_port;
-    } else if (sa->sa_family == AF_INET6 &&
-               IN6_IS_ADDR_V4MAPPED(
-                   &((const struct sockaddr_in6 *)sa)->sin6_addr)) {
-        const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)sa;
-        memcpy(a4, &s6->sin6_addr.s6_addr[12], 4);
-        ap = s6->sin6_port;
-    } else if (sa->sa_family == AF_INET6 && sl->sa_family == AF_INET6) {
+    uint16_t ap, lp;
+    if (ep_v4(sa, a4, &ap) && ep_v4(sl, l4, &lp))
+        return ap == lp && !memcmp(a4, l4, 4);
+    if (sa->sa_family == AF_INET6 && sl->sa_family == AF_INET6) {
         const struct sockaddr_in6 *a6 = (const struct sockaddr_in6 *)sa;
         const struct sockaddr_in6 *l6 = (const struct sockaddr_in6 *)sl;
         return a6->sin6_port == l6->sin6_port &&
                !memcmp(&a6->sin6_addr, &l6->sin6_addr, 16);
-    } else {
-        return 0;
     }
-    if (sl->sa_family == AF_INET) {
-        const struct sockaddr_in *si = (const struct sockaddr_in *)sl;
-        memcpy(l4, &si->sin_addr, 4);
-        lp = si->sin_port;
-    } else if (sl->sa_family == AF_INET6 &&
-               IN6_IS_ADDR_V4MAPPED(
-                   &((const struct sockaddr_in6 *)sl)->sin6_addr)) {
-        const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)sl;
-        memcpy(l4, &s6->sin6_addr.s6_addr[12], 4);
-        lp = s6->sin6_port;
-    } else {
-        return 0;
-    }
-    return ap == lp && !memcmp(a4, l4, 4);
+    return 0;
 }
 
 static int gw_link_find(const struct endpoint *ep)
@@ -644,6 +653,10 @@ static int gw_fed_handle(int li, const uint8_t *buf, ssize_t n)
         gw_pend_relay(p);
         return 1;
     }
+    if (p[0] == IPV69_CTRL_GW_ROUTE && plen >= 13) {
+        route_learn(p, li);
+        return 1;
+    }
     return 0;
 }
 
@@ -685,9 +698,97 @@ static void gw_fed_data(int li, const uint8_t *buf, ssize_t n)
         sendto(g_l2fd, (const char *)buf, n, 0, NULL, 0);
         return;
     }
+    /* remote route? send only to the owning link (no flood) */
+    {
+        struct gw_route *r = route_find(dst);
+        if (r && r->li != li) {
+            gw_link_send_raw(&glink[r->li], buf, n);
+            return;
+        }
+    }
     for (int j = 0; j < n_glink; j++)
         if (j != li)
             gw_link_send_raw(&glink[j], buf, n);
+}
+
+/* ---- P4b: remote routes (gw-to-gw host routes) ----
+ * Every gateway announces the local clients it serves (addr/prefix ->
+ * endpoint, GW_ROUTE) to its federated links. Peers then answer QUERY
+ * from the route table (no mesh round-trip) and route data only to the
+ * owning link. Routes expire after 90s without a refresh. */
+static struct gw_route *route_find(uint64_t addr)
+{
+    struct gw_route *best = NULL;
+    int best_pref = -1;
+    for (int i = 0; i < n_routes; i++)
+        if ((int)routes[i].prefix > best_pref &&
+            ipv69_addr_in_range(addr, routes[i].addr, routes[i].prefix)) {
+            best = &routes[i];
+            best_pref = routes[i].prefix;
+        }
+    return best;
+}
+
+static void route_learn(const uint8_t *p, int li)
+{
+    /* [GW_ROUTE][addr 5][prefix 1][ip4 4][port 2] */
+    uint64_t addr = get_addr40(p + 1);
+    uint8_t prefix = p[6];
+    if (prefix == 0 || prefix > 40)
+        return;
+    for (int i = 0; i < n_routes; i++)
+        if (routes[i].addr == addr && routes[i].prefix == prefix &&
+            routes[i].li == li) {
+            routes[i].last = time(NULL);    /* refresh */
+            return;
+        }
+    if (n_routes < MAX_PEERS) {
+        routes[n_routes].addr = addr;
+        routes[n_routes].prefix = prefix;
+        memset(&routes[n_routes].ep, 0, sizeof(struct sockaddr_in));
+        routes[n_routes].ep.sin_family = AF_INET;
+        memcpy(&routes[n_routes].ep.sin_addr, p + 7, 4);
+        memcpy(&routes[n_routes].ep.sin_port, p + 11, 2);
+        routes[n_routes].li = li;
+        routes[n_routes].last = time(NULL);
+        n_routes++;
+        printf("ipv69gw: rota aprendida %016llx/%d via link %d\n",
+               (unsigned long long)addr, prefix, li);
+        fflush(stdout);
+    }
+}
+
+static void route_expire(time_t now)
+{
+    for (int i = 0; i < n_routes;)
+        if (now - routes[i].last > 90)
+            routes[i] = routes[--n_routes];
+        else
+            i++;
+}
+
+/* advertise our local clients (v4 endpoints only) to every link */
+static void gw_route_announce(void)
+{
+    uint8_t pkt[1 + 5 + 1 + 4 + 2];
+    for (int i = 0; i < MAX_PEERS; i++) {
+        if (!peers[i].addr || peers[i].ep.slen == 0)
+            continue;
+        const struct sockaddr *sa =
+            (const struct sockaddr *)&peers[i].ep.ss;
+        uint8_t ip4[4];
+        uint16_t port;
+        if (!ep_v4(sa, ip4, &port))
+            continue;           /* native v6: not representable (yet) */
+        pkt[0] = IPV69_CTRL_GW_ROUTE;
+        put_addr40(pkt + 1, peers[i].addr);
+        pkt[6] = peers[i].prefix;
+        memcpy(pkt + 7, ip4, 4);
+        pkt[11] = (uint8_t)(port >> 8);
+        pkt[12] = (uint8_t)port;
+        for (int j = 0; j < n_glink; j++)
+            gw_link_send_pkt(&glink[j], pkt, sizeof(pkt));
+    }
 }
 
 static void send_udp(sock_t fd, const void *buf, size_t len,
@@ -921,11 +1022,14 @@ int cmd_gw(int argc, char **argv)
                 printf("ipv69gw: mesh: anunciado na L2 (udp/%d)\n", port);
                 fflush(stdout);
             }
-            if (n_glink > 0 && have_sk)
-                gw_link_announce((uint16_t)port, gw_sk);
+            if (n_glink > 0) {
+                if (have_sk)
+                    gw_link_announce((uint16_t)port, gw_sk);
+                gw_route_announce();    /* host routes for local clients */
+            }
             last_ann = time(NULL);
         }
-        /* expire mesh pending queries (2s) */
+        /* expire mesh pending queries (2s) and remote routes (90s) */
         {
             time_t now = time(NULL);
             for (int i = 0; i < n_gwp;)
@@ -933,6 +1037,7 @@ int cmd_gw(int argc, char **argv)
                     gwp[i] = gwp[--n_gwp];
                 else
                     i++;
+            route_expire(now);
         }
         struct pollfd pf[2] = {
             { .fd = fd, .events = POLLIN },
@@ -969,6 +1074,10 @@ int cmd_gw(int argc, char **argv)
                    mesh must be asked instead of answering garbage */
                 if (q && q->ep.slen == 0)
                     q = NULL;
+                /* P4b: remote host route learned from a federated link
+                   (the owning gateway advertised it) — answer directly
+                   with the endpoint it announced, no mesh round-trip */
+                struct gw_route *r = q ? NULL : route_find(qaddr);
                 char ans[128] = EMAGIC;
                 memcpy(ans + 3, buf + 3, 5);
                 char qcls = ipv69_addr_class(qaddr);
@@ -990,7 +1099,15 @@ int cmd_gw(int argc, char **argv)
                     }
                     size_t l = strlen(ans);
                     snprintf(ans + l, sizeof(ans) - l, "%s:%u", host, qport);
-                } else if (!q && (n_gwn > 0 || n_glink > 0) && asker) {
+                } else if (asker && r && (allow_private ||
+                                          (qcls == 'C' && acls == 'C'))) {
+                    char host[64];
+                    inet_ntop(AF_INET, &r->ep.sin_addr, host, sizeof(host));
+                    size_t l = strlen(ans);
+                    snprintf(ans + l, sizeof(ans) - l, "%s:%u", host,
+                             ntohs(r->ep.sin_port));
+                } else if (!q && !r && (n_gwn > 0 || n_glink > 0) &&
+                           asker) {
                     /* mesh: a federated gateway (L2 or link) may know the
                        target — forward instead of answering "-" */
                     gw_mesh_query(qaddr, &ep);
@@ -1081,11 +1198,17 @@ int cmd_gw(int argc, char **argv)
                 continue;
             }
             /* unknown: try the local L2 bridge (maybe the DHCP server),
-               then the federated links (the target may live in another
-               ilha behind a peer gateway) */
+               then the route table (owning link), then flood the links */
             if (l2fd >= 0) {
                 sendto(l2fd, (const char *)buf, n, 0, NULL, 0);
                 continue;
+            }
+            {
+                struct gw_route *r = route_find(dst);
+                if (r) {
+                    gw_link_send_raw(&glink[r->li], buf, n);
+                    continue;
+                }
             }
             if (n_glink > 0) {
                 for (int i = 0; i < n_glink; i++)
