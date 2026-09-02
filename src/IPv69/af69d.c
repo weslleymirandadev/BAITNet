@@ -48,6 +48,8 @@
 #include "IPv69/header.h"
 #include "IPv69/parse.h"
 #include "IPv69/l2.h"
+#include "IPv69/mac1.h"
+#include "IPv69/ratelimit.h"
 #include "ed25519.h"
 #include "IPv69/keyring.h"
 
@@ -332,7 +334,8 @@ static int send_ctrl(struct ctx *c, const uint8_t *payload, size_t plen,
 
 /* ---- rx (returns payload pointer + len) ------------------------------ */
 
-static size_t recv_ctrl(struct ctx *c, uint8_t *buf, size_t bufsz)
+static size_t recv_ctrl(struct ctx *c, uint8_t *buf, size_t bufsz,
+                        uint64_t *dst)
 {
     ssize_t n;
 
@@ -344,6 +347,8 @@ static size_t recv_ctrl(struct ctx *c, uint8_t *buf, size_t bufsz)
         setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         n = recvfrom(c->fd, buf, bufsz, 0,
                      (struct sockaddr *)&from, &flen);
+        if (dst)
+            *dst = IPV69_BCAST_ADDR;
         return n > 0 ? (size_t)n : 0;
     }
 #endif
@@ -354,11 +359,13 @@ static size_t recv_ctrl(struct ctx *c, uint8_t *buf, size_t bufsz)
     {
         const struct ipv69_header *h =
             (const struct ipv69_header *)(buf + 14);
-        uint64_t dst = get_addr40(h->dest);
+        uint64_t d = get_addr40(h->dest);
         if (h->next_header != IPV69_NEXT_CONTROL)
             return 0;
-        if (dst != IPV69_BCAST_ADDR && dst != IPV69_SERVER_ADDR)
+        if (d != IPV69_BCAST_ADDR && d != IPV69_SERVER_ADDR)
             return 0;               /* not for us */
+        if (dst)
+            *dst = d;
     }
     memmove(buf, buf + 14 + IPV69_HEADER_LEN, n - 14 - IPV69_HEADER_LEN);
     return (size_t)(n - 14 - IPV69_HEADER_LEN);
@@ -564,15 +571,31 @@ int cmd_dhcpd(int argc, char **argv)
 #endif
         /* recv_ctrl blocks up to 1s: the peer-file mtime check above
            runs even without traffic, so edits take effect within ~1s */
-        size_t plen = recv_ctrl(&c, buf, sizeof(buf));
+        uint64_t frm_dst = IPV69_BCAST_ADDR;
+        size_t plen = recv_ctrl(&c, buf, sizeof(buf), &frm_dst);
         uint8_t *mac;
         char ms[18];
-        if (plen < 7)
+        if (plen < 7 + MAC1_LEN)
             continue;
         if (buf[0] != IPV69_CTRL_DHCP_DISCOVER &&
             buf[0] != IPV69_CTRL_DHCP_REQUEST &&
             buf[0] != IPV69_CTRL_DHCP_RELEASE)
             continue;
+        /* WireGuard mac1 pre-auth filter + per-MAC rate limit: drop
+           garbage/throttled senders silently BEFORE the Ed25519 verify */
+        {
+            uint8_t mkey[32];
+            mac1_key(frm_dst, mkey);
+            if (mac1_verify(mkey, buf, plen - MAC1_LEN,
+                            buf + plen - MAC1_LEN) != 0)
+                continue;               /* silent drop */
+        }
+        {
+            uint8_t rid[8] = { 0 };
+            memcpy(rid, buf + 1, 6);    /* payload MAC */
+            if (!rate_allow(rid, 10, 20, 1))
+                continue;
+        }
         mac = buf + 1;
         mac_str(mac, ms);
         now = time(NULL);
