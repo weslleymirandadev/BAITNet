@@ -23,11 +23,12 @@ argument (no legacy aliases):
 
 ```
 ipv69 gw       tunnel gateway                     [--port N] [--iface eth0]
-ipv69 tun      interface daemon: TAP + address   (Linux only)
+ipv69 net up   bring-up daemon: lease + keepalive (Linux; --tap optional)
+ipv69 tun      same daemon as `net up`            (Linux; alias)
 ipv69 addr     identity-derived address          [--dad]
 ipv69 keygen   generate Ed25519 key pairs
 ipv69 dhcpd    DHCP69 server (private networks)
-ipv69 dhcp     DHCP69 client
+ipv69 dhcp     DHCP69 client (one-shot, for scripts)
 ipv69 send/recv/ping
 ipv69 lease/renew/status                         (Linux only)
 ```
@@ -37,8 +38,9 @@ ipv69 lease/renew/status                         (Linux only)
 | `ipv69 dhcpd` | **DHCP69 server** (private networks only: pool, allowlist, signed leases) | VM / any host |
 | `ipv69 recv/send/ping/dhcp` | Generic client over raw L2, **no module** | phone (arm64), VM, Windows |
 | `ipv69 keygen` | Generates Ed25519 key pairs | any host |
-| `ipv69 tun` | Interface daemon: holds a DHCP address and creates the `ip69-0` TAP | Linux (phone/VM) |
-| `ipv69 lease/renew/status` | Queries `ip69d` (like `ip addr` for IPv69) | same host as ip69d |
+| `ipv69 net up` | **Bring-up daemon**: keygen-if-missing → lease with retry → keepalive (renew + lease/renew/status socket); `--tap` optionally creates the `ip69-0` TAP | Linux (phone/VM) |
+| `ipv69 tun` | Alias of `net up` (same daemon, kept for compatibility) | Linux (phone/VM) |
+| `ipv69 lease/renew/status` | Queries the bring-up daemon (like `ip addr` for IPv69) | same host as the daemon |
 | `ipv69 gw` | **Tunnel gateway**: bridges IPv69 frames over UDP so clients behind NAT can join through any host with a public IP (multi-gateway, P2P) | any host with a public IP |
 
 Besides the binaries, the project has a **separate crypto library**:
@@ -214,21 +216,30 @@ export HOME=/root
 
 After configuration, the address is **per-socket**: whoever wants to
 "own" `.10` needs a process bound to it (the `dhcp` holds it for 5s).
-To keep the address alive, use the daemon:
+To keep the address alive, use the bring-up daemon — one command and
+the device stays on the network (auto-key, lease with retry, renew on
+a timer; TAP optional):
 
 ```bash
-# holds the address + creates the TAP interface ip69-0 (auto-key):
-sudo /root/bin/ipv69 tun wlan0 --tap ip69-0 \
+# brings the device up and keeps it up (lease + keepalive daemon):
+sudo /root/bin/ipv69 net up wlan0 \
     --server-pub <server_pubkey_hex>
 
 # in another terminal, query like `ip addr`:
 /root/bin/ipv69 status
-#   1: ip69-0: <BROADCAST,UP,LOWER_UP> mtu 1500 state UP
+#   1: wlan0: <BROADCAST,UP,LOWER_UP> mtu 1500 state UP
 #       inet69 0000000000000010/40 brd ffffffffff scope global dynamic
 #          valid_lft 3599sec preferred_lft 3599sec
+#       link ifindex 4 mode raw
 
 /root/bin/ipv69 lease       # seconds remaining
-/root/bin/ipv69 renew       # renew (or SIGUSR1 to ip69d)
+/root/bin/ipv69 renew       # renew (or SIGUSR1 to the daemon)
+
+# `tun` is the same daemon; the TAP interface is optional (--tap):
+sudo /root/bin/ipv69 tun wlan0 --tap ip69-0 \
+    --server-pub <server_pubkey_hex>
+# without --tap no TAP is created — the address is held by the daemon
+# socket; `status` then shows the real interface (wlan0) instead.
 ```
 
 Sending data — the `src` is **automatic** (anti-spoofing): the send
@@ -597,8 +608,15 @@ and datagram auth — see `docs/wireguard-inspired-plan.md` for the full
 design. Summary of what to type:
 
 ```bash
-# bring a device up: keygen-if-missing + DHCP lease with backoff+jitter
-./ipv69 net up wlan0
+# bring a device up: keygen-if-missing + DHCP lease with backoff+jitter,
+# then the daemon keeps the lease alive (renew + lease/renew/status):
+sudo ./ipv69 net up wlan0
+# ip69d: address 0000000000000010 (lease 3600s)   <- stays running
+# query it from another terminal:
+./ipv69 status | lease | renew
+# `tun` is the same daemon (compatibility alias); the TAP interface is
+# optional (`--tap ip69-0` only — no TAP by default). One-shot lease
+# for scripts: `ipv69 dhcp`.
 
 # datagram auth: MAC every frame with X25519(our key, dst pub).
 # sender: --auth <dst PUBKEY>; receiver: --peer/--peer-file <trusted pubs>
