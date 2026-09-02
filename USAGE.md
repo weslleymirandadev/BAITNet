@@ -1,41 +1,40 @@
 # IPv69 — Usage guide
 
-Experimental protocol of its own (EtherType `0x6969`, 40-bit addresses,
-`AF_69` socket family) with DHCP69 (automatic address configuration) and
-Ed25519 authentication. Everything runs on L2 — no IP, no router, no
-internet.
+Experimental protocol of its own (EtherType `0x6969`, 40-bit addresses)
+with DHCP69 (automatic address configuration) and Ed25519
+authentication. Everything runs on L2 — no IP, no router, no internet.
+No kernel module: the AF_69 socket family was removed; every tool uses
+the portable raw L2 backend (AF_PACKET on Linux, Npcap on Windows).
 
 ```
 ┌─────────────────┐   Wi-Fi / Ethernet cable     ┌─────────────────┐
-│  phone (raw)    │ ───────────────────────────▶ │  Kali VM (af69 │
-│  no AF_69       │ ◀─────────────────────────── │  .ko module)    │
+│  phone (raw)    │ ───────────────────────────▶ │  Kali VM (raw   │
+│  no module      │ ◀─────────────────────────── │  AF_PACKET)     │
 └─────────────────┘                               └─────────────────┘
 ```
 
 ## What is what
 
 **One binary, git-style subcommands.** `ipv69` dispatches by the first
-argument; the legacy binary names still work as aliases:
+argument (no legacy aliases):
 
 ```
-ipv69 gw       tunnel gateway (was ipv69gw)      [--port N] [--iface eth0]
-ipv69 tun      interface daemon: TAP + address   (was ip69d)
+ipv69 gw       tunnel gateway                     [--port N] [--iface eth0]
+ipv69 tun      interface daemon: TAP + address   (Linux only)
 ipv69 addr     identity-derived address          [--dad]
-ipv69 keygen   generate Ed25519 key pairs        (was ipv69-keygen)
-ipv69 dhcpd    DHCP69 server (private networks)  (was af69d)
-ipv69 dhcp     DHCP69 client                     (was af69_raw dhcp)
-ipv69 send/recv/ping                             (was af69_raw)
-ipv69 lease/renew/status                         (was ip69)
-ipv69 test     AF_69 socket client               (was af69_test)
+ipv69 keygen   generate Ed25519 key pairs
+ipv69 dhcpd    DHCP69 server (private networks)
+ipv69 dhcp     DHCP69 client
+ipv69 send/recv/ping
+ipv69 lease/renew/status                         (Linux only)
 ```
 
 | Subcommand | Role | Where it runs |
 |---|---|---|
-| `ipv69 dhcpd` | **DHCP69 server** (private networks only: pool, allowlist, leases, kernel binding) | VM |
-| `ipv69 recv/send/ping/dhcp` | Generic client over AF_PACKET, **no module** | phone (arm64) and VM |
-| `ipv69 test` | Generic client over the `AF_69` socket (**requires module**) | VM |
+| `ipv69 dhcpd` | **DHCP69 server** (private networks only: pool, allowlist, signed leases) | VM / any host |
+| `ipv69 recv/send/ping/dhcp` | Generic client over raw L2, **no module** | phone (arm64), VM, Windows |
 | `ipv69 keygen` | Generates Ed25519 key pairs | any host |
-| `ipv69 tun` | Interface daemon: holds a DHCP address and creates the `ip69-0` TAP | phone/VM |
+| `ipv69 tun` | Interface daemon: holds a DHCP address and creates the `ip69-0` TAP | Linux (phone/VM) |
 | `ipv69 lease/renew/status` | Queries `ip69d` (like `ip addr` for IPv69) | same host as ip69d |
 | `ipv69 gw` | **Tunnel gateway**: bridges IPv69 frames over UDP so clients behind NAT can join through any host with a public IP (multi-gateway, P2P) | any host with a public IP |
 
@@ -363,12 +362,13 @@ and acts as a last-resort relay when P2P is not possible.
 
 ```bash
 make ipv69                                   # single binary (all subcommands)
-make -C kernel/af69 KDIR=/home/bacal/wsl-kernel         # module (WSL)
+make chat                                    # ICSP chat example (standalone)
+make win                                     # Windows: ipv69.exe + chat (MinGW+Npcap)
 # arm64 (phone):
 aarch64-linux-gnu-gcc -O2 -static -Iinclude -Ilib/ed25519/include \
     -o ipv69_arm64 src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c \
     src/IPv69/ipv69gw.c src/IPv69/ip69d.c src/IPv69/ip69.c src/IPv69/keygen.c \
-    src/IPv69/keyring.c tests/af69_raw.c tests/af69_test.c \
+    src/IPv69/keyring.c tests/af69_raw.c \
     lib/ed25519/src/ed25519.c lib/ed25519/src/tweetnacl.c lib/ed25519/src/randombytes.c
 ```
 
@@ -444,20 +444,30 @@ read `examples/icsp_chat.c` as the template for your own ICSP tool.
 
 ## 11. Windows build (`make win`)
 
-The same ICSP stack (chat + session layer) builds natively on Windows
-with **MinGW + Npcap**: the L2 backend is libpcap instead of AF_PACKET
-(`src/IPv69/l2_win.c`), the RNG is BCrypt, the keyring uses
-`%USERPROFILE%` and a console no-echo prompt. The full `ipv69` binary
-(module-dependent tools) stays Linux-only.
+The **full `ipv69.exe`** (all subcommands) plus the ICSP chat build
+natively on Windows with **MinGW + Npcap**. Architecture:
+
+- `include/IPv69/plat.h` — socket layer: `sock_t`, `plat_sock_init()`
+  (WSAStartup, called from main), `plat_poll` (WSAPoll), `perror_sock`.
+- `src/IPv69/l2_win.c` — libpcap backend for the portable `l2_*` API
+  (the same one the Linux build uses on AF_PACKET).
+- `addr`, `keygen`, `dhcpd`, `dhcp`, `send`, `recv`, `ping`, `gw`,
+  `icsp` work. `tun`, `lease/renew/status`, `test` report
+  "nao suportado no Windows" (they need TAP, unix sockets or the AF_69
+  kernel module); `gw --iface` too.
+- RNG is BCrypt, the keyring uses `%USERPROFILE%` and a console no-echo
+  prompt, `--remote` tunnels use Winsock.
 
 ```bash
 # requirements: MinGW gcc on PATH, Npcap installed, Npcap SDK unpacked
 #   to C:/Users/<you>/npcap-sdk (https://npcap.com/dist/npcap-sdk-1.13.zip)
-make win        # -> build/icsp_chat.exe
+make win        # -> build/ipv69.exe + build/icsp_chat.exe
 
 # run from WSL: pass HOME (WSL interop does NOT forward it) and the
 # adapter is matched by substring of the friendly name:
-WSLENV=HOME HOME='C:/Users/you' ./build/icsp_chat.exe server Realtek :6969
+WSLENV=HOME HOME='C:/Users/you' ./build/ipv69.exe addr
+./build/ipv69.exe dhcp "Host-Only"
+./build/ipv69.exe send "Host-Only" 00.00.00.00.10:16 4242 oi
 ./build/icsp_chat.exe client "Host-Only" 00.00.00.00.01:6969
 ```
 
