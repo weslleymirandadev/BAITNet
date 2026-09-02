@@ -20,6 +20,7 @@
 #include <string.h>
 #include "IPv69/parse.h"
 #include "IPv69/l2.h"
+#include "IPv69/plat.h"
 #include "ICSP/icsp.h"
 
 static void chat_usage(void)
@@ -82,6 +83,10 @@ int main(int argc, char **argv)
     struct icsp_assoc a;
 
     setvbuf(stdout, NULL, _IOLBF, 0);
+    if (plat_sock_init() < 0) {
+        fprintf(stderr, "chat: winsock init falhou\n");
+        return 1;
+    }
 
     if (argc < 3) {
         chat_usage();
