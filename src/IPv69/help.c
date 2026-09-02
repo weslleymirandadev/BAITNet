@@ -56,7 +56,7 @@ static void usage_tun(void)
     fprintf(stderr,
         "ipv69 tun - hold the address alive and expose it as a TAP interface\n"
         "\n"
-        "Usage: ipv69 tun <ifname> [--raw] [--tap NAME] [--remote gw:port]\n"
+        "Usage: ipv69 tun <ifname> [--tap NAME] [--remote gw:port]\n"
         "                   [--server-pub HEX] [--key HEX]\n"
         "\n"
         "Keeps a DHCP69 lease alive (so the kernel binding for your MAC stays\n"
@@ -64,7 +64,6 @@ static void usage_tun(void)
         "frames appear like normal Ethernet frames.\n"
         "\n"
         "Options:\n"
-        "  --raw           use AF_PACKET directly (no af69 kernel module)\n"
         "  --tap NAME      create a TAP interface named NAME (needs root)\n"
         "  --remote gw:port  reach the DHCP server through a gateway (tunnel)\n"
         "  --server-pub HEX  only accept a DHCP server with this pubkey\n"
@@ -119,7 +118,7 @@ static void usage_dhcpd(void)
     fprintf(stderr,
         "ipv69 dhcpd - DHCP69 server (private networks)\n"
         "\n"
-        "Usage: ipv69 dhcpd <ifname> [--raw] [--allow MAC] [--peer HEX]\n"
+        "Usage: ipv69 dhcpd <ifname> [--allow MAC] [--peer HEX]\n"
         "                      [--peer-file F] [--learn] [--key HEX]\n"
         "                      [pool_start pool_end lease_sec]\n"
         "\n"
@@ -129,7 +128,6 @@ static void usage_dhcpd(void)
         "when the server has a peer allowlist.\n"
         "\n"
         "Options:\n"
-        "  --raw           AF_PACKET directly (no af69 kernel module)\n"
         "  --allow MAC     only serve this MAC (repeatable)\n"
         "  --peer HEX      accept this client pubkey (repeatable)\n"
         "  --peer-file F   load client pubkeys from file (one per line)\n"

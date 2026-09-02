@@ -1,7 +1,6 @@
-/* af69_raw - IPv69 (ethertype 0x6969) client over raw L2, no kernel
- * module. For devices whose kernel lacks the AF_69 patch (e.g. stock
- * Android) and for Windows (Npcap backend). Same wire format as the
- * af69.ko module: Ethernet + 32B IPv69 header + payload.
+/* af69_raw - IPv69 (ethertype 0x6969) client over the portable raw L2
+ * backend (AF_PACKET on Linux, Npcap on Windows). Same wire format as
+ * the rest of the stack: Ethernet + 32B IPv69 header + payload.
  *
  * The L2 endpoint is the portable l2_* API (l2.c / l2_win.c); the UDP
  * tunnel (--remote) rides on top with plain sockets (plat.h).
