@@ -38,4 +38,14 @@ void ipv69_addr_derive(uint8_t out[5], const uint8_t pub[32], char cls);
    A 00.x, B 01.x, C 10.x, D 110.x, E 111.x (broadcast ff.ff.ff.ff.ff) */
 char ipv69_addr_class(uint64_t addr);
 
+/* parse "PUBHEX[/prefix]" (WireGuard AllowedIPs-style): the base
+ * address is derived from the pubkey (class C); prefix defaults to 40.
+ * Returns 0 on success. */
+int ipv69_addr_parse_peer(const char *s, uint8_t pub[32], uint64_t *base,
+                          int *prefix);
+
+/* does `addr` fall inside the range (base, prefix)? 40-bit addresses,
+ * prefix = significant bits (WireGuard AllowedIPs). */
+int ipv69_addr_in_range(uint64_t addr, uint64_t base, int prefix);
+
 #endif

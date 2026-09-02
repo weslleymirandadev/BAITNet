@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "IPv69/parse.h"
+#include "IPv69/l2.h"       /* hex_decode */
 #include "ed25519.h"
 
 #define ERR_SHORT     1
@@ -159,6 +160,43 @@ char ipv69_addr_class(uint64_t addr)
     if ((b & 0xc0) == 0x80)      return 'C';      /* 10xxxxxx */
     if ((b & 0xe0) == 0xc0)      return 'D';      /* 110xxxxx */
     return 'E';                                    /* 111xxxxx */
+}
+
+/* parse "PUBHEX[/prefix]" (WireGuard AllowedIPs-style). The base
+ * address is derived from the pubkey (class C); prefix defaults to 40
+ * (the exact address). Returns 0, -1 on bad input. */
+int ipv69_addr_parse_peer(const char *s, uint8_t pub[32], uint64_t *base,
+                          int *prefix)
+{
+    char buf[80];
+    char *slash;
+
+    strncpy(buf, s, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = 0;
+    slash = strchr(buf, '/');
+    if (slash) {
+        *slash = 0;
+        *prefix = atoi(slash + 1);
+        if (*prefix < 8 || *prefix > 40)
+            return -1;
+    } else {
+        *prefix = 40;
+    }
+    if (hex_decode(buf, pub, 32) != 32)
+        return -1;
+    {
+        uint8_t derived[5];
+        ipv69_addr_derive(derived, pub, 'C');
+        *base = get_addr40(derived);
+    }
+    return 0;
+}
+
+/* does `addr` fall inside the range (base, prefix)? 40-bit addresses,
+ * prefix = number of significant bits (WireGuard AllowedIPs). */
+int ipv69_addr_in_range(uint64_t addr, uint64_t base, int prefix)
+{
+    return ((addr ^ base) >> (40 - prefix)) == 0;
 }
 
 void print_payload(const uint8_t *payload, size_t len) {
