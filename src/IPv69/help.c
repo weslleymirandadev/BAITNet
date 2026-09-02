@@ -231,8 +231,8 @@ static void usage_icsp(void)
         "ipv69 icsp - ICSP stream transport (nh=2, SCTP-derived)\n"
         "\n"
         "Usage: ipv69 icsp <server|client> <ifname> [port|:port]\n"
-        "        [--peer HEX] [--peer-file F] [--echo] [--loss N]\n"
-        "        ipv69 icsp client <ifname> <dst:port> [msg] [--echo]\n"
+        "        [--peer HEX] [--peer-file F] [--loss N]\n"
+        "        ipv69 icsp client <ifname> <dst:port> [msg]\n"
         "        [--hb] [--reset]\n"
         "\n"
         "Authenticated 4-way handshake (INIT->INIT-ACK cookie->COOKIE-ECHO->\n"
@@ -248,8 +248,8 @@ static void usage_icsp(void)
         "Options:\n"
         "  --peer HEX      allowlist: accept only this identity (repeatable)\n"
         "  --peer-file F   load allowed identities from file\n"
-        "  --echo          echo received DATA back (test mode)\n"
-        "  --loss N        drop N%% of DATA replies (synthetic loss test)\n"
+        "  --loss N        drop N%% of SACKs on the server (retransmission test)\n"
+        "  --hb / --reset  client: send a heartbeat / STREAM-RESET\n"
         "\n"
         "A real chat example lives in examples/icsp_chat.c (make chat).\n");
 }
