@@ -42,7 +42,7 @@ struct icsp_header {
 /* Chunk types (clean numbering 0-9) */
 enum {
     ICSP_CHUNK_DATA         = 0, /* [tsn 4][stream_id 2][stream_seq 2][payload] */
-    ICSP_CHUNK_INIT         = 1, /* [ver][streams_in 2][streams_out 2][eph_pub 32][id_pub 32][sig 64] */
+    ICSP_CHUNK_INIT         = 1, /* [ver][flags][streams 4][eph 32][ts 8][id 32|48][sig 64][mac1 16] */
     ICSP_CHUNK_INIT_ACK     = 2, /* [ver][streams][eph_pub 32][id_pub 32][sig 64][cookie] */
     ICSP_CHUNK_COOKIE_ECHO  = 3, /* [cookie][optional 0-RTT data] */
     ICSP_CHUNK_COOKIE_ACK   = 4,
@@ -53,12 +53,18 @@ enum {
     ICSP_CHUNK_STREAM_RESET = 9, /* [stream_id 2][mode 1] */
 };
 
+/* INIT chunk flags (chunk header flags byte) */
+#define ICSP_INIT_FLAG_IDBOX 0x01   /* id_pub encrypted (identity hiding) */
+
 /* association states */
 enum {
     ICSP_ST_CLOSED = 0,
     ICSP_ST_COOKIE_WAIT,
     ICSP_ST_ESTABLISHED,
     ICSP_ST_SHUTDOWN,
+    ICSP_ST_REKEY_WAIT_ACK,         /* initiator sent rekey INIT */
+    ICSP_ST_REKEY_WAIT_COOKIE,      /* responder answered, waits COOKIE-ECHO */
+    ICSP_ST_REKEY_WAIT_COOKIE_ACK,  /* initiator sent COOKIE-ECHO */
 };
 
 /* one association: the transport-level connection */
@@ -81,8 +87,15 @@ struct icsp_assoc {
     uint8_t  eph_pub[32];       /* our ephemeral X25519 pub */
     uint8_t  peer_id[32];       /* peer identity pub (authenticated) */
     uint8_t  peer_eph[32];      /* peer ephemeral X25519 pub */
-    uint8_t  session_key[32];   /* secretbox key, derived from ECDH */
+    uint8_t  eph_priv[32];      /* our ephemeral X25519 priv (for derive) */
+    uint8_t  sk[64];            /* our identity seed||pub (rekey signs) */
+    uint8_t  send_key[32];      /* data key, our TX direction (HKDF) */
+    uint8_t  recv_key[32];      /* data key, our RX direction (HKDF) */
     int      has_key;
+    int      is_initiator;      /* who sends with send_key (role-based) */
+    time_t   key_ts;            /* when the current keys were derived */
+    int      rekey_interval_s;  /* time-based rekey (0 = off, WG-style) */
+    uint64_t last_init_ts;      /* anti-replay: last accepted INIT ts */
     uint16_t streams_in, streams_out;
     /* peer MAC from the last received frame: replies go unicast to it
      * (broadcast does not traverse APs reliably wired->wireless) */
@@ -92,8 +105,10 @@ struct icsp_assoc {
     /* Phase 2: data path */
     int      n_streams;
     struct icsp_stream streams[ICSP_MAX_STREAMS];
-    uint32_t next_tsn;          /* next TSN to assign (sender) */
-    uint32_t cum_tsn;           /* cumulative TSN received (delivered) */
+    uint32_t next_tsn;          /* next TSN to assign (sender, random start) */
+    uint32_t cum_tsn;           /* cumulative TSN received (SACK) */
+    uint32_t rw_tsn;            /* replay window: highest TSN seen */
+    uint32_t rw_mask;           /* replay window: bit i = tsn (rw_tsn-i) seen */
     struct {
         uint32_t tsn;
         uint16_t stream_id, seq;
@@ -160,9 +175,12 @@ int icsp_send_pkt(struct icsp_assoc *a, const uint8_t *chunk,
  * endpoint opened with icsp_endpoint_open() (fd/ifindex/src_mac set).
  * a->src_port is used when != 0, else an auto port (50000 + pid%1000).
  * Runs INIT -> INIT-ACK -> COOKIE-ECHO -> COOKIE-ACK. sk = device
- * seed[32] (+ pub at sk+32). Returns 0 + established assoc, -1. */
+ * seed[32] (+ pub at sk+32). server_pub != NULL enables identity hiding
+ * (the INIT carries the encrypted id_pub). Returns 0 + established
+ * assoc, -1. */
 int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
-                          uint16_t dst_port, const uint8_t sk[64]);
+                          uint16_t dst_port, const uint8_t sk[64],
+                          const uint8_t *server_pub);
 
 /* Server: accept one association on `port`. Waits for INIT, answers
  * INIT-ACK (signed, with a secret-protected cookie), validates
@@ -200,6 +218,15 @@ int icsp_sack_send(struct icsp_assoc *a);
 int icsp_all_acked(struct icsp_assoc *a);
 
 /* --- Phase 3: lifecycle --- */
+
+/* rekey (WireGuard REKEY_AFTER_TIME): initiator sends a fresh INIT on
+ * the established association; the responder answers through
+ * icsp_rekey_server_step (called by icsp_handle_frame). New directional
+ * keys are installed on both sides; old ones are zeroed. */
+int icsp_rekey_start(struct icsp_assoc *a);
+int icsp_rekey_client_step(struct icsp_assoc *a, const uint8_t *payload);
+int icsp_rekey_server_step(struct icsp_assoc *a, const uint8_t *frame,
+                           const uint8_t *payload, size_t plen);
 
 /* liveness probe: send HEARTBEAT / answer with HEARTBEAT-ACK */
 int icsp_heartbeat_send(struct icsp_assoc *a);
