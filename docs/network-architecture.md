@@ -134,6 +134,26 @@ The DHCP69 server (`af69d`) is unchanged: DISCOVER arrives as a normal
 frame on the gateway's local interface (or is forwarded to the tunnel
 of the server when the gateway has no local L2).
 
+### Federation across L2 islands (P4a)
+
+The mesh above requires gateways on the SAME L2. `--peer-gw PUB@endpoint`
+extends it across islands: each gateway tunnels to its neighbors' UDP
+listeners (authenticated by endpoint + a signed GW_ANN), and the mesh
+wire — GW_ANN discovery, GW_Q forwarding, GW_R replies, data relay —
+flows over the links exactly as over the L2. A QUERY the local table
+cannot answer is sent to every link (and the L2); the answer walks back
+to the asker, and the clients then talk P2P directly. Gateway links are
+the network's "routers": every island keeps using its local gateway,
+the gateways form the backbone, and the link carrier can be IPv6-only —
+IPv4 disappears from the network path entirely.
+
+```
+ ilha A (L2)             ilha B (L2)
+ X ---- gwA ──link── gwB ---- Y
+          \                 /
+           QUERY X? -> fwd -> respondi (X via gwA) -> relay -> P2P X<->Y
+```
+
 ## 4. Traffic: P2P after bootstrap
 
 The gateway introduces peers and steps out of the data path:
