@@ -39,10 +39,24 @@ static inline void plat_sleep_ms(int ms)
 {
     Sleep(ms);
 }
+
+/* SO_RCVTIMEO differs between platforms: POSIX takes a struct
+ * timeval, Winsock takes a DWORD in milliseconds. Passing a Linux
+ * timeval on Windows makes the wait ~tv_sec milliseconds — every
+ * tunnel handshake/reply over a real gateway then times out before
+ * the answer arrives. Always go through this helper. */
+static inline int plat_set_rcvtimeo(sock_t fd, int timeout_ms)
+{
+    DWORD tv = (DWORD)timeout_ms;
+    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv,
+                      sizeof(tv));
+}
 #else
 #include <errno.h>
 #include <poll.h>
 #include <unistd.h>
+#include <sys/time.h>
+#include <sys/socket.h>
 
 typedef int sock_t;
 #define SOCK_INVALID    (-1)
@@ -62,6 +76,14 @@ static inline void perror_sock(const char *s) { perror(s); }
 static inline void plat_sleep_ms(int ms)
 {
     usleep((useconds_t)ms * 1000);
+}
+
+static inline int plat_set_rcvtimeo(sock_t fd, int timeout_ms)
+{
+    struct timeval tv = { timeout_ms / 1000,
+                          (timeout_ms % 1000) * 1000 };
+    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv,
+                      sizeof(tv));
 }
 #endif
 
