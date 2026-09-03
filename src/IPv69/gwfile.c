@@ -11,6 +11,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <fcntl.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -91,7 +93,20 @@ static int dns_query_a(const char *name, struct in_addr *a4)
     /* build the query: header + QNAME + QTYPE A + QCLASS IN */
     uint8_t q[512];
     size_t o = 0;
-    uint16_t id = (uint16_t)(rand() & 0xffff);
+    /* random transaction ID from /dev/urandom: rand() without srand()
+       repeats the same ID, and real routers/firewalls drop DNS
+       queries with a recently-seen ID (anti cache-poisoning) — the
+       built-in resolver failed against a physical router while dig
+       (random IDs) worked. */
+    uint16_t id = 0;
+    int rfd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (rfd >= 0) {
+        if (read(rfd, &id, sizeof(id)) != (ssize_t)sizeof(id))
+            id = 0;
+        close(rfd);
+    }
+    if (id == 0)
+        id = (uint16_t)(0x6969u ^ (uint16_t)(size_t)time(NULL));
     q[o++] = (uint8_t)(id >> 8);
     q[o++] = (uint8_t)id;
     q[o++] = 0x01;              /* RD */
