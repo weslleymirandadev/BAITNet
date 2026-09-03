@@ -124,6 +124,34 @@ static void assoc_reset(struct icsp_assoc *a)
                   ((uint32_t)rnd[2] << 8) | rnd[3];
 }
 
+/* reset the DATA plane (streams, sendq/rcvq, TSN state) while keeping
+ * the endpoint and the current keys. A freshly completed handshake —
+ * new association OR in-session rekey — must restart data sequencing
+ * on BOTH sides, otherwise a client that reconnects after a hard kill
+ * (new process, streams zeroed by assoc_reset) meets a server whose
+ * rekey preserved the dead association's stream seqs: DATA from the
+ * new client queues behind a next_recv_seq that never arrives and the
+ * direction goes silent (only one way works, and which one depends on
+ * the leftover state). Called when keys are installed (rekey) — the
+ * normal accept/connect paths already reset via assoc_reset. */
+static void data_plane_reset(struct icsp_assoc *a)
+{
+    uint8_t rnd[4];
+
+    memset(a->streams, 0, sizeof(a->streams));
+    a->n_streams = 0;
+    memset(a->sendq, 0, sizeof(a->sendq));
+    a->n_sendq = 0;
+    memset(a->rcvq, 0, sizeof(a->rcvq));
+    a->n_rcvq = 0;
+    a->cum_tsn = 0;
+    a->rw_tsn = 0;
+    a->rw_mask = 0;
+    randombytes(rnd, sizeof(rnd));
+    a->next_tsn = ((uint32_t)rnd[0] << 24) | ((uint32_t)rnd[1] << 16) |
+                  ((uint32_t)rnd[2] << 8) | rnd[3];
+}
+
 /* build the INIT chunk into `chunk` (caller owns the buffer, sized
  * ICSP_CHUNK_HDR + INIT_LEN(flags)). server_pub != NULL enables the
  * encrypted identity (identity hiding). Returns the total chunk length. */
@@ -544,6 +572,13 @@ int icsp_rekey_client_step(struct icsp_assoc *a, const uint8_t *payload)
         payload[ICSP_HEADER_LEN] == ICSP_CHUNK_COOKIE_ACK) {
         if (icsp_derive_key(a, a->eph_priv) != 0)
             return -1;
+        /* fresh keys = fresh data plane (WG: every completed handshake
+         * restarts sequencing on both sides). A reconnecting client is
+         * a NEW process whose assoc_reset zeroed its streams/TSNs; the
+         * server completes the same INIT as a rekey, so it must reset
+         * here too — otherwise one direction's DATA queues behind a
+         * stale next_recv_seq and only the other way works. */
+        data_plane_reset(a);
         a->state = ICSP_ST_ESTABLISHED;
         printf("icsp: rekey ok! new session_key=");
         for (int i = 0; i < 32; i++) printf("%02x", a->send_key[i]);
@@ -589,6 +624,12 @@ int icsp_rekey_server_step(struct icsp_assoc *a, const uint8_t *frame,
             if (icsp_send_pkt(a, ck, sizeof(ck)) < 0)
                 return -1;
         }
+        /* fresh keys = fresh data plane (see rekey_client_step): the
+         * peer that just rekeyed is either the same process (time-based
+         * rekey) or a NEW client that reset its streams on connect —
+         * both restart sequencing, so must we, or the direction from
+         * the new peer queues behind the old next_recv_seq forever. */
+        data_plane_reset(a);
         a->state = ICSP_ST_ESTABLISHED;
         printf("icsp: rekey ok! new session_key=");
         for (int i = 0; i < 32; i++) printf("%02x", a->send_key[i]);
