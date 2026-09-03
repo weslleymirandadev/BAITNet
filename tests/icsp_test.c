@@ -214,6 +214,13 @@ int cmd_icsp(int argc, char **argv)
 
     setvbuf(stdout, NULL, _IOLBF, 0);
 
+    /* ifname omitted (`icsp server :1684` / `icsp client <dst:port>`):
+       insert "auto" so the endpoint resolves the default-route iface */
+    if (argc >= 3 && argc < 30 && parse_looks_like_addr(argv[2])) {
+        char *na[32];
+        int nargc = parse_insert_auto_ifname(argc, argv, na);
+        return cmd_icsp(nargc, na);     /* re-dispatch normalized */
+    }
     if (argc < 3) {
         fprintf(stderr, "icsp: requires <server|client> <ifname> [args]\n");
         return 1;
