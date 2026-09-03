@@ -35,6 +35,8 @@ static int dns_parse_name(const uint8_t *msg, size_t msglen, size_t *off,
 {
     size_t o = *off, dst = 0;
     int jumps = 0;
+    int had_ptr = 0;
+    size_t resume = *off;   /* where the caller continues after the name */
     for (;;) {
         if (o >= msglen)
             return -1;
@@ -49,8 +51,13 @@ static int dns_parse_name(const uint8_t *msg, size_t msglen, size_t *off,
             size_t ptr = ((size_t)(len & 0x3f) << 8) | msg[o + 1];
             if (++jumps > 8 || ptr >= msglen)
                 return -1;
-            if (dst == 0)       /* only the FIRST pointer advances o */
-                o += 2;
+            if (!had_ptr) {
+                /* the caller resumes right after the FIRST pointer; the
+                   labels we chase through the pointer must not move the
+                   caller offset (the RR type follows the pointer) */
+                resume = o + 2;
+                had_ptr = 1;
+            }
             o = ptr;
             continue;
         }
@@ -65,7 +72,7 @@ static int dns_parse_name(const uint8_t *msg, size_t msglen, size_t *off,
         o += 1 + len;
     }
     out[dst] = 0;
-    *off = o;
+    *off = had_ptr ? resume : o;
     return 0;
 }
 
