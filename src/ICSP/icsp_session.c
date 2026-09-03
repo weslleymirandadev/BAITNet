@@ -124,10 +124,7 @@ static ssize_t icsp_rx(struct icsp_assoc *a, uint8_t *frame,
                        size_t maxlen, int timeout_ms)
 {
     if (a->tunnel) {
-        struct timeval tv = { timeout_ms / 1000,
-                              (timeout_ms % 1000) * 1000 };
-        setsockopt(a->tfd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv,
-                   sizeof(tv));
+        plat_set_rcvtimeo(a->tfd, timeout_ms);
         ssize_t n = recvfrom(a->tfd, (char *)frame, maxlen, 0, NULL, NULL);
         return n < 0 ? 0 : n;   /* timeout counts as "nothing" */
     }
