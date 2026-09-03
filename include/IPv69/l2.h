@@ -49,6 +49,12 @@ ssize_t l2_recv(l2_handle h, uint8_t *frame, size_t maxlen, int timeout_ms);
 
 void l2_close(l2_handle h);
 
+/* name of the interface the system currently uses to reach the
+ * internet (the default-route interface): "eth0"/"wlan0" on Linux,
+ * the Npcap-friendly adapter substring on Windows. Fills out[0..sz)
+ * and returns 0; -1 when no default route exists. */
+int l2_default_ifname(char *out, size_t sz);
+
 /* --- legacy POSIX AF_PACKET API (dgram tools, Linux only) --- */
 
 /* open an AF_PACKET socket bound to ifname, ethertype 0x6969.
