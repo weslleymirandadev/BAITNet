@@ -371,23 +371,57 @@ static int relay_stdin(struct icsp_assoc *a, uint16_t stream_id,
     return 0;
 }
 #else
+/* POSIX relay stdin: raw read() into a line buffer, NOT stdio fgets.
+ * fgets would slurp every queued line into the FILE internal buffer on
+ * the first call; the fd then reads empty, poll() stops waking up and
+ * the remaining lines sit stuck until NEW input arrives (they surface
+ * on the next association — chat messages that look "lost"). */
+static char inbuf[ICSP_MAX_PAYLOAD * 2];
+static size_t inlen = 0;
+
 static int relay_stdin(struct icsp_assoc *a, uint16_t stream_id,
                        void *unused, int *use_stdin)
 {
     (void)unused;
-    struct pollfd pfd = { 0, POLLIN, 0 };
-    if (poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLIN))
-        return 0;
     char line[ICSP_MAX_PAYLOAD];
-    if (!fgets(line, sizeof(line), stdin)) {
-        if (isatty(0)) {
-            icsp_shutdown_send(a);      /* Ctrl-D: graceful close */
-            return 2;                   /* EOF */
+
+    for (;;) {
+        /* deliver a complete line already buffered (one per call: the
+         * relay loop re-invokes us every ~250ms, so the sendq drains
+         * between lines instead of overflowing) */
+        char *nl = memchr(inbuf, '\n', inlen);
+        if (nl) {
+            size_t l = (size_t)(nl - inbuf);
+            if (l >= sizeof(line))
+                l = sizeof(line) - 1;
+            memcpy(line, inbuf, l);
+            line[l] = 0;
+            memmove(inbuf, nl + 1, inlen - l - 1);
+            inlen -= l + 1;
+            return relay_send_line(a, stream_id, line) < 0 ? -1 : 1;
         }
-        *use_stdin = 0;                 /* pipe/daemon EOF: keep receiving */
-        return 0;
+        if (inlen >= sizeof(inbuf)) /* line longer than the buffer: drop */
+            inlen = 0;
+        struct pollfd pfd = { 0, POLLIN, 0 };
+        if (poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLIN))
+            return 0;
+        ssize_t n = read(0, inbuf + inlen, sizeof(inbuf) - inlen);
+        if (n > 0) {
+            inlen += (size_t)n;
+            continue;
+        }
+        if (n == 0) {
+            if (isatty(0)) {
+                icsp_shutdown_send(a);  /* Ctrl-D: graceful close */
+                return 2;               /* EOF */
+            }
+            *use_stdin = 0;             /* pipe/daemon EOF: keep receiving */
+            return 0;
+        }
+        if (errno == EINTR || errno == EAGAIN)
+            return 0;
+        return -1;
     }
-    return relay_send_line(a, stream_id, line) < 0 ? -1 : 0;
 }
 #endif
 
