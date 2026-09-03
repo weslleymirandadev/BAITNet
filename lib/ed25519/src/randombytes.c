@@ -1,7 +1,11 @@
 /* randombytes.c - secure RNG backend for TweetNaCl.
- * POSIX: getrandom(); Windows: BCryptGenRandom. Same interface.
+ * POSIX: /dev/urandom; Windows: BCryptGenRandom. Same interface.
  */
 #include <stdint.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
 #include "tweetnacl.h"
 
 #ifdef _WIN32
@@ -20,16 +24,26 @@ void randombytes(uint8_t *buf, uint64_t n)
     }
 }
 #else
-#include <sys/random.h>
-
+/* /dev/urandom instead of getrandom(): the getrandom() prototype is
+ * gated behind _GNU_SOURCE on glibc and __ANDROID_API__ >= 28 on
+ * bionic (Termux builds with 24), which clang >= 16 turns into an
+ * implicit-declaration error. /dev/urandom exists on every POSIX
+ * target (Linux, Android, WSL, chroots). */
 void randombytes(uint8_t *buf, uint64_t n)
 {
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        abort();                /* no OS randomness: never emit weak keys */
     while (n > 0) {
-        ssize_t r = getrandom(buf, n, 0);
-        if (r <= 0)
-            continue;
+        ssize_t r = read(fd, buf, (size_t)n);
+        if (r <= 0) {
+            if (r < 0 && errno == EINTR)
+                continue;
+            abort();
+        }
         buf += r;
         n -= (uint64_t)r;
     }
+    close(fd);
 }
 #endif
