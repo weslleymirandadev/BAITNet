@@ -8,8 +8,13 @@
  * heartbeat + dead-peer detection on its own.
  *
  * Usage:
- *   ./icsp_chat server <ifname> [port|:port] [--peer HEX]
- *   ./icsp_chat client <ifname> <dst:port> [--peer HEX]
+ *   ./icsp_chat server [ifname] [port|:port] [--peer HEX]
+ *   ./icsp_chat client [ifname] <dst:port> [--peer HEX]
+ *
+ * The ifname is optional: omit it (or write 'auto') to use the
+ * default-route interface — the one that reaches the internet.
+ * In tunnel mode (--remote or a ~/.hosts69/gateways file) the ifname
+ * is ignored anyway.
  *
  * stdin = send (stream 1), socket = receive. Ctrl-D ends the chat
  * with a graceful SHUTDOWN. The session key (printed on both sides)
@@ -29,14 +34,18 @@ static void chat_usage(void)
     fprintf(stderr,
         "icsp_chat - example chat built on the ICSP API\n"
         "\n"
-        "      Usage: icsp_chat <server|client> <ifname> [port|:port] "
+        "      Usage: icsp_chat <server|client> [ifname] [port|:port] "
             "[--peer HEX] [--remote gw:port]\n"
-            "       icsp_chat client <ifname> <dst:port> [--peer HEX]\n"
+            "       icsp_chat client [ifname] <dst:port> [--peer HEX]\n"
             "                              [--remote gw:port]\n"
             "\n"
             "  server  wait for a connection (persistent; replies unicast to\n"
             "          the peer MAC, so it works across Wi-Fi APs)\n"
             "  client  connect to <dst:port> (address-less port form ok)\n"
+            "\n"
+            "The ifname is OPTIONAL: omit it (or write 'auto') to use the\n"
+            "default-route interface. In tunnel mode (--remote or a\n"
+            "~/.hosts69/gateways file) the ifname is ignored anyway.\n"
             "\n"
             "Options:\n"
             "  --peer HEX   allowlist: accept only this identity (repeatable)\n"
@@ -93,6 +102,13 @@ int main(int argc, char **argv)
     if (argc < 3) {
         chat_usage();
         return 1;
+    }
+    /* ifname omitted (`client <dst:port>` / `server :port`): insert
+       "auto" so the endpoint resolves the default-route iface */
+    if (argc < 30 && parse_looks_like_addr(argv[2])) {
+        char *na[32];
+        int nargc = parse_insert_auto_ifname(argc, argv, na);
+        return main(nargc, na);         /* re-dispatch normalized */
     }
     const char *remote = NULL;
     for (int i = 3; i < argc; i++) {
