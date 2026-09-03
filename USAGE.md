@@ -279,6 +279,24 @@ the address** (`addr:port`):
 > The interface is given by **name** (e.g. `eth0`, `wlan0`), resolved
 > to the ifindex internally (`ip -o link` to list them).
 
+**Omitting the interface = `auto`.** Any command whose first
+positional argument is an IPv69 address or a `:port` instead of an
+ifname (`send <dst>`, `recv [addr]`, `ping <dst>`, `icsp server :port`,
+`icsp client <dst:port>`, and the chat examples) resolves the
+**default-route interface** automatically — the one the system uses to
+reach the internet (`/proc/net/route` on Linux, `GetBestInterface` on
+Windows). The literal name `auto` works too. In tunnel mode the ifname
+is ignored anyway, so `icsp server :1684` with a `gateways` file needs
+no interface at all.
+
+```
+# these are equivalent (the address first = the ifname was omitted):
+ipv69 send eth0 00.00.00.00.02:16 ola
+ipv69 send 00.00.00.00.02:16 ola
+ipv69 icsp server eth0 :6969          # L2 local
+ipv69 icsp server :6969               # same, ifname = auto
+```
+
 ---
 
 ## 5. Security (summary)
