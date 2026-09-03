@@ -27,6 +27,16 @@ int parse_ipv69_addr(const char *s, uint64_t *out);
    :port is DECIMAL (:16 = port 16, no leading zeros needed). */
 int parse_ipv69_addr_port(const char *s, uint64_t *addr, uint16_t *port);
 
+/* 1 if `s` looks like an IPv69 address[:port] or a bare :port — in
+ * other words NOT an interface name. Lets commands detect when the
+ * positional ifname was omitted (`icsp server :1684`) and use "auto". */
+int parse_looks_like_addr(const char *s);
+
+/* When argv[2] is not an ifname (address or :port), rebuild argv into
+ * out (caller: char *out[argc+2]) inserting "auto" at position 2 and
+ * shifting the rest right. Returns the new argc. */
+int parse_insert_auto_ifname(int argc, char **argv, char **out);
+
 /* identity-derived address (SLAAC-style): 4 bytes of SHA-512(pubkey)
    prefixed with the class byte -> 40-bit address. Deterministic: same
    key, same address, forever. No DHCP needed.

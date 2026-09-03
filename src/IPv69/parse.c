@@ -104,6 +104,48 @@ int parse_ipv69_addr(const char *s, uint64_t *out) {
     return 0;
 }
 
+/* 1 if `s` looks like an IPv69 address[:port] or a bare :port — in
+ * other words NOT an interface name. Commands use this to detect when
+ * the positional ifname was omitted (e.g. `icsp server :1684`) and
+ * substitute "auto" (the default-route interface). */
+int parse_looks_like_addr(const char *s)
+{
+    uint64_t a;
+    uint16_t p;
+    if (s[0] == ':')
+        return 1;               /* ":1684" */
+    if (parse_ipv69_addr_port(s, &a, &p) == 0)
+        return 1;
+    /* a bare decimal/hex number is a port or raw addr, not an ifname */
+    for (const char *c = s; *c; c++)
+        if (!((*c >= '0' && *c <= '9') ||
+              (*c >= 'a' && *c <= 'f') || (*c >= 'A' && *c <= 'F')))
+            return 0;
+    return s[0] != 0;
+}
+
+/* Normalize the positional ifname: when argv[2] is NOT an interface
+ * name (it parses as an address or :port), the ifname was omitted —
+ * rebuild the argv into out (caller: char *out[argc+2]) with "auto"
+ * inserted at position 2 and everything else shifted right. Returns
+ * the new argc (== argc when argv[2] is a real ifname). */
+int parse_insert_auto_ifname(int argc, char **argv, char **out)
+{
+    if (argc < 3 || !parse_looks_like_addr(argv[2])) {
+        for (int i = 0; i < argc; i++)
+            out[i] = argv[i];
+        out[argc] = NULL;
+        return argc;
+    }
+    out[0] = argv[0];
+    out[1] = argv[1];
+    out[2] = (char *)"auto";
+    for (int i = 2; i < argc; i++)
+        out[i + 1] = argv[i];
+    out[argc + 1] = NULL;
+    return argc + 1;
+}
+
 /* "ff.ff.ff.ff.ff[:port]" or raw hex[:port]; splits the optional
   :port, in DECIMAL (no leading zeros needed: :16 = port 16).
   Returns 0 or -1. */
