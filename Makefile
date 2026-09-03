@@ -1,6 +1,14 @@
 # IPv69 - build (C, static libc)
 CC      := gcc
-CFLAGS  := -Wall -Wextra -O2 -static -Iinclude -Ilib/ed25519/include
+# static libc on Termux: bionic ships no libc.a (only .so), so ld.lld
+# fails with "unable to find library -lc". Termux is detected by
+# $PREFIX (set only there); override with `make STATIC=` if needed.
+ifeq ($(PREFIX),)
+STATIC  := -static
+else
+STATIC  :=
+endif
+CFLAGS  := -Wall -Wextra -O2 $(STATIC) -Iinclude -Ilib/ed25519/include
 BUILD   := build
 
 $(BUILD):
