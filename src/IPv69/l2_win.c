@@ -107,7 +107,17 @@ int l2_open(const char *ifname, l2_handle *h, int *ifindex,
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_if_t *dev;
     struct bpf_program fp;
+    char resolved[256];
 
+    if (!ifname || !strcmp(ifname, "auto")) {
+        /* no interface given: use the default-route one */
+        if (l2_default_ifname(resolved, sizeof(resolved)) < 0) {
+            fprintf(stderr, "l2: no default-route adapter found\n");
+            return -1;
+        }
+        ifname = resolved;
+        printf("l2: auto adapter = %s\n", resolved);
+    }
     if (find_pcap_dev(ifname, &dev) < 0) {
         fprintf(stderr, "l2: adapter '%s' not found in Npcap\n",
                 ifname);
@@ -170,4 +180,35 @@ void l2_close(l2_handle h)
 {
     if (h)
         pcap_close((pcap_t *)h);
+}
+
+/* name of the adapter Windows uses for the default route (the one a
+ * datagram to the internet leaves on): GetBestInterface gives its
+ * ifindex, GetAdaptersInfo maps it back to the adapter. The name is a
+ * substring of the Npcap device (find_pcap_dev matches by substring),
+ * so the full Description is returned. */
+int l2_default_ifname(char *out, size_t sz)
+{
+    DWORD idx;
+    if (GetBestInterface(inet_addr("8.8.8.8"), &idx) != NO_ERROR)
+        return -1;
+    ULONG buflen = 0;
+    GetAdaptersInfo(NULL, &buflen);
+    if (buflen == 0)
+        return -1;
+    PIP_ADAPTER_INFO ai = (PIP_ADAPTER_INFO)malloc(buflen);
+    if (!ai)
+        return -1;
+    int found = -1;
+    if (GetAdaptersInfo(ai, &buflen) == NO_ERROR) {
+        for (PIP_ADAPTER_INFO p = ai; p; p = p->Next) {
+            if (p->Index == idx) {
+                snprintf(out, sz, "%s", p->Description);
+                found = 0;
+                break;
+            }
+        }
+    }
+    free(ai);
+    return found;
 }
