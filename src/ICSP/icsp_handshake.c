@@ -411,6 +411,7 @@ int icsp_server_accept(struct icsp_assoc *a, uint16_t port,
     memcpy(a->sk, sk, 64);
 
     /* wait INIT */
+retry_handshake:
     for (;;) {
         if (a->tunnel && a->announce_s > 0) {
             /* keep our route alive at the gateway while waiting: recv
@@ -447,10 +448,21 @@ int icsp_server_accept(struct icsp_assoc *a, uint16_t port,
     if (init_ack_send(a, sk) < 0)
         return -1;
 
-    /* wait COOKIE-ECHO [cookie][sig] */
+    /* wait COOKIE-ECHO [cookie][sig]. A missing/invalid COOKIE-ECHO
+       (lost INIT-ACK, desistent client, forged packet) must NOT kill
+       the server: go back to accepting INITs. Only a real socket
+       error is fatal. In tunnel mode the recv timeout is the announce
+       interval — a timeout there just means no COOKIE-ECHO arrived. */
     for (;;) {
         ssize_t n = icsp_recv_frame(a, frame, &payload, &plen, &from);
-        if (n < 0) { perror("icsp: COOKIE-ECHO"); return -1; }
+        if (n < 0) {
+            if (a->tunnel && a->announce_s > 0 && errno == ETIMEDOUT) {
+                icsp_announce_send(a);
+                goto retry_handshake;
+            }
+            perror("icsp: COOKIE-ECHO");
+            return -1;
+        }
         if (n == 0)
             continue;
         if (payload[ICSP_HEADER_LEN] != ICSP_CHUNK_COOKIE_ECHO)
@@ -458,11 +470,11 @@ int icsp_server_accept(struct icsp_assoc *a, uint16_t port,
         const uint8_t *cd = payload + ICSP_HEADER_LEN + ICSP_CHUNK_HDR;
         if (!cookie_valid(cd, a)) {
             printf("icsp: COOKIE-ECHO invalid cookie -> rejected\n");
-            return -1;
+            goto retry_handshake;
         }
         if (ed25519_verify(cd, COOKIE_LEN, cd + COOKIE_LEN, a->peer_id) != 0) {
             printf("icsp: COOKIE-ECHO invalid signature -> rejected\n");
-            return -1;
+            goto retry_handshake;
         }
         printf("icsp: COOKIE-ECHO ok -> COOKIE-ACK\n");
         break;
