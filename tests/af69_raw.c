@@ -500,6 +500,18 @@ int cmd_raw(int argc, char **argv)
         i--;
     }
 
+    /* ifname omitted: `send <dst> ...`, `recv [src_addr]`, `ping <dst>`
+       with an address in the ifname position — insert "auto" so the
+       endpoint resolves the default-route interface. */
+    if (argc >= 3 && argc < 30 &&
+        (!strcmp(argv[1], "send") || !strcmp(argv[1], "recv") ||
+         !strcmp(argv[1], "ping")) &&
+        parse_looks_like_addr(argv[2])) {
+        char *na[32];
+        int nargc = parse_insert_auto_ifname(argc, argv, na);
+        return cmd_raw(nargc, na);      /* re-dispatch normalized */
+    }
+
     /* `addr` needs no iface/socket: dispatch before the argc>=3 gate */
     if (!strcmp(argv[1], "addr")) {
         uint8_t sk[64], pub[32], derived[5];
