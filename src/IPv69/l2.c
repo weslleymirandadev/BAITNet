@@ -97,6 +97,16 @@ int send_frame(int fd, int ifindex, const uint8_t *dst_mac,
 int l2_open(const char *ifname, l2_handle *h, int *ifindex,
             uint8_t src_mac[6])
 {
+    char resolved[IFNAMSIZ];
+    if (!ifname || !strcmp(ifname, "auto")) {
+        /* no interface given: use the default-route one */
+        if (l2_default_ifname(resolved, sizeof(resolved)) < 0) {
+            fprintf(stderr, "l2: no default-route interface found\n");
+            return -1;
+        }
+        ifname = resolved;
+        printf("l2: auto interface = %s\n", resolved);
+    }
     int fd = raw_socket(ifname, ifindex, src_mac);
     if (fd < 0)
         return -1;
@@ -135,4 +145,32 @@ void l2_close(l2_handle h)
 {
     if ((int)h >= 0)
         close((int)h);
+}
+
+/* name of the default-route interface, read from /proc/net/route
+ * (the static binary cannot use netlink). Columns: Iface Destination
+ * Gateway Flags ... — the default route has Destination 00000000. */
+int l2_default_ifname(char *out, size_t sz)
+{
+    FILE *f = fopen("/proc/net/route", "r");
+    char line[256];
+    int found = -1;
+    if (!f)
+        return -1;
+    if (!fgets(line, sizeof(line), f)) {    /* header */
+        fclose(f);
+        return -1;
+    }
+    while (fgets(line, sizeof(line), f)) {
+        char iface[IFNAMSIZ];
+        unsigned int dest, flags;
+        if (sscanf(line, "%15s %x %*s %x", iface, &dest, &flags) == 3 &&
+            dest == 0 && (flags & 0x1)) {   /* RTF_UP */
+            snprintf(out, sz, "%s", iface);
+            found = 0;
+            break;
+        }
+    }
+    fclose(f);
+    return found;
 }
