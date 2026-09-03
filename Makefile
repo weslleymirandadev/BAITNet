@@ -52,7 +52,7 @@ HUB_SRC := examples/icsp_hub.c src/IPv69/keyring.c src/IPv69/parse.c \
 	src/IPv69/l2.c src/IPv69/mac1.c src/IPv69/ratelimit.c \
 	src/IPv69/gwfile.c $(ICSP_SRC) $(ED25519)
 
-.PHONY: all ipv69 chat hub win
+.PHONY: all ipv69 chat hub win lib libwin libdemo
 
 all: ipv69 chat
 
@@ -103,3 +103,52 @@ $(BUILD)/ipv69.exe: $(IPV69_WIN_SRC) include/IPv69/plat.h include/IPv69/af69.h |
 $(BUILD)/icsp_chat.exe: $(WIN_SRC) include/ICSP/icsp.h include/IPv69/l2.h | $(BUILD)
 	$(WIN_CC) $(WIN_CFLAGS) -o $@ $(WIN_SRC) $(WIN_LIBS)
 	chmod +x $@
+
+# --- static library (the reusable core, no cmd_* entry points) ---
+# Everything a program needs to speak IPv69/ICSP without the CLI
+# dispatcher: parse, keyring, L2 backend, mac1/ratelimit, gateway file,
+# the ICSP session layer and the ed25519 crypto. Build with:
+#   make lib      # POSIX (AF_PACKET L2) -> build/libipv69.a
+#   make libwin   # MinGW (Npcap L2)     -> build/libipv69_win.a
+# Link example:  $(CC) app.c build/libipv69.a -Iinclude -Ilib/ed25519/include
+# Headers keep their module paths (#include "IPv69/parse.h" etc.); the
+# umbrella include/ipv69.h pulls everything in with one #include.
+LIB_POSIX := src/IPv69/parse.c src/IPv69/l2.c src/IPv69/keyring.c \
+	src/IPv69/mac1.c src/IPv69/ratelimit.c src/IPv69/gwfile.c \
+	src/ICSP/icsp.c src/ICSP/icsp_handshake.c src/ICSP/icsp_data.c \
+	src/ICSP/icsp_life.c src/ICSP/icsp_session.c
+LIB_WIN := src/IPv69/parse.c src/IPv69/l2_win.c src/IPv69/keyring.c \
+	src/IPv69/mac1.c src/IPv69/ratelimit.c src/IPv69/gwfile.c \
+	src/ICSP/icsp.c src/ICSP/icsp_handshake.c src/ICSP/icsp_data.c \
+	src/ICSP/icsp_life.c src/ICSP/icsp_session.c
+
+# object names mirror the source path (src/IPv69/parse.c ->
+# lib-obj/posix/src_IPv69_parse.o) so same-named files never clash
+LIB_OBJ_DIR := $(BUILD)/lib-obj
+
+define lib_compile_posix
+$(CC) $(CFLAGS) -c $(1) -o $(LIB_OBJ_DIR)/posix/$(subst /,_,$(1:.c=.o))
+endef
+
+define lib_compile_win
+$(WIN_CC) $(WIN_CFLAGS) -c $(1) -o $(LIB_OBJ_DIR)/win/$(subst /,_,$(1:.c=.o))
+endef
+
+lib: $(BUILD)/libipv69.a
+
+$(BUILD)/libipv69.a: $(LIB_POSIX) $(ED25519) $(wildcard include/IPv69/*.h include/ICSP/*.h) | $(BUILD)
+	@mkdir -p $(LIB_OBJ_DIR)/posix
+	@$(foreach f,$(LIB_POSIX) $(ED25519),$(call lib_compile_posix,$(f)) || exit 1;)
+	ar rcs $@ $(LIB_OBJ_DIR)/posix/*.o
+
+libwin: $(BUILD)/libipv69_win.a
+
+$(BUILD)/libipv69_win.a: $(LIB_WIN) $(ED25519) $(wildcard include/IPv69/*.h include/ICSP/*.h) | $(BUILD)
+	@mkdir -p $(LIB_OBJ_DIR)/win
+	@$(foreach f,$(LIB_WIN) $(ED25519),$(call lib_compile_win,$(f)) || exit 1;)
+	ar rcs $@ $(LIB_OBJ_DIR)/win/*.o
+
+# demo: an app that links ONLY the static library (see docs/lib-api.md).
+# Proves the library is self-contained — no source-list linking needed.
+libdemo: $(BUILD)/libipv69.a
+	$(CC) $(CFLAGS) -o $(BUILD)/chat_lib examples/chat_lib.c $(BUILD)/libipv69.a
