@@ -66,7 +66,6 @@ static int gw_query(uint64_t addr, struct sockaddr_storage *ep,
 {
     uint8_t q[8] = { 'Q', '6', '9' };
     uint8_t ans[128];
-    struct timeval tv = { 1, 0 };
 
     q[3] = (addr >> 32) & 0xff; q[4] = (addr >> 24) & 0xff;
     q[5] = (addr >> 16) & 0xff; q[6] = (addr >> 8) & 0xff; q[7] = addr & 0xff;
@@ -74,7 +73,7 @@ static int gw_query(uint64_t addr, struct sockaddr_storage *ep,
         sendto(g_udp_fd, (const char *)q, sizeof(q), 0,
                (struct sockaddr *)&g_gw[i], g_gwlen[i]);
     }
-    setsockopt(g_udp_fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+    plat_set_rcvtimeo(g_udp_fd, 1000);
     for (;;) {
         ssize_t n = recvfrom(g_udp_fd, (char *)ans, sizeof(ans), 0,
                              (struct sockaddr *)ep, eplen);
@@ -177,9 +176,7 @@ static void announce_to(const uint8_t sk[64], uint64_t my_addr,
 static ssize_t tun_recv(uint8_t *frame, size_t maxlen, int timeout_ms)
 {
     if (g_ngw > 0) {
-        struct timeval tv = { timeout_ms / 1000,
-                              (timeout_ms % 1000) * 1000 };
-        setsockopt(g_udp_fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+        plat_set_rcvtimeo(g_udp_fd, timeout_ms);
         ssize_t n = recvfrom(g_udp_fd, (char *)frame, maxlen, 0, NULL, NULL);
         return n < 0 ? 0 : n;           /* timeout counts as "nothing" */
     }
