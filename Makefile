@@ -27,7 +27,7 @@ IPV69_SRC := src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c \
 	src/IPv69/ipv69gw.c src/IPv69/ip69d.c src/IPv69/ip69.c \
 	src/IPv69/keygen.c src/IPv69/keyring.c src/IPv69/l2.c \
 	src/IPv69/mac1.c src/IPv69/ratelimit.c src/IPv69/gwfile.c \
-	src/IPv69/help.c \
+	src/IPv69/pppoe69.c src/IPv69/help.c \
 	tests/af69_raw.c \
 	tests/icsp_test.c src/ICSP/icsp.c src/ICSP/icsp_handshake.c \
 	src/ICSP/icsp_data.c src/ICSP/icsp_life.c src/ICSP/icsp_session.c
@@ -90,7 +90,7 @@ WIN_SRC    := examples/icsp_chat.c src/IPv69/keyring.c src/IPv69/parse.c \
 IPV69_WIN_SRC := src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c \
 	src/IPv69/ipv69gw.c src/IPv69/keygen.c src/IPv69/keyring.c \
 	src/IPv69/l2_win.c src/IPv69/mac1.c src/IPv69/ratelimit.c \
-	src/IPv69/gwfile.c \
+	src/IPv69/gwfile.c src/IPv69/pppoe69.c \
 	src/IPv69/help.c \
 	tests/af69_raw.c tests/icsp_test.c $(ICSP_SRC) $(ED25519)
 
