@@ -37,6 +37,13 @@ int parse_looks_like_addr(const char *s);
  * shifting the rest right. Returns the new argc. */
 int parse_insert_auto_ifname(int argc, char **argv, char **out);
 
+/* Remove every "--key-file <path>" pair at argv[from..] and set
+ * IPV69_KEYFILE so keyring_paths() resolves the named identity key
+ * (bare names -> ~/.hosts69/<name>). Returns the new argc. Used by the
+ * ipv69 dispatcher (from=2, after the subcommand) and by the example
+ * tools (from=1). */
+int parse_strip_keyfile(int argc, char **argv, int from);
+
 /* identity-derived address (SLAAC-style): 4 bytes of SHA-512(pubkey)
    prefixed with the class byte -> 40-bit address. Deterministic: same
    key, same address, forever. No DHCP needed.
