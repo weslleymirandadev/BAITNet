@@ -140,6 +140,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "hub: winsock init failed\n");
         return 1;
     }
+    /* --key-file PATH: select the identity key file (any position) */
+    argc = parse_strip_keyfile(argc, argv, 1);
     if (argc < 2) {
         hub_usage();
         return 1;
