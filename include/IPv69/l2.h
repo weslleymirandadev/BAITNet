@@ -47,6 +47,12 @@ int l2_send(l2_handle h, int ifindex, const uint8_t *dst_mac,
  * Returns the frame length, 0 on timeout, -1 on error. */
 ssize_t l2_recv(l2_handle h, uint8_t *frame, size_t maxlen, int timeout_ms);
 
+/* enable/disable promiscuous mode on the interface (0 on success).
+ * Needed to receive unicast frames addressed to OTHER MACs (e.g. an
+ * access concentrator catching replies destined to its dialed hosts).
+ * Npcap opens promiscuous by default, so this is a no-op on Windows. */
+int l2_set_promisc(l2_handle h, int ifindex, int on);
+
 void l2_close(l2_handle h);
 
 /* name of the interface the system currently uses to reach the
