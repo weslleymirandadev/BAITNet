@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "IPv69/plat.h"
+#include "IPv69/parse.h"    /* parse_strip_keyfile (--key-file) */
 
 int cmd_gw(int argc, char **argv);
 int cmd_keygen(int argc, char **argv);
@@ -43,7 +44,7 @@ static void usage(void)
         "                                       lease and keep it alive (Linux)\n"
         "  tun    <ifname> [--tap NAME]       alias of `net up`\n"
         "  addr   [--dad]                      print identity-derived 40-bit address\n"
-        "  keygen [count]                      generate Ed25519 key pairs\n"
+        "  keygen [-f PATH] [count]            generate Ed25519 key pairs\n"
         "  dhcpd  <ifname> [--allow MAC] [--peer HEX] [--peer-file F]\n"
         "         [--learn] [--key HEX] [pool_start pool_end lease_sec]\n"
         "                                       DHCP69 server (private networks)\n"
@@ -74,6 +75,13 @@ int main(int argc, char **argv)
         return 1;
     }
     cmd = argv[1];
+
+    /* `--key-file PATH` (after the subcommand) selects the identity key
+       file for ANY command. keygen parses it itself (alias of -f, so
+       it can prompt for the passphrase); help needs no identity. */
+    if (argc > 2 && strcmp(cmd, "keygen") && strcmp(cmd, "help") &&
+        strcmp(cmd, "--help") && strcmp(cmd, "-h"))
+        argc = parse_strip_keyfile(argc, argv, 2);
 
     /* `help` and `<cmd> --help|-h` */
     if (!strcmp(cmd, "help") || !strcmp(cmd, "--help") || !strcmp(cmd, "-h"))
