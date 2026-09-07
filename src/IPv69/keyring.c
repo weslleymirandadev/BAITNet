@@ -55,6 +55,31 @@ void keyring_paths(char *dir, size_t dirsz, char *key, size_t keysz,
 #endif
     if (!home || !*home)
         home = "/root";
+    /* IPV69_KEYFILE overrides the key FILE (default ~/.hosts69/key):
+     * a bare name resolves inside the keyring dir; a path is used as-is
+     * ('~' expands); the pub key always goes to <file>.pub. Every tool
+     * and the --key-file flag (parse_strip_keyfile) go through here. */
+    const char *kf = getenv("IPV69_KEYFILE");
+    if (kf && *kf) {
+        char full[1024];
+        if (strchr(kf, '/')) {
+            if (kf[0] == '~' && kf[1] == '/')
+                snprintf(full, sizeof(full), "%s%s", home, kf + 1);
+            else
+                snprintf(full, sizeof(full), "%s", kf);
+        } else {
+            snprintf(full, sizeof(full), "%s/.hosts69/%s", home, kf);
+        }
+        snprintf(dir, dirsz, "%s", full);
+        char *slash = strrchr(dir, '/');
+        if (slash && slash != dir)
+            *slash = 0;
+        else
+            snprintf(dir, dirsz, "%s/.hosts69", home);
+        snprintf(key, keysz, "%s", full);
+        snprintf(pub, pubsz, "%s.pub", full);
+        return;
+    }
     snprintf(dir, dirsz, "%s/.hosts69", home);
     snprintf(key, keysz, "%s/.hosts69/key", home);
     snprintf(pub, pubsz, "%s/.hosts69/key.pub", home);
@@ -242,8 +267,7 @@ static int load_encrypted(const char *path, uint8_t sk[64],
     FILE *f = fopen(path, "r");
     char salt_h[64], nonce_h[64], box_h[160];
     uint8_t salt[SALT_LEN], nonce[NONCE_LEN], boxed[64], k[32];
-    const char *pass = getenv("IPV69_PASSPHRASE");
-    int tries = 0;
+    int env_tried = 0;
 
     if (!f)
         return -1;
@@ -260,19 +284,37 @@ static int load_encrypted(const char *path, uint8_t sk[64],
         hex_decode(nonce_h, nonce, NONCE_LEN) != NONCE_LEN ||
         hex_decode(box_h, boxed, 64) != 64)
         return -1;
-    for (;;) {
-        if (!pass) {
-#ifndef _WIN32
-            char *p = getpass("Enter passphrase for key: ");
-            if (!p)
-                return -1;
-            pass = p;
+    /* Passphrase source: IPV69_PASSPHRASE once, then the tty prompt.
+     * An env pass that fails falls back to prompting, so several named
+     * keys can each keep their own passphrase even with a global (or
+     * wrong) IPV69_PASSPHRASE exported; without a tty (scripts) the
+     * prompt fails and the load errors out. Empty env = unset. */
+    for (int tries = 0; tries < 3; tries++) {
+        const char *pass = NULL;
+#ifdef _WIN32
+        static char winpass[256];
 #else
-            static char winpass[256];
+        char *gp;
+#endif
+
+        if (!env_tried) {
+            const char *e = getenv("IPV69_PASSPHRASE");
+            if (e && *e) {
+                pass = e;
+                env_tried = 1;
+            }
+        }
+        if (!pass) {
+#ifdef _WIN32
             if (read_noecho("Enter passphrase for key: ", winpass,
                             sizeof(winpass)) < 0)
-                return -1;
+                break;
             pass = winpass;
+#else
+            gp = getpass("Enter passphrase for key: ");
+            if (!gp)
+                break;
+            pass = gp;
 #endif
         }
         derive_key(k, salt, SALT_LEN, pass);
@@ -281,12 +323,11 @@ static int load_encrypted(const char *path, uint8_t sk[64],
                 memcpy(sk + 32, pubkey, 32);
             return 0;
         }
-        if (tries++ >= 2 || getenv("IPV69_PASSPHRASE")) {
-            fprintf(stderr, "keyring: invalid passphrase\n");
-            return -1;
-        }
-        pass = NULL;
+        if (tries < 2)
+            fprintf(stderr, "keyring: wrong passphrase, try again\n");
     }
+    fprintf(stderr, "keyring: invalid passphrase for %s\n", path);
+    return -1;
 }
 
 static int load_comment(const char *pub, char *comment, size_t commentsz)
