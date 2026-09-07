@@ -3,6 +3,7 @@
 #include <string.h>
 #include "IPv69/parse.h"
 #include "IPv69/l2.h"       /* hex_decode */
+#include "IPv69/plat.h"     /* plat_setenv (parse_strip_keyfile) */
 #include "ed25519.h"
 
 #define ERR_SHORT     1
@@ -144,6 +145,23 @@ int parse_insert_auto_ifname(int argc, char **argv, char **out)
         out[i + 1] = argv[i];
     out[argc + 1] = NULL;
     return argc + 1;
+}
+
+/* --key-file <path> (positions >= from): strip the pair and select the
+ * identity key file via IPV69_KEYFILE. Works on any tool that calls it
+ * before parsing; keyring_paths() resolves the name. */
+int parse_strip_keyfile(int argc, char **argv, int from)
+{
+    for (int i = from; i + 1 < argc; i++) {
+        if (strcmp(argv[i], "--key-file"))
+            continue;
+        plat_setenv("IPV69_KEYFILE", argv[i + 1]);
+        for (int j = i; j + 2 < argc; j++)
+            argv[j] = argv[j + 2];
+        argc -= 2;
+        i--;                        /* re-examine the shifted position */
+    }
+    return argc;
 }
 
 /* "ff.ff.ff.ff.ff[:port]" or raw hex[:port]; splits the optional
