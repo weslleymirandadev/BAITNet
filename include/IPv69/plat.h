@@ -7,6 +7,7 @@
 #define IPV69_PLAT_H
 
 #include <stdio.h>
+#include <stdlib.h>     /* setenv/_putenv_s (plat_setenv) */
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -86,5 +87,24 @@ static inline int plat_set_rcvtimeo(sock_t fd, int timeout_ms)
                       sizeof(tv));
 }
 #endif
+
+/* environment helpers: POSIX setenv/unsetenv vs Windows _putenv_s */
+static inline int plat_setenv(const char *name, const char *value)
+{
+#ifdef _WIN32
+    return _putenv_s(name, value) == 0 ? 0 : -1;
+#else
+    return setenv(name, value, 1);
+#endif
+}
+
+static inline void plat_unsetenv(const char *name)
+{
+#ifdef _WIN32
+    _putenv_s(name, "");        /* empty == unset (callers treat "" as no value) */
+#else
+    unsetenv(name);
+#endif
+}
 
 #endif
