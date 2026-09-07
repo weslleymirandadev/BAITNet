@@ -25,6 +25,7 @@ int cmd_keygen(int argc, char **argv);
 int cmd_dhcpd(int argc, char **argv);
 int cmd_raw(int argc, char **argv);
 int cmd_icsp(int argc, char **argv);
+int cmd_pppoe(int argc, char **argv);
 int cmd_help(int argc, char **argv);
 int help_for(const char *cmd);
 #ifndef _WIN32
@@ -53,6 +54,7 @@ static void usage(void)
         "  ping   <ifname> <dst> [payload]      echo request\n"
         "  lease | renew | status [-s PATH]     query the bring-up daemon (Linux)\n"
         "  icsp   <server|client> <ifname> [dst:port]    stream handshake (nh=2)\n"
+        "  pppoe  <ac|host> [ifname]       PPPoE69 access sessions\n"
         "\n"
         "Ports are DECIMAL and glued to the address (addr:16 = port 16).\n"
         "The keepalive daemon (net up/tun/lease/status) is Linux only;\n"
@@ -99,6 +101,7 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "recv"))      return cmd_raw(argc, argv);
     if (!strcmp(cmd, "ping"))      return cmd_raw(argc, argv);
     if (!strcmp(cmd, "icsp"))      return cmd_icsp(argc - 1, argv + 1);
+    if (!strcmp(cmd, "pppoe"))     return cmd_pppoe(argc - 1, argv + 1);
     if (!strcmp(cmd, "chat"))      return help_for("icsp");
 #ifdef _WIN32
     if (!strcmp(cmd, "tun") || !strcmp(cmd, "lease") || !strcmp(cmd, "renew") ||
