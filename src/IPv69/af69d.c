@@ -576,7 +576,12 @@ int cmd_dhcpd(int argc, char **argv)
             printf("af69d: %s not in allowlist -> ignored\n", ms);
             continue;
         }
-        if (!check_msg(&c, buf, plen, mac)) {
+        /* the mac1 tag was verified above but is still in the buffer:
+           check_msg computes the signature body as plen-96, so it must
+           see the message WITHOUT the trailing mac1 (off-by-16: passing
+           the full plen made every signed DISCOVER/REQUEST fail the
+           signature check with a wrong body offset) */
+        if (!check_msg(&c, buf, plen - MAC1_LEN, mac)) {
             printf("af69d: %s: invalid signature/pubkey -> ignored\n", ms);
             continue;
         }
