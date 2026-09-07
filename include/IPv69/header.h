@@ -13,6 +13,7 @@
 #define IPV69_NEXT_CONTROL   0
 #define IPV69_NEXT_DGRAM     1
 #define IPV69_NEXT_STREAM    2       /* reserved (future SCTP-derived transport) */
+#define IPV69_NEXT_PPPOE     3       /* PPPoE69 access session (see af69.h) */
 
 #define IPV69_FLAG_NOFRAG    (1 << 0)
 #define IPV69_FLAG_JUMBO     (1 << 1)
