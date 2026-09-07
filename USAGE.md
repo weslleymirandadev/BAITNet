@@ -30,6 +30,7 @@ ipv69 keygen   generate Ed25519 key pairs
 ipv69 dhcpd    DHCP69 server (private networks)
 ipv69 dhcp     DHCP69 client (one-shot, for scripts)
 ipv69 send/recv/ping
+ipv69 pppoe    access sessions: ac (concentrator) | host (dial; Linux)
 ipv69 lease/renew/status                         (Linux only)
 ```
 
@@ -42,6 +43,8 @@ ipv69 lease/renew/status                         (Linux only)
 | `ipv69 tun` | Alias of `net up` (same daemon, kept for compatibility) | Linux (phone/VM) |
 | `ipv69 lease/renew/status` | Queries the bring-up daemon (like `ip addr` for IPv69) | same host as the daemon |
 | `ipv69 gw` | **Tunnel gateway**: bridges IPv69 frames over UDP so clients behind NAT can join through any host with a public IP (multi-gateway, P2P) | any host with a public IP |
+| `ipv69 pppoe ac` | **Access concentrator**: terminates PPPoE69 sessions and bridges the dialed hosts onto its L2 leg (admission by Ed25519 at PADR; each host appears with its own MAC) | island edge (Linux/Windows) |
+| `ipv69 pppoe host` | **Dial** a PPPoE69 session and expose it as a TAP (`ip69p0`), so `dhcp`/`recv`/`send`/`icsp` run over the session unchanged | Linux (phone/VM) |
 
 Besides the binaries, the project has a **separate crypto library**:
 
@@ -67,7 +70,8 @@ It depends on nothing from IPv69 — reusable in any project (your future
   - identity-derived: `ipv69 addr [--class A|B|C]` (default C = public, first octet 80–bf)
 - Ports: **decimal**, glued to the address as `addr:port`
   (e.g. `00.00.00.00.10:16` = address `.10`, port 16; no leading zeros)
-- `next_header`: `0` control (DHCP/ND/echo), `1` dgram, `2` stream (reserved)
+- `next_header`: `0` control (DHCP/ND/echo), `1` dgram, `2` stream (reserved),
+  `3` PPPoE69 session (encapsulated frame)
 
 ---
 
@@ -517,6 +521,34 @@ first gateway is used by the 1:1 ICSP/chat, all of them by
 `send`/`recv`/`ping` failover). No file = plain local L2, exactly as
 before. The built-in resolver reads the first nameserver of
 `/etc/resolv.conf` (Windows uses the native `getaddrinfo`).
+
+### Access sessions (PPPoE69): the island edge
+
+`ipv69 pppoe` is the improved PPPoE — RFC 2516's session discipline
+(discover a concentrator, dial a private session with a 16-bit id, then
+unicast-only frames inside it) without PPP/IP: admission is the
+Ed25519 identity at PADR, and a session carries full native IPv69
+frames. The concentrator (`pppoe ac`) bridges each dialed host onto its
+L2 leg as if the host were plugged in (its wire MAC), so a host that
+dials gets its lease, its datagrams and its ICSP streams through the
+session with zero changes to the tools — and the whole stack can run on
+the TAP (`pppoe host`):
+
+```bash
+# island edge (the concentrator listens on the segment the hosts dial):
+sudo ./ipv69 pppoe ac eth0 --peer-file /home/kali/peers.txt
+#            (admission: only allowlisted identities get a session;
+#             --learn auto-registers unknown valid keys)
+
+# a host dials (Linux), then uses the stack as if it were local:
+ipv69 pppoe host wlan0 --tap ip69p0     # session up, TAP created
+ipv69 dhcp ip69p0                       # lease from the island dhcpd
+ipv69 send ip69p0 00.00.00.00.10:16 "oi"
+```
+
+The `host` role needs a TAP (Linux only, like `tun`); the `ac` role is
+portable (Linux + Windows). Wire format, bridging rules, security and
+the roadmap: `docs/pppoe69-spec.md`.
 
 ---
 
