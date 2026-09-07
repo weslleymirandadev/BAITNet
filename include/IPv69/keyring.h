@@ -14,7 +14,11 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* fill `dir`, `key` and `pub` with the default paths under $HOME/.hosts69 */
+/* fill `dir`, `key` and `pub` with the default paths under $HOME/.hosts69.
+ * The env var IPV69_KEYFILE overrides the key FILE: a bare name resolves
+ * to $HOME/.hosts69/<name>, a path is used as-is ('~' expands), and the
+ * public key is always <file>.pub (the --key-file flag of the tools sets
+ * this env var). */
 void keyring_paths(char *dir, size_t dirsz, char *key, size_t keysz,
                    char *pub, size_t pubsz);
 
