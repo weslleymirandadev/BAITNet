@@ -126,6 +126,34 @@ for the legacy/manual flow — but no longer needed.
 Then just pass `--key <privkey_hex>` (and `--server-pub <pubkey_hex>`
 on clients) — auto-key is bypassed when `--key` is given.
 
+### Named keys (one file per identity)
+
+Every tool reads `~/.hosts69/key` by default, but each identity can
+have its own FILE: `keygen -f name` (or `--key-file name`) creates
+`~/.hosts69/name` + `~/.hosts69/name.pub`, and any command selects the
+file with `--key-file` (a bare name resolves inside `~/.hosts69/`; a
+path works as-is, `~` expands) or with the `IPV69_KEYFILE` env var —
+also honored by the chat/hub examples and by keygen itself. Each named
+key keeps its own passphrase, chosen at creation:
+
+```bash
+# one key per role/network, each with its own passphrase:
+ipv69 keygen --key-file home -C "home island"       # prompts twice
+ipv69 keygen --key-file vps -N 'secret'             # -N for scripts
+
+# use a named key (flag form on any subcommand, or env form):
+ipv69 addr --key-file home
+ipv69 dhcpd eth0 --key-file vps --peer-file peers.txt
+IPV69_KEYFILE=vps ipv69 addr
+
+# the passphrase comes from IPV69_PASSPHRASE or the prompt; a wrong
+# env pass falls back to the prompt, so one exported pass never locks
+# out a key encrypted with a different one.
+```
+
+The chat examples take the flag too:
+`icsp_chat server eth0 :6969 --key-file home`.
+
 ---
 
 ## 2. Starting the DHCP server (VM)
@@ -209,7 +237,7 @@ Inside the Nethunter chroot (Kali arm64):
 export PATH=/usr/bin:/bin
 export HOME=/root
 
-# 1) request an address (uses the automatic key from ~/.ipv69/key):
+# 1) request an address (uses the automatic key from ~/.hosts69/key):
 /root/bin/ipv69 dhcp wlan0 --server-pub <server_pubkey_hex>
 
 # output:
@@ -324,7 +352,7 @@ Details and wire format: `docs/security.md`.
 - **chroot PATH**: always `export PATH=/usr/bin:/bin` before running
   (otherwise Android's `/system/bin` is used).
 - **HOME in the chroot**: `export HOME=/root` — auto-key stores the key
-  in `~/.ipv69/key`; without HOME it goes somewhere unexpected.
+  in `~/.hosts69/key`; without HOME it goes somewhere unexpected.
 - **Ports are decimal, glued to the address**: `recv wlan0 00.00.00.00.10:16`
   = port 16; the frame shows `ports=1/16` in decimal.
 - **src on send**: automatic now (anti-spoofing) — `send` discovers the
