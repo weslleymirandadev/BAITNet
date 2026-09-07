@@ -1,10 +1,13 @@
 /* ipv69-keygen - generate an Ed25519 keypair for DHCP69 auth.
  *
  * Usage (ssh-keygen style):
- *   ipv69 keygen [-f PATH] [-C COMMENT] [-N PASSPHRASE] [count]
+ *   ipv69 keygen [-f PATH | --key-file PATH] [-C COMMENT] [-N PASSPHRASE]
+ *                [count]
  *
- *   -f PATH      private key file (default ~/.hosts69/key); the public
- *                key goes to PATH.pub
+ *   -f PATH / --key-file PATH
+ *                private key file (default ~/.hosts69/key); a bare name
+ *                (no '/') resolves inside ~/.hosts69/, so named keys
+ *                live side by side; the public key goes to PATH.pub
  *   -C COMMENT   comment/name stored in key.pub (default: hostname)
  *   -N PASSPHRASE encrypt the private key with this passphrase
  *   count        when -f is not given: print N keypairs to stdout
@@ -25,6 +28,7 @@
 #include <sys/stat.h>
 #include "ed25519.h"
 #include "IPv69/keyring.h"
+#include "IPv69/plat.h"     /* plat_setenv/unsetenv (pubkey display) */
 
 static void print_hex(const unsigned char *b, int n)
 {
@@ -43,7 +47,8 @@ int cmd_keygen(int argc, char **argv)
     int force = 0;
 
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-f") && i + 1 < argc)
+        if ((!strcmp(argv[i], "-f") || !strcmp(argv[i], "--key-file")) &&
+            i + 1 < argc)
             fpath = argv[++i];
         else if (!strcmp(argv[i], "-C") && i + 1 < argc)
             comment_arg = argv[++i];
@@ -76,7 +81,7 @@ int cmd_keygen(int argc, char **argv)
        explicit count argument; no -f means the default keyring path) */
     if (!fpath && count > 0) {
         if (count > 100) {
-            fprintf(stderr, "Usage: %s [-f PATH] [-C COMMENT] [-N PASS] [count]\n",
+            fprintf(stderr, "Usage: %s [-f PATH|--key-file PATH] [-C COMMENT] [-N PASS] [count]\n",
                     argv[0]);
             return 1;
         }
@@ -91,31 +96,29 @@ int cmd_keygen(int argc, char **argv)
         return 0;
     }
 
-    /* default path: ~/.hosts69/key (keyring), like every other tool */
+    /* file mode: <key> + <key>.pub. No -f: the default keyring
+       (~/.hosts69/key, IPV69_KEYFILE env honored). Bare names (no '/')
+       resolve inside the keyring dir, like ssh-keygen -f id_rsa; a
+       leading ~/ expands; anything else is a path as given. */
+    char key[1024], pub[1024], dir[1024];
+    const char *home = getenv("HOME");
+    if (!home)
+        home = "/root";
     if (!fpath) {
-        char dir[256], key[512], kpub[512];
-        keyring_paths(dir, sizeof(dir), key, sizeof(key), kpub, sizeof(kpub));
-        fpath = key;
+        char kdir[256], kpub[512];
+        keyring_paths(kdir, sizeof(kdir), key, sizeof(key), kpub,
+                      sizeof(kpub));
+    } else if (fpath[0] == '~' && fpath[1] == '/') {
+        snprintf(key, sizeof(key), "%s%s", home, fpath + 1);
+    } else if (strchr(fpath, '/')) {
+        snprintf(key, sizeof(key), "%s", fpath);
+    } else {
+        snprintf(key, sizeof(key), "%s/.hosts69/%s", home, fpath);
     }
-
-    /* file mode: ~/.hosts69/key + key.pub */
-    char key[1024], pub[1024];
-    if (fpath[0] == '~') {
-        /* expand ~ */
-        const char *home = getenv("HOME");
-        char buf[1024];
-        if (!home)
-            home = "/root";
-        snprintf(buf, sizeof(buf), "%s%s", home, fpath + 1);
-        fpath = buf;
-    }
-    snprintf(key, sizeof(key), "%s", fpath);
-    snprintf(pub, sizeof(pub), "%s", fpath);
-    strncat(pub, ".pub", sizeof(pub) - strlen(pub) - 1);
-    char dir[1024];
-    snprintf(dir, sizeof(dir), "%s", fpath);
+    snprintf(pub, sizeof(pub), "%s.pub", key);
+    snprintf(dir, sizeof(dir), "%s", key);
     char *slash = strrchr(dir, '/');
-    if (slash) {
+    if (slash && slash != dir) {
         *slash = 0;
         if (*dir)
 #ifdef _WIN32
@@ -144,11 +147,35 @@ int cmd_keygen(int argc, char **argv)
         fprintf(stderr, "keygen: could not save the key to %s\n", key);
         return 1;
     }
-    /* show the pubkey so it can be registered */
+    /* show the pubkey so it can be registered. When the file is
+       passphrase-protected, make the passphrase we just used visible to
+       the loader - no second prompt, and scripts using -N stay
+       non-interactive (the env is restored afterwards). */
     uint8_t pk[32], sk[64];
     char cbuf[128];
     snprintf(cbuf, sizeof(cbuf), "%s", comment);
-    if (keyring_load_or_create(key, pub, sk, pk, cbuf, sizeof(cbuf)) == 0) {
+    {
+        char saved[256];
+        int had = 0, changed = 0;
+        const char *old = getenv("IPV69_PASSPHRASE");
+        if (old) {
+            had = 1;
+            snprintf(saved, sizeof(saved), "%s", old);
+        }
+        if (*pass && (!had || strcmp(saved, pass))) {
+            plat_setenv("IPV69_PASSPHRASE", pass);
+            changed = 1;
+        }
+        int loaded = keyring_load_or_create(key, pub, sk, pk, cbuf,
+                                            sizeof(cbuf)) == 0;
+        if (changed) {
+            if (had)
+                plat_setenv("IPV69_PASSPHRASE", saved);
+            else
+                plat_unsetenv("IPV69_PASSPHRASE");
+        }
+        if (!loaded)
+            return 0;       /* key was created; the pubkey print is a bonus */
         printf("Your identification has been saved in %s\n", key);
         printf("Your public key has been saved in %s\n", pub);
         printf("PUBKEY (register on the server): ");
