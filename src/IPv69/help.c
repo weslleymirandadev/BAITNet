@@ -27,6 +27,7 @@ static void usage_general(void)
         "  renew       renew the lease\n"
         "  status      bring-up daemon status\n"
         "  icsp        ICSP stream handshake + data (nh=2)\n"
+        "  pppoe       PPPoE69 access sessions (ac | host)\n"
         "\n"
         "Ports are DECIMAL and glued to the address (addr:16 = port 16).\n"
         "The keepalive daemon (net up/tun/lease/status) is Linux only.\n");
@@ -273,6 +274,39 @@ static void usage_icsp(void)
         "A real chat example lives in examples/icsp_chat.c (make chat).\n");
 }
 
+static void usage_pppoe(void)
+{
+    fprintf(stderr,
+        "ipv69 pppoe - PPPoE69 access sessions (docs/pppoe69-spec.md)\n"
+        "\n"
+        "Usage: ipv69 pppoe ac [ifname] [--peer HEX]... [--peer-file F]\n"
+        "                      [--learn] [--key HEX] [--class A-C]\n"
+        "       ipv69 pppoe host [ifname] [--ac ADDR] [--ac-pub HEX]\n"
+        "                      [--tap NAME]\n"
+        "\n"
+        "[ifname] is OPTIONAL: omit it (or write 'auto') to use the\n"
+        "default-route interface. The improved PPPoE: a host dials a\n"
+        "private session on an access concentrator over a shared L2\n"
+        "segment; the concentrator bridges the host onto its own L2 leg\n"
+        "exactly as if it were plugged in (its wire MAC), so the whole\n"
+        "existing stack runs over the session unchanged.\n"
+        "\n"
+        "  ac    access concentrator: terminates sessions, bridges the\n"
+        "        dialed hosts onto its L2 leg (Linux + Windows)\n"
+        "  host  dial a session and expose it as a TAP (Linux only):\n"
+        "        then ipv69 dhcp/recv/send/icsp on that TAP run over\n"
+        "        the session\n"
+        "\n"
+        "Admission is the Ed25519 identity: the PADR is signed with the\n"
+        "~/.hosts69 keyring and the AC accepts only --peer/--peer-file\n"
+        "keys (or --learn registers unknown valid keys).\n"
+        "\n"
+        "Examples:\n"
+        "  ipv69 pppoe ac eth0 --peer-file peers.txt\n"
+        "  ipv69 pppoe host wlan0 --tap ip69p0\n"
+        "  ipv69 dhcp ip69p0        # lease through the session\n");
+}
+
 int cmd_help(int argc, char **argv)
 {
     if (argc < 2) {
@@ -293,6 +327,7 @@ int cmd_help(int argc, char **argv)
     else if (!strcmp(c, "lease") || !strcmp(c, "renew") ||
              !strcmp(c, "status")) usage_ip69();
     else if (!strcmp(c, "icsp"))   usage_icsp();
+    else if (!strcmp(c, "pppoe"))  usage_pppoe();
     else {
         fprintf(stderr, "IPv69: no help for '%s'\n", c);
         usage_general();
