@@ -182,6 +182,15 @@ void l2_close(l2_handle h)
         pcap_close((pcap_t *)h);
 }
 
+int l2_set_promisc(l2_handle h, int ifindex, int on)
+{
+    /* pcap_open_live already enables promiscuous mode; nothing to do. */
+    (void)h;
+    (void)ifindex;
+    (void)on;
+    return 0;
+}
+
 /* name of the adapter Windows uses for the default route (the one a
  * datagram to the internet leaves on): GetBestInterface gives its
  * ifindex, GetAdaptersInfo maps it back to the adapter. The name is a
