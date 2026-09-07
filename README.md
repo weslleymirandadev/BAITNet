@@ -115,7 +115,10 @@ header ports. The stack runs on the portable raw L2 backend (AF_PACKET
 on Linux, Npcap on Windows): demux by addr/port, neighbor discovery
 (40-bit → MAC), hop limit, forwarding, a control plane (echo/ping,
 errors, ND), DHCP69 addressing, Ed25519 authentication, an ICSP stream
-transport (nh=2) and tunnel gateways for the internet (see USAGE.md).
+transport (nh=2), tunnel gateways for the internet (see USAGE.md) and
+PPPoE69 access sessions (nh=3 — dial a private, authenticated session
+on an access concentrator and run the whole stack over it; see
+docs/pppoe69-spec.md).
 
 The immediate goal is not to replace the existing Internet, but to build an
 experimental network stack from scratch, starting at the lowest level
