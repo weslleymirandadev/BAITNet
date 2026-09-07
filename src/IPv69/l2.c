@@ -147,6 +147,22 @@ void l2_close(l2_handle h)
         close((int)h);
 }
 
+int l2_set_promisc(l2_handle h, int ifindex, int on)
+{
+    struct packet_mreq mreq;
+    int fd = (int)h;
+
+    memset(&mreq, 0, sizeof(mreq));
+    mreq.mr_ifindex = ifindex;
+    mreq.mr_type = PACKET_MR_PROMISC;
+    int opt = on ? PACKET_ADD_MEMBERSHIP : PACKET_DROP_MEMBERSHIP;
+    if (setsockopt(fd, SOL_PACKET, opt, &mreq, sizeof(mreq)) < 0) {
+        perror("PACKET_MR_PROMISC");
+        return -1;
+    }
+    return 0;
+}
+
 /* name of the default-route interface, read from /proc/net/route
  * (the static binary cannot use netlink). Columns: Iface Destination
  * Gateway Flags ... — the default route has Destination 00000000. */
