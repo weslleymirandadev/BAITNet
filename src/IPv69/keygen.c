@@ -3,6 +3,9 @@
  * Usage (ssh-keygen style):
  *   ipv69 keygen [-f PATH | --key-file PATH] [-C COMMENT] [-N PASSPHRASE]
  *                [count]
+  *   ipv69 keygen --vanity PREFIX [-f PATH] [-N PASSPHRASE]
+  *                (.bait vanity: grind a keypair whose label starts
+  *                 with PREFIX; see docs/bait-names-spec.md)
  *
  *   -f PATH / --key-file PATH
  *                private key file (default ~/.hosts69/key); a bare name
@@ -26,9 +29,11 @@
 #include <unistd.h>
 #endif
 #include <sys/stat.h>
+#include <time.h>           /* clock(): vanity progress rate */
 #include "ed25519.h"
 #include "IPv69/keyring.h"
 #include "IPv69/plat.h"     /* plat_setenv/unsetenv (pubkey display) */
+#include "BITE/baitname.h"  /* .bait labels + vanity grind */
 
 static void print_hex(const unsigned char *b, int n)
 {
@@ -36,11 +41,35 @@ static void print_hex(const unsigned char *b, int n)
         printf("%02x", b[i]);
 }
 
+struct vanity_prog {
+    double last;            /* last progress line (clock(), seconds) */
+    size_t want;            /* prefix length */
+};
+
+/* periodic bait_grind callback: one stderr line every ~2s with the
+ * try count, the rate and the best partial prefix found so far. */
+static void vanity_progress(uint64_t tries, const char *best_label,
+                            int best_chars, void *arg)
+{
+    struct vanity_prog *vp = (struct vanity_prog *)arg;
+    double now = (double)clock() / CLOCKS_PER_SEC;
+
+    if (now - vp->last < 2.0)
+        return;
+    vp->last = now;
+    fprintf(stderr, "keygen: vanity %llu tries (%.0f/s), best %d/%zu chars: %.*s\n",
+            (unsigned long long)tries, (double)tries / now,
+            best_chars, vp->want,
+            best_chars, best_label ? best_label : "");
+}
+
 int cmd_keygen(int argc, char **argv)
 {
     const char *fpath = NULL;
     const char *comment_arg = NULL;
     const char *pass_arg = NULL;
+    const char *vanity = NULL;
+    size_t vanity_len = 0;
     char comment[128];
     char pass[256];
     int count = 0;                  /* explicit count arg -> stdout mode */
@@ -54,10 +83,32 @@ int cmd_keygen(int argc, char **argv)
             comment_arg = argv[++i];
         else if (!strcmp(argv[i], "-N") && i + 1 < argc)
             pass_arg = argv[++i];
+        else if (!strcmp(argv[i], "--vanity") && i + 1 < argc)
+            vanity = argv[++i];
         else if (!strcmp(argv[i], "--force"))
             force = 1;
         else
             count = atoi(argv[i]);
+    }
+    /* validate the vanity prefix up front: fail before prompting or
+       grinding anything (chars must be valid base32, 1..32 long). */
+    if (vanity) {
+        if (count > 0) {
+            fprintf(stderr, "keygen: --vanity cannot be combined with a batch count\n");
+            return 1;
+        }
+        vanity_len = strlen(vanity);
+        if (!vanity_len || vanity_len > BAIT_LABEL_LEN) {
+            fprintf(stderr, "keygen: vanity prefix must be 1..%d base32 chars (a-z2-7)\n",
+                    BAIT_LABEL_LEN);
+            return 1;
+        }
+        for (size_t i = 0; i < vanity_len; i++)
+            if (!strchr(BAIT_ALPHABET, vanity[i])) {
+                fprintf(stderr, "keygen: vanity prefix has an invalid char '%c' (use a-z2-7)\n",
+                        vanity[i]);
+                return 1;
+            }
     }
     if (comment_arg) {
         snprintf(comment, sizeof(comment), "%s", comment_arg);
@@ -70,7 +121,7 @@ int cmd_keygen(int argc, char **argv)
     pass[0] = 0;
     if (pass_arg) {
         snprintf(pass, sizeof(pass), "%s", pass_arg);
-    } else if (fpath) {
+    } else if (fpath || vanity) {
         /* ssh-keygen style: prompt twice, no echo, until they match.
            Without a tty (scripts) an empty passphrase is used. */
         if (keyring_prompt_passphrase(pass, sizeof(pass)) < 0)
@@ -143,7 +194,31 @@ int cmd_keygen(int argc, char **argv)
             }
         }
     }
-    if (keyring_create(key, pub, pass, comment) < 0) {
+    if (vanity) {
+        /* grind until the .bait label starts with the prefix, then
+           persist the winning keypair (keyring_save). The overwrite
+           prompt above already ran, so a long grind is never wasted
+           on a destination the user would refuse. */
+        uint8_t vsk[64], vpk[32];
+        char vlabel[BAIT_LABEL_LEN + 1];
+        uint64_t vtries = 0;
+        struct vanity_prog vp;
+        vp.last = 0.0;
+        vp.want = vanity_len;
+        fprintf(stderr, "keygen: grinding for a .bait label starting with \"%s\" "
+                        "(Ctrl-C aborts, nothing is saved)...\n", vanity);
+        if (bait_grind(vanity, vsk, vpk, vlabel, &vtries,
+                       vanity_progress, &vp) < 0) {
+            fprintf(stderr, "keygen: vanity grind failed\n");
+            return 1;
+        }
+        fprintf(stderr, "keygen: label %s.bait found after %llu tries\n",
+                vlabel, (unsigned long long)vtries);
+        if (keyring_save(key, pub, pass, comment, vsk, vpk) < 0) {
+            fprintf(stderr, "keygen: could not save the key to %s\n", key);
+            return 1;
+        }
+    } else if (keyring_create(key, pub, pass, comment) < 0) {
         fprintf(stderr, "keygen: could not save the key to %s\n", key);
         return 1;
     }
@@ -181,6 +256,11 @@ int cmd_keygen(int argc, char **argv)
         printf("PUBKEY (register on the server): ");
         print_hex(pk, 32);
         printf(" %s\n", comment);
+        {
+            char blabel[BAIT_LABEL_LEN + 1];
+            bait_label_from_pub(blabel, pk);
+            printf("bait name (docs/bait-names-spec.md): %s.bait\n", blabel);
+        }
     }
     return 0;
 }
