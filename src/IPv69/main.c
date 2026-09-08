@@ -59,6 +59,8 @@ static void usage(void)
         "  btls   <server|client> <ifname> [dst:port]    bTLS secure-channel test\n"
         "  pppoe  <ac|host> [ifname]       PPPoE69 access sessions\n"
         "\n"
+        "Global: --key-file PATH (or IPV69_KEYFILE) selects the identity\n"
+        "key — before or after the subcommand (path, ~/ or bare name).\n"
         "Ports are DECIMAL and glued to the address (addr:16 = port 16).\n"
         "The keepalive daemon (net up/tun/lease/status) is Linux only;\n"
         "on Windows 'net up' is a one-shot lease.\n");
@@ -76,6 +78,14 @@ int main(int argc, char **argv)
         usage();
         return 1;
     }
+    /* `--key-file PATH` may LEAD, before the subcommand (`ipv69
+       --key-file site addr`), like a global flag: strip the pair —
+       IPV69_KEYFILE is set and keyring_paths() resolves the path/name
+       — so argv[1] is the subcommand. Pairs after the subcommand are
+       handled below (keygen parses its own -f/--key-file, but when
+       the flag leads, the env var is the same selection). */
+    if (argc >= 3 && !strcmp(argv[1], "--key-file"))
+        argc = parse_strip_keyfile(argc, argv, 1);
     cmd = argv[1];
 
     /* `--key-file PATH` (after the subcommand) selects the identity key
