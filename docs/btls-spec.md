@@ -53,14 +53,24 @@ Every bTLS message is one record:
 ```
 record   = [type 1][len 2 BE][payload]
 type     = 0 HANDSHAKE   (plaintext: ClientHello, ServerHello only)
-           1 APPLICATION (AEAD; payload = [inner_type 1][data])
+           1 APPLICATION (AEAD; payload = [inner_type 1][flags 1][data])
            2 ALERT       (reserved; v1 fatal errors just close)
 
 payload (type 1) = secretbox blob: 32 bytes of TweetNaCl padding +
                    MAC (16) + ciphertext, over the inner bytes
-                   [inner_type 1][data]; boxed with the sender's
+                   [inner_type 1][flags 1][data]; boxed with the sender's
                    current-epoch key and a nonce of [seq 8 BE][0 x16],
                    seq = per-direction, per-epoch counter
+
+flags (application records): 0x01 BTLS_FRAG_MORE — more fragments of
+the same application MESSAGE follow. Application payloads are
+messages, not single records: up to BTLS_MAX_MSG (256 KiB) split into
+BTLS_MAX_PAYLOAD-sized (1360 B) records, so no carrier message cap
+(ICSP: 1400 B) leaks into the protocol. The receiver reassembles
+until a fragment without BTLS_FRAG_MORE arrives; the carrier is
+ordered, so fragments never interleave or reorder. Handshake frames
+are small and never fragmented (their inner type is HANDSHAKE, with
+no flags byte).
 ```
 
 Handshake frames (inside records, or as the payload of type 0):
@@ -75,8 +85,8 @@ handshake = [hs_type 1][hs_len 2 BE][body]
 ```
 
 Max record: 1400 B (one ICSP DATA message); application payload ≤
-`BTLS_MAX_PAYLOAD` (1360 B) per record in v1. Larger BITE bodies need
-multi-record framing (future work, see the BITE spec).
+`BTLS_MAX_PAYLOAD` (1360 B) per record, messages up to `BTLS_MAX_MSG`
+(256 KiB). Larger bodies are future work (see the BITE spec).
 
 ## 3. Handshake
 
@@ -196,8 +206,9 @@ before any application data.
 
 ## 7. Status
 
-Implemented (M2 of the BITE plan, 09/2026): `include/BITE/btls.h` +
-`src/BITE/btls.c` (transport-agnostic layer, no I/O, no ICSP
-includes) + `tests/btls_test.c` (`ipv69 btls server|client`, also in
-the Windows build). Next: M3 — BITE (the HTTP-shaped protocol) on top,
-`examples/bite.c` server + fetch client.
+Implemented (M2 + M3 of the BITE plan, 09/2026):
+`include/BITE/btls.h` + `src/BITE/btls.c` (transport-agnostic layer,
+no I/O, no ICSP includes) + `tests/btls_test.c` (`ipv69 btls
+server|client`, also in the Windows build) + `examples/bite.c`
+(`make bite` — the BITE web tool: static-file server + fetch client
+over bTLS/ICSP).
