@@ -212,10 +212,14 @@ static void derive_key(uint8_t key[32], const uint8_t *salt, size_t saltlen,
         key[i] = d[i] ^ tmp[i];
 }
 
-int keyring_create(const char *key, const char *pub,
-                   const char *passphrase, const char *comment)
+/* write a keypair to key + key.pub. seed[32] is the private key
+ * material (the file stores the seed only); pk[32] goes to .pub with
+ * the comment. Shared by keyring_create (fresh keypair) and
+ * keyring_save (an existing keypair, e.g. from a vanity grind). */
+static int write_keypair_files(const char *key, const char *pub,
+                               const char *passphrase, const char *comment,
+                               const uint8_t seed[32], const uint8_t pk[32])
 {
-    uint8_t sk[64], pk[32];
     char buf[512], hex[256];
     size_t n;
 
@@ -232,10 +236,8 @@ int keyring_create(const char *key, const char *pub,
 #endif
     }
 
-    if (ed25519_keypair(sk, pk) < 0)
-        return -1;
     /* private key: seed only */
-    hex_encode(hex, sk, 32);
+    hex_encode(hex, seed, 32);
     n = snprintf(buf, sizeof(buf), "%s\n", hex);
     if (*passphrase) {
         uint8_t salt[SALT_LEN], nonce[NONCE_LEN], k[32];
@@ -243,7 +245,7 @@ int keyring_create(const char *key, const char *pub,
         randombytes(salt, SALT_LEN);
         randombytes(nonce, NONCE_LEN);
         derive_key(k, salt, SALT_LEN, passphrase);
-        ed25519_secretbox(box, sk, 32, nonce, k);
+        ed25519_secretbox(box, seed, 32, nonce, k);
         char salt_h[33], nonce_h[49], box_h[129];
         hex_encode(salt_h, salt, SALT_LEN);
         hex_encode(nonce_h, nonce, NONCE_LEN);
@@ -259,6 +261,23 @@ int keyring_create(const char *key, const char *pub,
     if (write_file(pub, buf, n) < 0)
         return -1;
     return 0;
+}
+
+int keyring_create(const char *key, const char *pub,
+                   const char *passphrase, const char *comment)
+{
+    uint8_t sk[64], pk[32];
+
+    if (ed25519_keypair(sk, pk) < 0)
+        return -1;
+    return write_keypair_files(key, pub, passphrase, comment, sk, pk);
+}
+
+int keyring_save(const char *key, const char *pub,
+                 const char *passphrase, const char *comment,
+                 const uint8_t seed[32], const uint8_t pubkey[32])
+{
+    return write_keypair_files(key, pub, passphrase, comment, seed, pubkey);
 }
 
 static int load_encrypted(const char *path, uint8_t sk[64],
