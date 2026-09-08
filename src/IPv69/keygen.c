@@ -153,9 +153,12 @@ int cmd_keygen(int argc, char **argv)
     pass[0] = 0;
     if (pass_arg) {
         snprintf(pass, sizeof(pass), "%s", pass_arg);
-    } else if (fpath || vanity) {
+    } else if (fpath || vanity || (!count && stdin_is_tty())) {
         /* ssh-keygen style: prompt twice, no echo, until they match.
-           Without a tty (scripts) an empty passphrase is used. */
+           Interactive runs always ask — even when the default key file
+           was accepted (Enter) — so a new key is never silently
+           saved without the chance to protect it. Without a tty
+           (scripts) an empty passphrase is used. */
         if (keyring_prompt_passphrase(pass, sizeof(pass)) < 0)
             pass[0] = 0;
     }
