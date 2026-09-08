@@ -127,9 +127,11 @@ int cmd_keygen(int argc, char **argv)
        mode) ask where to save the NEW key when stdin is a tty — the
        default path is only a suggestion, the user may name the key
        (bare names resolve inside ~/.hosts69/). Enter = the default.
-       Off a tty (scripts, auto-key) the default is used silently,
-       exactly as before. */
-    if (!fpath && count == 0 && stdin_is_tty()) {
+       Off a tty (scripts, auto-key) — or when IPV69_KEYFILE already
+       chose the file (a leading --key-file was stripped by the
+       dispatcher) — the default is used silently, exactly as before. */
+    const char *kfenv = getenv("IPV69_KEYFILE");
+    if (!fpath && count == 0 && !(kfenv && *kfenv) && stdin_is_tty()) {
         char ddir[1024], dkey[1024], dpub[1024];
         keyring_paths(ddir, sizeof(ddir), dkey, sizeof(dkey), dpub,
                       sizeof(dpub));
