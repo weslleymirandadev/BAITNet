@@ -152,7 +152,11 @@ IPV69_KEYFILE=vps ipv69 addr
 ```
 
 The chat examples take the flag too:
-`icsp_chat server eth0 :6969 --key-file home`.
+`icsp_chat server eth0 :6969 --key-file home` (also `icsp_hub`,
+`bite`, and every binary of the project). The flag is accepted
+**before or after** the subcommand — `ipv69 --key-file home addr`
+works like `ipv69 addr --key-file home` — with a path, `~/...` or a
+bare name.
 
 ---
 
