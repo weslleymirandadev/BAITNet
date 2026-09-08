@@ -193,9 +193,7 @@ int cmd_keygen(int argc, char **argv)
        resolution restarts with it — the keygen never aborts on "n"
        while a human is at the keyboard. */
     char key[1024], pub[1024], dir[1024], newname[512];
-    const char *home = getenv("HOME");
-    if (!home)
-        home = "/root";
+    const char *home = keyring_home();
     for (;;) {
         if (!fpath) {
             char kdir[256], kpub[512];
