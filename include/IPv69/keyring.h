@@ -35,6 +35,13 @@ int keyring_load_or_create(const char *key, const char *pub,
 int keyring_create(const char *key, const char *pub,
                    const char *passphrase, const char *comment);
 
+/* save an EXISTING keypair (seed 32B + pub 32B) — e.g. the winner of
+ * a .bait vanity grind (keygen --vanity). Same file format and
+ * passphrase rules as keyring_create. Returns 0 / -1. */
+int keyring_save(const char *key, const char *pub,
+                 const char *passphrase, const char *comment,
+                 const uint8_t seed[32], const uint8_t pubkey[32]);
+
 /* ssh-keygen style passphrase prompt: reads from /dev/tty with echo
    OFF, asks twice, retries until they match. Returns 0 with `out`
    filled (empty string = no passphrase), -1 on error/EOF. */
