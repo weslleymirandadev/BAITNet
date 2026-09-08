@@ -25,6 +25,7 @@
 #ifdef _WIN32
 #include <winsock2.h>   /* gethostname for the key comment */
 #include <direct.h>     /* _mkdir */
+#include <io.h>         /* _isatty/_fileno (interactive prompt) */
 #else
 #include <unistd.h>
 #endif
@@ -63,6 +64,17 @@ static void vanity_progress(uint64_t tries, const char *best_label,
             best_chars, best_label ? best_label : "");
 }
 
+/* 1 when stdin is an interactive terminal (a human at the keyboard) —
+ * the ssh-keygen-style file prompt only makes sense then. */
+static int stdin_is_tty(void)
+{
+#ifdef _WIN32
+    return _isatty(_fileno(stdin));
+#else
+    return isatty(0);
+#endif
+}
+
 int cmd_keygen(int argc, char **argv)
 {
     const char *fpath = NULL;
@@ -72,6 +84,7 @@ int cmd_keygen(int argc, char **argv)
     size_t vanity_len = 0;
     char comment[128];
     char pass[256];
+    char named[512];        /* ssh-keygen: typed key file name */
     int count = 0;                  /* explicit count arg -> stdout mode */
     int force = 0;
 
@@ -109,6 +122,25 @@ int cmd_keygen(int argc, char **argv)
                         vanity[i]);
                 return 1;
             }
+    }
+    /* ssh-keygen style: without -f (and outside the stdout batch
+       mode) ask where to save the NEW key when stdin is a tty — the
+       default path is only a suggestion, the user may name the key
+       (bare names resolve inside ~/.hosts69/). Enter = the default.
+       Off a tty (scripts, auto-key) the default is used silently,
+       exactly as before. */
+    if (!fpath && count == 0 && stdin_is_tty()) {
+        char ddir[1024], dkey[1024], dpub[1024];
+        keyring_paths(ddir, sizeof(ddir), dkey, sizeof(dkey), dpub,
+                      sizeof(dpub));
+        fprintf(stderr, "Enter file in which to save the key (%s): ",
+                dkey);
+        fflush(stderr);
+        if (fgets(named, sizeof(named), stdin)) {
+            named[strcspn(named, "\r\n")] = 0;
+            if (named[0])
+                fpath = named;
+        }
     }
     if (comment_arg) {
         snprintf(comment, sizeof(comment), "%s", comment_arg);
