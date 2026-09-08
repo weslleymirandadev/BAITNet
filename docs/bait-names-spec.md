@@ -328,9 +328,10 @@ core, days–weeks on a tuned multicore/GPU grind. Possible, but a
   association (the reliable ordered message stream). The full ICSP
   lifecycle applies underneath: heartbeat (`hb_interval_s`), dead-peer
   drop (`dead_timeout_s`), graceful SHUTDOWN.
-- **Every BITE message is one bTLS application record** (encrypted,
-  section 4.4) carried as one ICSP message. Handshake frames are bTLS
-  handshake records on the same association.
+- **Every BITE message is one bTLS application message** (encrypted,
+  section 4.4): fragmented into ≤ 1400 B AEAD records carried as ICSP
+  messages, reassembled by bTLS (`BTLS_MAX_MSG` ceiling). Handshake
+  frames are bTLS handshake records on the same association.
 - **One request/response pair per ICSP stream.** The client sends the
   request on a fresh stream; the server answers on the same stream and
   closes it (STREAM-RESET) after the response. Streams make concurrent
@@ -448,11 +449,11 @@ its session.
 
 ### 6.7 Size caps
 
-v1 carries one bTLS record per carrier message; over ICSP that caps a
-BITE message at 1400 B (the ICSP DATA limit), of which ≤ 1360 B is
-payload (`BTLS_MAX_PAYLOAD`). Larger bodies (the 16 MiB target) need
-multi-record request/response framing — future work (section 9).
-Oversized requests are rejected by the server with `413`.
+Implemented: bTLS fragments application messages across AEAD records
+(each ≤ 1400 B, one per ICSP message), so the ICSP DATA cap does not
+leak into BITE. A message is capped at `BTLS_MAX_MSG` (256 KiB) in v1
+— larger bodies need a bigger ceiling, future work (section 9). Files
+larger than the ceiling are answered with `500`.
 
 ## 7. Example flows
 
@@ -462,12 +463,12 @@ Local island (site and client share an L2 or a gateway):
 # the site (key "site" generated with a vanity prefix):
 ipv69 keygen --vanity meusi --key-file site     # -> meusiq2l3fy....bait
 ipv69 addr --bait --key-file site               # addr + label + fqdn
-ipv69 bite server --key-file site               # bTLS :8080 on its
+bite server --key-file site --root ./www        # bTLS :8080 on its
                                                 # class-C addr, announced
 # the client — the name resolves locally to the addr, then everything
 # is the normal QUERY/P2P/relay path, then bTLS authenticates:
-ipv69 fetch hwko5je4lafo7aljgv3cxycjkwow2fca.bait/sobre
-ipv69 fetch meusi….bait                         # vanity label, default path
+bite fetch hwko5je4lafo7aljgv3cxycjkwow2fca.bait/sobre
+bite fetch meusi….bait                          # vanity label, default path
 ```
 
 Across islands the site announces through its gateway exactly like an
@@ -489,7 +490,7 @@ implementation.
 | M0 — codec | `src/BITE/baitname.c`: label⇄pub, label→addr40, validity | ✅ done |
 | M1 — vanity | `keygen --vanity PREFIX` (grind + save + progress), `addr --bait` | ✅ done |
 | M2 — bTLS | `src/BITE/btls.c` + `include/BITE/btls.h`: handshake (ECDHE + cert + name check), record AEAD, key schedule; `ipv69 btls` test pair over ICSP (`tests/btls_test.c`); `docs/btls-spec.md` | ✅ done |
-| M3 — BITE over bTLS | `examples/bite.c` (`make bite`): server (multi-association accept, static files) + `fetch` client; `.bait` destinations; 404/HEAD/concurrency | pending |
+| M3 — BITE over bTLS | `examples/bite.c` (`make bite`): server (per-association accept loop, static files from `--root`) + `fetch` client (`.bait` and numeric destinations, `--head`); 200/400/404/405/500, path traversal blocked | ✅ done |
 | M4 — mesh | site and client on two islands through a gateway seed; P2P and relay; wrong-endpoint spoof test fails the bTLS handshake | pending |
 
 Commit convention applies (one commit per file, English, push).
