@@ -1,27 +1,31 @@
 # BITE — .bait names and the web protocol
 
-BITE is the IPv69 application layer: a web protocol that runs over ICSP
-and a self-authenticating name space (`.bait`) derived from Ed25519
-public keys. It is the "own HTTPS" the project always pointed to — the
-`lib/ed25519` section of USAGE.md ("your future own HTTPS") and the
-stated goal of `docs/icsp-spec.md` ("reliable, ordered, multi-stream and
-encrypted by default transport, ready for services built on IPv69").
+BITE is the IPv69 application layer: a web protocol that runs over its
+own security layer (**bTLS**) on top of ICSP, plus a self-authenticating
+name space (`.bait`) derived from Ed25519 public keys. It is the "own
+HTTPS" the project always pointed to — the `lib/ed25519` section of
+USAGE.md ("your future own HTTPS") and the stated goal of
+`docs/icsp-spec.md` ("reliable, ordered, multi-stream and encrypted by
+default transport, ready for services built on IPv69").
 
-BITE is built from the premise that TLS exists to bolt trust onto
-nameless IPs. IPv69 names *are* keys, so the whole PKI apparatus
-(CA, certificates, revocation, TOFU) is replaced by one cryptographic
-check: the name must match the key that signed the handshake. And the
-transport is already encrypted (ICSP AEAD), so there is no TLS layer to
-add either. `bite://` is `https` by construction — no extra "s".
+The premise is that TLS exists to bolt trust onto nameless IPs. IPv69
+names *are* keys, so the whole PKI apparatus (CA, certificates,
+revocation, TOFU) is replaced by one cryptographic check: the name must
+match the key that signed the handshake. What remains of TLS is still
+worth building explicitly — a handshake with forward secrecy and a
+record layer that guarantees **encryption by default**: no BITE byte,
+header or body, ever travels in clear text on any carrier.
 
 ```
 ┌─────────────────────────────────────────────┐
 │  BITE (this spec): requests, responses,     │
 │  methods, .bait names                       │
 ├─────────────────────────────────────────────┤
+│  bTLS (docs/btls-spec.md): handshake +      │
+│  AEAD records, PFS, cert = the site key     │
+├─────────────────────────────────────────────┤
 │  ICSP (docs/icsp-spec.md): association,     │
-│  streams, TSN/SACK, AEAD crypto, auth by    │
-│  Ed25519 identity                           │
+│  streams, reliable ordered messages         │
 ├─────────────────────────────────────────────┤
 │  IPv69 L2: 40-bit addresses, raw backend    │
 │  (AF_PACKET / Npcap), gateways / mesh       │
@@ -33,26 +37,33 @@ add either. `bite://` is `https` by construction — no extra "s".
 Goals:
 
 1. A site addressable by a name **derived from its public key**, with
-   no registrar, no CA and no central database: `xhz7...bait` is born
-   the moment its key is generated.
+   no registrar, no CA and no central database: the `.bait` name is
+   born the moment its key is generated (the onion-service model —
+   everyone gets a long derived name; vanity is opt-in, section 5).
 2. Name resolution that is **fully local and cryptographic** — the
    network never sees the name, only the 40-bit address it already
    knows how to route (QUERY / P2P / relay / mesh).
-3. The closest possible thing to *choosing* a name: vanity grinding of
+3. **bTLS, the project's own TLS** — a TLS 1.3-flavored security layer
+   (ECDHE handshake + AEAD records) built on the crypto primitives
+   already in the repo, with the server's Ed25519 key as its
+   certificate. No plaintext BITE traffic on the wire, ever.
+4. The closest possible thing to *choosing* a name: vanity grinding of
    the key until the derived name starts with the wanted label, with an
    honest cost model (section 5).
-4. A simple, HTTP-shaped protocol over ICSP so existing mental models,
+5. A simple, HTTP-shaped protocol over bTLS so existing mental models,
    tools and bridges transfer: methods, status codes and headers follow
    HTTP semantics; only the trust model is new.
-5. One key per site (the keyring `~/.hosts69` already supports named
+6. One key per site (the keyring `~/.hosts69` already supports named
    keys via `keygen --key-file`).
 
 Non-goals (v1):
 
+- Market TLS / X.509 (RFC 8446 wire, ASN.1 certificates, CA chains) —
+  bTLS is the project's own TLS-flavored layer with the raw Ed25519
+  key as the certificate; interop with browsers is a future bridge,
+  not a v1 goal.
 - A registry that lets anyone claim an arbitrary short name without
   owning the derived key (see section 9, future work).
-- TLS, certificates, CAs, OCSP, HSTS — meaningless here; ICSP encrypts,
-  the name authenticates.
 - Cookies/sessions/JS — v1 is a document protocol (static + form
   submission), not a browser platform.
 - Replacing the DNS you already run: `.bait` never touches DNS; real
@@ -87,6 +98,10 @@ addr40 (C)     = bd.94.ee.a4.9c
 label          = hwko5je4lafo7aljgv3cxycjkwow2fca  (32 chars)
 fqdn           = hwko5je4lafo7aljgv3cxycjkwow2fca.bait
 ```
+
+Implemented in `src/BITE/baitname.c` (`bait_label_from_pub`,
+`bait_label_to_addr`, `bait_label_valid`), kept in its own tree like
+ICSP, depending only on lib/ed25519.
 
 ### 2.2 Syntax and canonical form
 
@@ -128,7 +143,7 @@ fqdn "meusi….bait"  →  strip ".bait", lowercase
 ```
 
 No packet is sent to resolve the name; there is no server to ask. The
-name *is* the address's encoding.
+name *is* the address's encoding (`bait_label_to_addr`).
 
 ### 3.2 Endpoint discovery (the existing stack)
 
@@ -147,8 +162,9 @@ any frame is sent.
 ### 3.3 Where .bait is recognized
 
 - As a destination in BITE tools/commands (the future `fetch`/server
-  example and any CLI that takes `addr:port` can accept
-  `name.bait[:port]`).
+  and any CLI that takes `addr:port` can accept `name.bait[:port]`).
+- `ipv69 addr --bait` prints the label + fqdn of a key; `ipv69 keygen`
+  prints the `.bait` name of every key it creates.
 - Never in `~/.hosts69/gateways` or `--remote`: those name *gateways*
   (UDP endpoints on the real internet) and keep their real-DNS
   resolution. `.bait` names a *service inside the mesh*; the two layers
@@ -160,49 +176,86 @@ any frame is sent.
   equivalent).
 - Address unreachable: existing timeout/`ICSP_POLL_DEAD` semantics —
   the site is offline or behind an unreachable NAT.
-- A gateway lies about the endpoint (section 4.2): caught by the
-  handshake, never by the resolver.
+- A gateway lies about the endpoint (section 4.3): caught by the
+  bTLS handshake, never by the resolver.
 
-## 4. Authentication and security model
+## 4. Security: bTLS
 
-### 4.1 Name ⇔ key binding at the handshake
+BITE's security is its own TLS-flavored layer, **bTLS/1.0** (full wire
+layout in `docs/btls-spec.md`, written with the implementation). It
+sits between BITE and the reliable transport so the same BITE code is
+secure over ICSP today and over any future plaintext carrier (a TCP
+bridge, a PPPoE69 session) tomorrow — encryption is a property of
+BITE, not of the carrier it happens to ride.
 
-ICSP's INIT-ACK already carries the server's identity pub (`id_pub`)
-and is signed by the server's key. The client that resolved
-`label.bait` does one extra check after the existing signature
-validation:
+### 4.1 Why a TLS layer on top of an encrypted transport
 
-```
-SHA-512(id_pub from INIT-ACK)[0..19]  ==  base32-decode(label)
-```
+ICSP already authenticates and AEAD-encrypts its DATA chunks. bTLS is
+still built, deliberately:
 
-If the endpoint does not hold the private key of the pub whose digest
-is the label, it cannot produce a valid INIT-ACK at all — it fails the
-ICSP signature check before the name check ever runs. The client
-therefore needs no allowlist, no pinned pub, no TOFU: the name *is*
-the pin. This is the onion-service property: the name and the key are
-the same object, and possession of the key is proven in-band.
+- **Explicitness** — the security contract of a *web* protocol lives in
+  its own layer with its own handshake and records, where tools and
+  future bridges look for it (TLS is the recognizable shape of HTTPS).
+- **Carrier independence** — BITE + bTLS is correct over any reliable
+  ordered transport, encrypted or not. ICSP's crypto then becomes a
+  second line (defense in depth), not the only one.
+- **The name binding** — the `.bait` check happens in the bTLS
+  handshake (section 4.2), not in the transport, so it is not tied to
+  ICSP's identity model.
 
-### 4.2 Threat model
+### 4.2 Handshake (TLS 1.3-flavored) and name binding
+
+Fixed suite — no negotiation: X25519 ECDHE (PFS), Ed25519 identities
+(sign/verify), HKDF-SHA512 key schedule (the same directional-label
+construction ICSP uses), XSalsa20-Poly1305 secretbox (AEAD records).
+
+1. C → S: ClientHello — random, client ephemeral X25519 pub.
+2. S → C: ServerHello — random, server ephemeral X25519 pub.
+3. From here on everything is encrypted with handshake traffic keys
+   derived from the ECDH secret + transcript (nothing after the two
+   hellos is ever plaintext; the hellos carry only fresh ephemeral
+   public keys).
+4. S → C: Certificate — the server's Ed25519 pub (32 bytes, the raw
+   key as certificate — no X.509).
+5. S → C: CertificateVerify — Ed25519 signature over the transcript,
+   proving the holder of the private key is speaking.
+6. S → C / C → S: Finished — transcript MAC under the handshake keys.
+7. Application traffic keys derived from the full transcript.
+
+**Name verification (client side):** after the Certificate, the client
+computes `base32_lower_nopad(SHA-512(cert_pub)[0..19])` and compares it
+with the label it dialed. Mismatch aborts the handshake before a single
+application record. If the endpoint does not hold the private key whose
+digest is the label, it cannot produce a valid CertificateVerify at
+all. The client needs no allowlist, no pinned key, no TOFU: the name
+*is* the pin. This is the onion-service property: name and key are the
+same object, and possession is proven in-band.
+
+Client identity: v1 clients are anonymous to the server by default; a
+server may require a client Certificate and allowlist its pub (the
+`--peer` admission model). bTLS records guarantee the same AEAD
+integrity regardless of which side authenticates.
+
+### 4.3 Threat model
 
 | Threat | Outcome |
 |---|---|
-| Gateway answers a QUERY with its own endpoint | ICSP handshake fails (no valid INIT-ACK for the expected pub); connection refused — the lie is detected, not silently accepted |
-| On-path relay replays or mutates data | ICSP AEAD per TSN + replay window; session key derived per handshake |
+| Gateway answers a QUERY with its own endpoint | bTLS handshake fails (no valid Certificate for the expected label); the lie is detected, not silently accepted |
+| On-path relay replays or mutates data | bTLS record AEAD + sequence numbers; ICSP's AEAD/replay window below is a second line |
 | Attacker claims your name ("phishing") | Impossible: the label is a digest of your pub; claiming it requires inverting SHA-512 or stealing the key |
 | Key theft | Same as SSH: key file is passphrase-encrypted (`H69E1` secretbox); rotate = new key = new name |
-| Client identity | v1 clients are anonymous to the server by default (any valid key); a server may require `--peer` allowlist (existing ICSP admission) |
+| Downgrade / cipher negotiation | No negotiation — one fixed, modern suite; there is nothing to downgrade to |
 
 There is no CA to compromise and no name to squat: the trust anchor is
 the digest math, not an organization.
 
-### 4.3 Encryption is implicit
+### 4.4 Encryption by default
 
-ICSP encrypts every DATA chunk (secretbox, per-TSN nonce) after an
-authenticated ECDH handshake. BITE adds nothing on top: `bite://` is
-confidential and integrity-protected end to end — even through a relay
-gateway, which only ever sees ciphertext frames. There is no plaintext
-"http" variant of BITE and no port split (80 vs 443) to get wrong.
+Every BITE message travels as one bTLS application record: AEAD
+ciphertext with a per-direction sequence number. There is no plaintext
+"http" variant of BITE and no port split (80 vs 443) to get wrong —
+`bite://` is confidential and integrity-protected end to end, even
+through a relay gateway, which only ever sees ciphertext.
 
 ## 5. Vanity names — closest possible to choosing
 
@@ -211,76 +264,87 @@ gateway, which only ever sees ciphertext frames. There is no plaintext
 The label is a digest, so a chosen name can only be obtained by
 grinding: generate keypairs until the label starts with the wanted
 prefix. base32 is 5 bits/char, so **each extra character multiplies
-the expected work by 32** (uniform distribution):
+the expected work by 32** (uniform distribution). One try = one
+Ed25519 keypair + one SHA-512. The repo's TweetNaCl-based ed25519 does
+~10³ tries/s per core; a fast ref10-style implementation or a GPU
+raises the rate by orders of magnitude, and the grind parallelizes
+perfectly (each try is independent):
 
 ```
-chars  bits   expected tries      CPU feel (order of magnitude)
-  4     20        1,048,576       seconds
-  5     25       33,554,432       minutes
-  6     30    1,073,741,824       hours to ~1 day (multicore)
-  7     35   34,359,738,368       days–weeks CPU; hours–days GPU
+chars  bits   expected tries      single core (TweetNaCl ~10³/s)
+  4     20        1,048,576       ~15 min
+  5     25       33,554,432       ~9 h
+  6     30    1,073,741,824       ~12 days
+  7     35   34,359,738,368       ~1 year
 ```
 
-Rule of thumb for v1 tooling: advertise 4–6 chars as the practical
-band; 7+ is a deliberate long grind. The grind is embarrassingly
-parallel (each try is independent) and the target string can be any
-prefix over `[a-z2-7]` — e.g. `meusi` + 27 random chars gives
-`meusi….bait`, the closest honest approach to `meusite.bait`.
+Divide by the number of cores (or by the speedup of a faster ed25519)
+for real expectations: 4–5 chars is the practical band on a normal
+machine (4 chars ≈ minutes on 8 cores), 6+ is a deliberate long grind,
+7+ is a GPU/weeks project. The design makes vanity a *prefix*
+property, so every partial win is already a valid, usable name —
+nothing is wasted grinding toward the last char.
 
-### 5.2 Tool contract: `keygen --vanity <prefix>`
+### 5.2 Tool: `keygen --vanity`
 
-Proposed CLI (to be implemented with the codec):
+Implemented (M1):
 
 ```
 ipv69 keygen --vanity meusi --key-file site     # grind until label
                                                 # starts with "meusi"
-# prints: key generated at ~/.hosts69/site
-#         label  meusiq2l3fy...bait  (vanity 5/32 chars)
+#   keygen: grinding for a .bait label starting with "meusi" (Ctrl-C
+#           aborts, nothing is saved)...
+#   keygen: vanity 65536 tries (980/s), best 3/5 chars: mej...
+#   keygen: label meusiq2l3fy...bait found after 1002321 tries
+#   Your identification has been saved in ~/.hosts69/site
+#   ...
+#   bait name (docs/bait-names-spec.md): meusiq2l3fy...bait
 ```
 
 Semantics:
 
-- Loops `keypair → SHA-512(pub) → label → prefix match`; saves the
-  first key that matches and exits 0. Interrupt (Ctrl-C) aborts with
+- Grinds offline (no network, no gateway, no registry), printing a
+  progress line every ~2s (tries, rate, best partial prefix).
+- The overwrite prompt runs BEFORE the grind, so a long grind is never
+  wasted on a destination the user would refuse; Ctrl-C aborts with
   nothing saved.
-- The output key IS the site identity: same keyring, same passphrase
-  rules (`-N`, `IPV69_PASSPHRASE`, prompt), same `addr` derivation.
-- Vanity is offline — no network, no gateway, no registry involved.
-- Do the vanity grind *before* the key is used anywhere: a new key =
-  a new label = a new name. Publishing the site under the final key is
-  what binds the name to the content.
+- The winning keypair is saved with the same rules as any key
+  (named file, passphrase via `-N`/prompt/`IPV69_PASSPHRASE`) — the
+  output key IS the site identity, with the same `addr` derivation.
+- Prefix chars must be in `[a-z2-7]`, 1–32 long; validated before any
+  work starts. `ipv69 addr --bait` shows the label/fqdn of any key.
 
 ### 5.3 What "meusite.bait" really costs
 
-7 characters = 2^35 ≈ 34 billion keygens. On a single modern core
-(~10⁴–10⁵ keygens/s with a fast ed25519 base-mult) that is weeks; a
-GPU or a multicore box with a tuned implementation brings it to
-hours–days. Possible, but it is a *project*, not a command. The design
-therefore makes vanity a *prefix* property, so every partial win is a
-valid, usable name — nothing is wasted grinding toward the 7th char.
+7 characters = 2^35 ≈ 34 billion keygens ≈ a year on one TweetNaCl
+core, days–weeks on a tuned multicore/GPU grind. Possible, but a
+*project*, not a command — hence the prefix model above.
 
 ## 6. BITE wire protocol (v1)
 
-### 6.1 Transport mapping (ICSP)
+### 6.1 Transport mapping (ICSP + bTLS)
 
-- **One ICSP association = one client connection.** The full ICSP
-  lifecycle applies: authenticated handshake, heartbeat
-  (`hb_interval_s`), dead-peer drop (`dead_timeout_s`), graceful
-  SHUTDOWN.
-- **One request/response pair per stream.** The client sends the
+- **One bTLS session = one client connection**, riding one ICSP
+  association (the reliable ordered message stream). The full ICSP
+  lifecycle applies underneath: heartbeat (`hb_interval_s`), dead-peer
+  drop (`dead_timeout_s`), graceful SHUTDOWN.
+- **Every BITE message is one bTLS application record** (encrypted,
+  section 4.4) carried as one ICSP message. Handshake frames are bTLS
+  handshake records on the same association.
+- **One request/response pair per ICSP stream.** The client sends the
   request on a fresh stream; the server answers on the same stream and
   closes it (STREAM-RESET) after the response. Streams make concurrent
   requests natural (no head-of-line blocking — the ICSP selling point):
-  N parallel requests = N open streams on one association. A client
-  that only pipelines sequentially may reuse one stream.
+  N parallel requests = N open streams on one session. A client that
+  only pipelines sequentially may reuse one stream.
 - **Messages, not byte streams.** ICSP is message-oriented with ordered
   per-stream delivery: one request = one message, one response = one
   message. Body framing therefore needs no chunked encoding; lengths
   are implicit (section 6.4 keeps `Content-Length` for validation and
   bridging).
-- **Keep-alive** = keep the association; request/response pairs happen
-  over its lifetime. Idle association handling is the ICSP heartbeat
-  (close on dead peer, not on application timeout).
+- **Keep-alive** = keep the session; request/response pairs happen over
+  its lifetime. Idle handling is the ICSP heartbeat (close on dead
+  peer, not on an application timeout).
 
 ### 6.2 Addressing and default port
 
@@ -319,8 +383,8 @@ response:
   proxy hop that needs it).
 - Body = the remainder of the message after the first empty line;
   binary-safe. One message per direction (section 6.1).
-- Every message is delivered whole by ICSP, so a request or response
-  never splits mid-header. No chunked transfer in v1.
+- The whole message is one bTLS record: headers and body are never
+  visible in clear text (section 4.4). No chunked transfer in v1.
 
 ### 6.4 Methods
 
@@ -377,10 +441,10 @@ Response:
 - `Server: BITE/1.0` (informational).
 
 Unknown headers are ignored by v1 receivers (extensibility point).
-There are no cookies, no auth headers: identity lives in the ICSP
-layer (client pub verified at the handshake; server allowlist via
-`--peer`), which is strictly stronger than header tokens — nothing in
-BITE can be replayed outside its association.
+There are no cookies, no auth headers: identity lives in the bTLS
+layer (client Certificate + `--peer` allowlist), which is strictly
+stronger than header tokens — nothing in BITE can be replayed outside
+its session.
 
 ### 6.7 Size caps
 
@@ -393,12 +457,13 @@ transfers (large bodies in many messages) are future work (section 9).
 Local island (site and client share an L2 or a gateway):
 
 ```
-# the site (key "site" was generated, possibly with --vanity):
-ipv69 addr --key-file site                     # prints the class-C addr
-ipv69 bite server --key-file site              # listens :8080 on it,
-                                               # announced to the mesh
-# the client — name resolves locally to the addr, then everything
-# is the normal QUERY/P2P/relay path:
+# the site (key "site" generated with a vanity prefix):
+ipv69 keygen --vanity meusi --key-file site     # -> meusiq2l3fy....bait
+ipv69 addr --bait --key-file site               # addr + label + fqdn
+ipv69 bite server --key-file site               # bTLS :8080 on its
+                                                # class-C addr, announced
+# the client — the name resolves locally to the addr, then everything
+# is the normal QUERY/P2P/relay path, then bTLS authenticates:
 ipv69 fetch hwko5je4lafo7aljgv3cxycjkwow2fca.bait/sobre
 ipv69 fetch meusi….bait                         # vanity label, default path
 ```
@@ -406,38 +471,26 @@ ipv69 fetch meusi….bait                         # vanity label, default path
 Across islands the site announces through its gateway exactly like an
 `icsp server --remote` (or a `~/.hosts69/gateways` entry) does today;
 the client needs no configuration beyond its own gateway list. The
-name check (section 4.1) runs regardless of how many relays the frames
+name check (section 4.2) runs regardless of how many relays the frames
 crossed.
 
-## 8. Implementation plan (repo layout)
+## 8. Implementation status and plan
 
-Proposed, following existing conventions (single binary + examples +
-static lib; English code/docs; one commit per file):
+The BITE stack lives in its own tree, like ICSP: `src/BITE/`,
+`include/BITE/` (codec) — the `.bait` name codec is already linked into
+the single binary, the Windows build and the static lib
+(`make lib`). Docs: this spec; `docs/btls-spec.md` comes with the bTLS
+implementation.
 
-- `src/IPv69/baitname.c` + `.h` — codec: label⇄digest⇄addr40,
-  `bait_label_from_pub()`, `bait_addr_from_label()`,
-  `bait_is_derived_name()`; vanity loop `bait_grind(prefix, cb)`
-  (pure CPU, no deps beyond lib/ed25519).
-- `keygen --vanity <prefix>` in `src/IPv69/keygen.c` — CLI on the
-  grind (section 5.2).
-- `examples/bite.c` (`make bite`) — server + `fetch` client on the
-  ICSP session API, mirroring `examples/icsp_chat.c`; the server is a
-  multi-association accept loop (the `icsp_hub` pattern) serving
-  static files from a root dir.
-- Destination parsing: accept `name.bait[:port]` where commands take
-  `addr:port` (parse.c), resolving locally to the addr — no new
-  network code.
-- Docs: this spec; later README roadmap items ("Name system (.bait)",
-  "Application layer (BITE)") and a USAGE §13 when the tools land.
+| Milestone | Scope | Status |
+|---|---|---|
+| M0 — codec | `src/BITE/baitname.c`: label⇄pub, label→addr40, validity | ✅ done |
+| M1 — vanity | `keygen --vanity PREFIX` (grind + save + progress), `addr --bait` | ✅ done |
+| M2 — bTLS | `src/BITE/btls.c` + `include/BITE/btls.h`: handshake (ECDHE + cert + name check), record AEAD, key schedule; test pair over veth; `docs/btls-spec.md` | pending |
+| M3 — BITE over bTLS | `examples/bite.c` (`make bite`): server (multi-association accept, static files) + `fetch` client; `.bait` destinations; 404/HEAD/concurrency | pending |
+| M4 — mesh | site and client on two islands through a gateway seed; P2P and relay; wrong-endpoint spoof test fails the bTLS handshake | pending |
 
-Milestones (each independently testable by you, in order):
-
-- M0 — codec: label⇄addr roundtrip matches `ipv69 addr` output.
-- M1 — `keygen --vanity`: grind, save, and `addr`/label agree.
-- M2 — `bite` server + `fetch` over veth: static file, 404, HEAD,
-  concurrent requests on one association.
-- M3 — mesh: site and client on two islands through a gateway seed,
-  P2P and relay; wrong-endpoint spoof test fails the handshake.
+Commit convention applies (one commit per file, English, push).
 
 ## 9. Future work (out of scope for v1)
 
@@ -453,6 +506,8 @@ Milestones (each independently testable by you, in order):
 - Streaming (multi-message bodies), cookies/sessions, auth tokens,
   server-side includes/templating — application evolution, not
   protocol.
-- **HTTP bridge**: a gateway that terminates BITE and speaks real HTTP
-  to legacy clients (or vice-versa). Trivial by design: same methods,
-  same status numbers, same headers.
+- **HTTP/HTTPS bridge**: a gateway that terminates BITE/bTLS and speaks
+  real HTTP(S) to legacy clients (or vice-versa). Trivial by design:
+  same methods, same status numbers, same headers; the bridge is where
+  X.509 meets `.bait` (a pinned self-signed cert, or a public suffix
+  the browser can be taught).
