@@ -27,6 +27,7 @@ static void usage_general(void)
         "  renew       renew the lease\n"
         "  status      bring-up daemon status\n"
         "  icsp        ICSP stream handshake + data (nh=2)\n"
+        "  btls        bTLS secure channel: handshake + AEAD records\n"
         "  pppoe       PPPoE69 access sessions (ac | host)\n"
         "\n"
         "Ports are DECIMAL and glued to the address (addr:16 = port 16).\n"
@@ -295,6 +296,41 @@ static void usage_icsp(void)
         "A real chat example lives in examples/icsp_chat.c (make chat).\n");
 }
 
+static void usage_btls(void)
+{
+    fprintf(stderr,
+        "ipv69 btls - bTLS secure channel test (docs/btls-spec.md)\n"
+        "\n"
+        "Usage: ipv69 btls <server|client> [ifname] [port|:port]\n"
+        "        [--peer HEX] [--peer-file F]\n"
+        "        ipv69 btls client [ifname] <dst:port> [msg] [--label LABEL32]\n"
+        "\n"
+        "Runs the bTLS handshake (docs/bait-names-spec.md, section 4) over an\n"
+        "ICSP association (stream 1): X25519 ECDHE + the server's raw\n"
+        "Ed25519 key as certificate, everything after the two hellos\n"
+        "AEAD-encrypted. This is the security layer BITE will sit on.\n"
+        "\n"
+        "<ifname> is OPTIONAL: omit it (or write 'auto') to use the\n"
+        "default-route interface — the one that reaches the internet.\n"
+        "In tunnel mode (--remote or a ~/.hosts69/gateways file) the\n"
+        "ifname is ignored anyway.\n"
+        "\n"
+        "The client verifies the server certificate against --label:\n"
+        "the .bait label of the server key ('ipv69 addr --bait' on the\n"
+        "server prints it). A wrong label fails the handshake — the\n"
+        "name IS the pin. Without --label the name check is skipped.\n"
+        "After the handshake the client sends [msg] and prints the\n"
+        "server's encrypted reply (ack).\n"
+        "\n"
+        "Examples:\n"
+        "  ipv69 btls server eth0 6969\n"
+        "  ipv69 btls server :6969                 (ifname = auto)\n"
+        "  ipv69 btls client wlan0 00.00.00.00.01:6969 ola \\\n"
+        "      --label hwko5je4lafo7aljgv3cxycjkwow2fca\n"
+        "\n"
+        "Identity (and the server certificate) = the ~/.hosts69 keyring.\n");
+}
+
 static void usage_pppoe(void)
 {
     fprintf(stderr,
@@ -348,6 +384,7 @@ int cmd_help(int argc, char **argv)
     else if (!strcmp(c, "lease") || !strcmp(c, "renew") ||
              !strcmp(c, "status")) usage_ip69();
     else if (!strcmp(c, "icsp"))   usage_icsp();
+    else if (!strcmp(c, "btls"))   usage_btls();
     else if (!strcmp(c, "pppoe"))  usage_pppoe();
     else {
         fprintf(stderr, "IPv69: no help for '%s'\n", c);
