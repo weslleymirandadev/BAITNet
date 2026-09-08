@@ -29,15 +29,18 @@ IPV69_SRC := src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c \
 	src/IPv69/mac1.c src/IPv69/ratelimit.c src/IPv69/gwfile.c \
 	src/IPv69/pppoe69.c src/IPv69/help.c \
 	src/BITE/baitname.c \
+	src/BITE/btls.c \
 	tests/af69_raw.c \
 	tests/icsp_test.c src/ICSP/icsp.c src/ICSP/icsp_handshake.c \
-	src/ICSP/icsp_data.c src/ICSP/icsp_life.c src/ICSP/icsp_session.c
+	src/ICSP/icsp_data.c src/ICSP/icsp_life.c src/ICSP/icsp_session.c \
+	tests/btls_test.c
 
 ipv69: $(BUILD)/ipv69
 
 $(BUILD)/ipv69: $(IPV69_SRC) $(ED25519) include/IPv69/af69.h include/IPv69/parse.h \
 	include/IPv69/header.h include/IPv69/l2.h include/IPv69/plat.h \
 	include/BITE/baitname.h \
+	include/BITE/btls.h \
 	include/ICSP/icsp.h lib/ed25519/include/ed25519.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(IPV69_SRC) $(ED25519)
 
@@ -95,7 +98,8 @@ IPV69_WIN_SRC := src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c \
 	src/IPv69/gwfile.c src/IPv69/pppoe69.c \
 	src/IPv69/help.c \
 	src/BITE/baitname.c \
-	tests/af69_raw.c tests/icsp_test.c $(ICSP_SRC) $(ED25519)
+	src/BITE/btls.c \
+	tests/af69_raw.c tests/icsp_test.c tests/btls_test.c $(ICSP_SRC) $(ED25519)
 
 win: $(BUILD)/ipv69.exe $(BUILD)/icsp_chat.exe
 
@@ -118,12 +122,12 @@ $(BUILD)/icsp_chat.exe: $(WIN_SRC) include/ICSP/icsp.h include/IPv69/l2.h | $(BU
 # umbrella include/ipv69.h pulls everything in with one #include.
 LIB_POSIX := src/IPv69/parse.c src/IPv69/l2.c src/IPv69/keyring.c \
 	src/IPv69/mac1.c src/IPv69/ratelimit.c src/IPv69/gwfile.c \
-	src/BITE/baitname.c \
+	src/BITE/baitname.c src/BITE/btls.c \
 	src/ICSP/icsp.c src/ICSP/icsp_handshake.c src/ICSP/icsp_data.c \
 	src/ICSP/icsp_life.c src/ICSP/icsp_session.c
 LIB_WIN := src/IPv69/parse.c src/IPv69/l2_win.c src/IPv69/keyring.c \
 	src/IPv69/mac1.c src/IPv69/ratelimit.c src/IPv69/gwfile.c \
-	src/BITE/baitname.c \
+	src/BITE/baitname.c src/BITE/btls.c \
 	src/ICSP/icsp.c src/ICSP/icsp_handshake.c src/ICSP/icsp_data.c \
 	src/ICSP/icsp_life.c src/ICSP/icsp_session.c
 
