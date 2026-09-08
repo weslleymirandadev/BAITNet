@@ -45,6 +45,15 @@ enum {
 #define BTLS_MAX_REC    1400
 #define BTLS_MAX_PAYLOAD 1360
 
+/* Application payloads are MESSAGES, not single records: a message up
+ * to BTLS_MAX_MSG is fragmented into BTLS_MAX_PAYLOAD-sized AEAD
+ * records, each flagged BTLS_FRAG_MORE when more fragments of the same
+ * message follow. The receiver reassembles (the carrier is ordered).
+ * The carrier therefore only ever sees records <= 1400 B — no ICSP
+ * cap leaks into the protocol. */
+#define BTLS_FRAG_MORE  0x01
+#define BTLS_MAX_MSG    (256 * 1024)
+
 #define BTLS_CLIENT 0
 #define BTLS_SERVER 1
 
@@ -81,6 +90,11 @@ struct btls {
 
     uint8_t send_key[32], recv_key[32];
     uint64_t send_seq, recv_seq;    /* per-epoch, per-direction */
+
+    /* app-phase message (de)composition over the record layer */
+    const uint8_t *tx_msg;          /* outbound message being fragmented */
+    size_t tx_len, tx_off;
+    size_t rx_len;                  /* inbound message accumulated so far */
 };
 
 /* init a session: role, our identity (sk = seed||pub; the server's pub
@@ -107,15 +121,25 @@ int btls_feed(struct btls *t, const uint8_t *rec, size_t n);
  * send now), -1 on error. */
 int btls_pump(struct btls *t, uint8_t *out, size_t outsz, size_t *outlen);
 
-/* application phase (state == BTLS_ST_DONE, epoch == 2): wrap one
- * payload in an encrypted application record. Returns record length,
- * -1 on error (payload > BTLS_MAX_PAYLOAD). */
+/* application phase (state == BTLS_ST_DONE, epoch == 2).
+ *
+ * Messages, not records: btls_send_app fragments `len` bytes (<=
+ * BTLS_MAX_MSG) into BTLS_MAX_PAYLOAD-sized AEAD records. Returns:
+ *   1  `rec` holds a fragment and MORE follow — send it, then call
+ *      again with the SAME msg/len (msg must stay valid until 0)
+ *   0  `rec` holds the message's LAST fragment — send it, done
+ *  -1  error (bad state, len == 0 or > BTLS_MAX_MSG)
+ */
 int btls_send_app(struct btls *t, const uint8_t *msg, size_t len,
                   uint8_t *rec, size_t *reclen);
 
-/* decrypt one inbound application record into msg. Returns payload
- * length into *msglen, -1 on error (bad MAC / not an app record). */
+/* consume one inbound application record. Returns:
+ *   1  a whole message is in `msg`, *msglen = its length
+ *   0  a mid-message fragment was buffered (msg accumulates: call
+ *      again with the SAME msg/cap; do not touch msg in between)
+ *  -1  error (bad MAC, not an app record, message > cap)
+ * cap = size of msg (<= BTLS_MAX_MSG). */
 int btls_recv_app(struct btls *t, const uint8_t *rec, size_t n,
-                  uint8_t *msg, size_t *msglen);
+                  uint8_t *msg, size_t cap, size_t *msglen);
 
 #endif
