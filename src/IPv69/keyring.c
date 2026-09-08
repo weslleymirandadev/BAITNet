@@ -15,6 +15,7 @@
 #include <termios.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <pwd.h>        /* getpwnam: real user's home under sudo */
 #endif
 #include "ed25519.h"
 #include "IPv69/keyring.h"
@@ -45,16 +46,57 @@ static int hex_decode(const char *hex, uint8_t *out, size_t max)
     return (int)(hl / 2);
 }
 
+/* Under sudo the keyring files are written by root; hand them (and
+ * their directory) to the real user (SUDO_UID/SUDO_GID) so the keys
+ * stay usable without sudo too. No-op when not running under sudo. */
+static void fixup_owner(const char *path)
+{
+#ifndef _WIN32
+    const char *suid = getenv("SUDO_UID");
+    const char *sgid = getenv("SUDO_GID");
+    if (suid && *suid && sgid && *sgid && getuid() == 0) {
+        uid_t uid = (uid_t)strtoul(suid, NULL, 10);
+        gid_t gid = (gid_t)strtoul(sgid, NULL, 10);
+        if (uid != 0 && gid != 0)
+            chown(path, uid, gid);
+    }
+#else
+    (void)path;
+#endif
+}
+
+/* Home of the REAL user, so the keyring never lands in the wrong
+ * place: under sudo (SUDO_USER set, HOME reset to /root) the invoking
+ * user's home from the passwd database is used; otherwise $HOME
+ * (Windows: %USERPROFILE% when HOME is unset). Falls back to /root
+ * like the legacy behavior. Shared by keyring_paths() and keygen. */
+const char *keyring_home(void)
+{
+    static char buf[512];
+    const char *h = getenv("HOME");
+#ifdef _WIN32
+    if (!h || !*h)
+        h = getenv("USERPROFILE");   /* Windows: no HOME by default */
+#else
+    {
+        const char *su = getenv("SUDO_USER");
+        if (su && *su && strcmp(su, "root")) {
+            struct passwd *pw = getpwnam(su);
+            if (pw && pw->pw_dir && *pw->pw_dir)
+                h = pw->pw_dir;
+        }
+    }
+#endif
+    if (!h || !*h)
+        h = "/root";
+    snprintf(buf, sizeof(buf), "%s", h);
+    return buf;
+}
+
 void keyring_paths(char *dir, size_t dirsz, char *key, size_t keysz,
                    char *pub, size_t pubsz)
 {
-    const char *home = getenv("HOME");
-#ifdef _WIN32
-    if (!home || !*home)
-        home = getenv("USERPROFILE");   /* Windows: no HOME by default */
-#endif
-    if (!home || !*home)
-        home = "/root";
+    const char *home = keyring_home();
     /* IPV69_KEYFILE overrides the key FILE (default ~/.hosts69/key):
      * a bare name resolves inside the keyring dir; a path is used as-is
      * ('~' expands); the pub key always goes to <file>.pub. Every tool
@@ -222,9 +264,9 @@ static int write_keypair_files(const char *key, const char *pub,
 {
     char buf[512], hex[256];
     size_t n;
+    char dir[512];
 
     /* ensure the parent dir exists (~/.hosts69) */
-    char dir[512];
     snprintf(dir, sizeof(dir), "%s", key);
     char *slash = strrchr(dir, '/');
     if (slash && slash != dir) {
@@ -260,6 +302,9 @@ static int write_keypair_files(const char *key, const char *pub,
     n = snprintf(buf, sizeof(buf), "%s %s\n", hex, comment);
     if (write_file(pub, buf, n) < 0)
         return -1;
+    fixup_owner(dir);
+    fixup_owner(key);
+    fixup_owner(pub);
     return 0;
 }
 
