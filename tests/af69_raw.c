@@ -29,6 +29,7 @@
 #include "IPv69/mac1.h"
 #include "IPv69/keyring.h"
 #include "IPv69/gwfile.h"
+#include "BITE/baitname.h"
 #include "ed25519.h"
 
 /* ---- UDP tunnel backend (--remote gw1,gw2:port) ---------------------- */
@@ -514,9 +515,12 @@ int cmd_raw(int argc, char **argv)
         uint8_t sk[64], pub[32], derived[5];
         char cls = 'C';                 /* public by default */
         int do_dad = 0;
+        int show_bait = 0;
         for (int i = 2; i < argc; i++) {
             if (!strcmp(argv[i], "--dad"))
                 do_dad = 1;
+            else if (!strcmp(argv[i], "--bait"))
+                show_bait = 1;
             else if (!strcmp(argv[i], "--class") && i + 1 < argc) {
                 cls = (char)argv[i + 1][0];
                 i++;
@@ -535,6 +539,12 @@ int cmd_raw(int argc, char **argv)
         ipv69_addr_derive(derived, pub, cls);
         printf("addr: %02x.%02x.%02x.%02x.%02x (derived from identity, class %c)\n",
                derived[0], derived[1], derived[2], derived[3], derived[4], cls);
+        if (show_bait) {
+            char blabel[BAIT_LABEL_LEN + 1];
+            bait_label_from_pub(blabel, pub);
+            printf("label: %s\n", blabel);
+            printf("bait:  %s.bait\n", blabel);
+        }
         if (do_dad) {
             if (argc < 3) {
                 fprintf(stderr, "addr --dad: requires <ifname>\n");
