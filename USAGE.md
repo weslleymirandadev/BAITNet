@@ -688,6 +688,36 @@ heartbeat, dead-peer drop, re-accept) and `icsp_handle_frame` relays
 `[name] line` to every other established slot. Linux-only: the loop
 multiplexes the per-slot raw fds with `poll()`.
 
+### Web server (`make bite`)
+
+`build/bite` is the BITE web tool: the project's own HTTP-shaped
+protocol (BITE) over its own TLS (bTLS) over ICSP — static-file
+server + fetch client. The server's certificate IS its keyring key,
+so a client dialing `name.bait` verifies the name against the
+certificate (no CA); every byte after the handshake is encrypted.
+Docs: `docs/bait-names-spec.md` + `docs/btls-spec.md`.
+
+```bash
+make bite         # builds build/bite (server + fetch in one binary)
+
+# site: serve ./www over bTLS on port 8080 (the .bait default):
+./build/bite server eth0 --root ./www
+./build/bite server :8080 --root ./www        # ifname = auto
+
+# client — .bait names resolve locally (no DNS); numeric addrs work too:
+./build/bite fetch hwko5je4lafo7aljgv3cxycjkwow2fca.bait/sobre
+./build/bite fetch meusi….bait                # vanity label
+./build/bite fetch 00.00.00.00.01:8080/       # numeric, no name check
+./build/bite fetch meusi….bait --head         # headers only
+
+# identity (and the site certificate) = the ~/.hosts69 keyring:
+#   --key-file works like everywhere else; 'bite server' needs a key
+#   whose .bait label the clients will dial.
+```
+
+Status codes are HTTP's (`200/400/404/405/500`); `BITE` and `GET` are
+the read verbs (`HEAD` for headers only).
+
 ---
 
 ## 11. Windows build (`make win`)
