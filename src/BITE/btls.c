@@ -19,6 +19,10 @@
  * inner type byte. The server certificate is its raw Ed25519 pub; a
  * client that dialed label.bait verifies base32(SHA-512(cert)[0..19])
  * == label at the Certificate — the name is the pin, no CA.
+ *
+ * Application payloads are MESSAGES: up to BTLS_MAX_MSG bytes split
+ * into BTLS_MAX_PAYLOAD-sized records flagged BTLS_FRAG_MORE, so no
+ * carrier message-size cap (ICSP: 1400 B) leaks into the protocol.
  */
 #include <string.h>
 #include "ed25519.h"
@@ -125,22 +129,17 @@ static void rec_nonce(uint8_t nonce[24], uint64_t seq)
     }
 }
 
-/* seal one payload into an AEAD application-type record. The box blob
- * is secretbox's 32 + n bytes (16 pad + 16 MAC + ciphertext). */
-static int seal_rec(struct btls *t, uint8_t itype, const uint8_t *pl,
-                    size_t plen, uint8_t *rec, size_t *reclen)
+/* seal one inner payload ([type][...]) into an AEAD record. The box
+ * blob is secretbox's 32 + n bytes (16 pad + 16 MAC + ciphertext). */
+static int seal_box(struct btls *t, const uint8_t *inner, size_t ilen,
+                    uint8_t *rec, size_t *reclen)
 {
-    uint8_t inner[1 + BTLS_MAX_PAYLOAD];
-    uint8_t box[33 + BTLS_MAX_PAYLOAD];
+    uint8_t box[32 + 2 + BTLS_MAX_PAYLOAD];
     uint8_t nonce[24];
-    size_t ilen = 1 + plen;
     size_t blen = 32 + ilen;
 
-    if (plen > BTLS_MAX_PAYLOAD)
+    if (ilen > 2 + BTLS_MAX_PAYLOAD)
         return -1;
-    inner[0] = itype;
-    if (plen)
-        memcpy(inner + 1, pl, plen);
     rec_nonce(nonce, t->send_seq);
     t->send_seq++;
     ed25519_secretbox(box, inner, ilen, nonce, t->send_key);
@@ -150,6 +149,33 @@ static int seal_rec(struct btls *t, uint8_t itype, const uint8_t *pl,
     memcpy(rec + 3, box, blen);
     *reclen = 3 + blen;
     return 0;
+}
+
+/* encrypted handshake record: inner = [HANDSHAKE][frame] (no flags —
+ * handshake frames are small and never fragmented) */
+static int seal_hs(struct btls *t, const uint8_t *frame, size_t flen,
+                   uint8_t *rec, size_t *reclen)
+{
+    uint8_t inner[1 + 3 + 64];
+
+    inner[0] = BTLS_RT_HANDSHAKE;
+    memcpy(inner + 1, frame, flen);
+    return seal_box(t, inner, 1 + flen, rec, reclen);
+}
+
+/* application fragment record: inner = [APPLICATION][flags][data] */
+static int seal_app(struct btls *t, uint8_t flags, const uint8_t *data,
+                    size_t dlen, uint8_t *rec, size_t *reclen)
+{
+    uint8_t inner[2 + BTLS_MAX_PAYLOAD];
+
+    if (dlen > BTLS_MAX_PAYLOAD)
+        return -1;
+    inner[0] = BTLS_RT_APPLICATION;
+    inner[1] = flags;
+    if (dlen)
+        memcpy(inner + 2, data, dlen);
+    return seal_box(t, inner, 2 + dlen, rec, reclen);
 }
 
 /* open an AEAD record; inner plaintext (with its type byte) in `inner` */
@@ -162,9 +188,10 @@ static int open_rec(struct btls *t, const uint8_t *rec, size_t n,
     if (n < 3 || rec[0] != BTLS_RT_APPLICATION)
         return -1;
     blen = ((size_t)rec[1] << 8) | rec[2];
-    /* inner plaintext = blen - 32 must fit the caller's buffer
-       (1 + BTLS_MAX_PAYLOAD): reject anything we never produce */
-    if (blen < 33 || blen > 33 + BTLS_MAX_PAYLOAD || n != 3 + blen)
+    /* inner = blen - 32 must fit the caller's buffer: 1 byte type +
+       (flags + BTLS_MAX_PAYLOAD at most). Reject anything we never
+       produce. */
+    if (blen < 33 || blen > 34 + BTLS_MAX_PAYLOAD || n != 3 + blen)
         return -1;
     rec_nonce(nonce, t->recv_seq);
     t->recv_seq++;
@@ -344,7 +371,7 @@ int btls_feed(struct btls *t, const uint8_t *rec, size_t n)
 
     /* epoch >= 1: everything is inside AEAD records */
     {
-        uint8_t inner[1 + BTLS_MAX_PAYLOAD];
+        uint8_t inner[2 + BTLS_MAX_PAYLOAD];
         size_t ilen = 0;
         if (open_rec(t, rec, n, inner, &ilen) < 0 || ilen < 1)
             return -1;
@@ -391,8 +418,7 @@ int btls_pump(struct btls *t, uint8_t *out, size_t outsz, size_t *outlen)
             flen = hs_frame(frame, BTLS_HS_CERTIFICATE, t->sk + 32, 32);
             th_append(t, frame, flen);
             t->want_hs = BTLS_HS_CERTIFICATE_VERIFY;
-            return seal_rec(t, BTLS_RT_HANDSHAKE, frame, flen, out,
-                            outlen) < 0 ? -1 : 1;
+            return seal_hs(t, frame, flen, out, outlen) < 0 ? -1 : 1;
         case BTLS_HS_CERTIFICATE_VERIFY: {
             uint8_t d[64], sig[64];
             cert_digest(t, d);
@@ -401,8 +427,7 @@ int btls_pump(struct btls *t, uint8_t *out, size_t outsz, size_t *outlen)
             flen = hs_frame(frame, BTLS_HS_CERTIFICATE_VERIFY, sig, 64);
             th_append(t, frame, flen);
             t->want_hs = BTLS_HS_FINISHED;
-            return seal_rec(t, BTLS_RT_HANDSHAKE, frame, flen, out,
-                            outlen) < 0 ? -1 : 1;
+            return seal_hs(t, frame, flen, out, outlen) < 0 ? -1 : 1;
         }
         case BTLS_HS_FINISHED: {
             uint8_t m[32];
@@ -411,8 +436,7 @@ int btls_pump(struct btls *t, uint8_t *out, size_t outsz, size_t *outlen)
             th_append(t, frame, flen);
             t->want_hs = BTLS_HS_FINISHED;  /* now: inbound client FIN */
             t->state = BTLS_ST_WAIT_FIN;
-            return seal_rec(t, BTLS_RT_HANDSHAKE, frame, flen, out,
-                            outlen) < 0 ? -1 : 1;
+            return seal_hs(t, frame, flen, out, outlen) < 0 ? -1 : 1;
         }
         }
         return 0;
@@ -425,7 +449,7 @@ int btls_pump(struct btls *t, uint8_t *out, size_t outsz, size_t *outlen)
         finished_mac(t, "btls-fin-c", m);
         flen = hs_frame(frame, BTLS_HS_FINISHED, m, 32);
         th_append(t, frame, flen);
-        if (seal_rec(t, BTLS_RT_HANDSHAKE, frame, flen, out, outlen) < 0)
+        if (seal_hs(t, frame, flen, out, outlen) < 0)
             return -1;
         install_epoch(t, "btls-app-c2s", "btls-app-s2c");
         t->epoch = 2;
@@ -440,29 +464,70 @@ int btls_pump(struct btls *t, uint8_t *out, size_t outsz, size_t *outlen)
 int btls_send_app(struct btls *t, const uint8_t *msg, size_t len,
                   uint8_t *rec, size_t *reclen)
 {
-    if (!t || !rec || !reclen || t->state != BTLS_ST_DONE ||
-        t->epoch != 2)
+    size_t chunk;
+    int more;
+
+    if (!t || !msg || !rec || !reclen || t->state != BTLS_ST_DONE ||
+        t->epoch != 2 || len == 0 || len > BTLS_MAX_MSG)
         return -1;
-    if (seal_rec(t, BTLS_RT_APPLICATION, msg, len, rec, reclen) < 0)
+    if (t->tx_msg == NULL) {
+        /* first call for this message */
+        t->tx_msg = msg;
+        t->tx_len = len;
+        t->tx_off = 0;
+    } else if (msg != t->tx_msg || len != t->tx_len) {
+        return -1;              /* same message until it is fully sent */
+    }
+    chunk = t->tx_len - t->tx_off;
+    if (chunk > BTLS_MAX_PAYLOAD)
+        chunk = BTLS_MAX_PAYLOAD;
+    more = t->tx_off + chunk < t->tx_len;
+    if (seal_app(t, more ? BTLS_FRAG_MORE : 0, msg + t->tx_off, chunk,
+                 rec, reclen) < 0)
         return -1;
-    return (int)*reclen;
+    t->tx_off += chunk;
+    if (!more) {
+        t->tx_msg = NULL;       /* last fragment: next call starts fresh */
+        t->tx_off = 0;
+        return 0;
+    }
+    return 1;
 }
 
 int btls_recv_app(struct btls *t, const uint8_t *rec, size_t n,
-                  uint8_t *msg, size_t *msglen)
+                  uint8_t *msg, size_t cap, size_t *msglen)
 {
-    uint8_t inner[1 + BTLS_MAX_PAYLOAD];
+    uint8_t inner[2 + BTLS_MAX_PAYLOAD];
     size_t ilen = 0;
+    uint8_t flags;
+    const uint8_t *data;
+    size_t dlen;
 
     if (!t || !rec || !msg || !msglen || t->state != BTLS_ST_DONE ||
         t->epoch != 2)
         return -1;
-    if (open_rec(t, rec, n, inner, &ilen) < 0 || ilen < 1)
+    if (open_rec(t, rec, n, inner, &ilen) < 0 || ilen < 2) {
+        t->rx_len = 0;
         return -1;
-    if (inner[0] != BTLS_RT_APPLICATION)
+    }
+    if (inner[0] != BTLS_RT_APPLICATION) {
+        t->rx_len = 0;
         return -1;
-    *msglen = ilen - 1;
-    if (*msglen)
-        memcpy(msg, inner + 1, *msglen);
-    return 0;
+    }
+    flags = inner[1];
+    data = inner + 2;
+    dlen = ilen - 2;
+    if (flags & (uint8_t)~BTLS_FRAG_MORE || dlen > cap - t->rx_len) {
+        t->rx_len = 0;
+        return -1;              /* bad flags, or the message exceeds cap */
+    }
+    if (dlen)
+        memcpy(msg + t->rx_len, data, dlen);
+    t->rx_len += dlen;
+    if (!(flags & BTLS_FRAG_MORE)) {
+        *msglen = t->rx_len;    /* whole message reassembled */
+        t->rx_len = 0;
+        return 1;
+    }
+    return 0;                   /* mid-message: keep accumulating */
 }
