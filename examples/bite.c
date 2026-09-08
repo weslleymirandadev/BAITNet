@@ -601,6 +601,25 @@ static int run_fetch(int argc, char **argv, struct icsp_assoc *a,
 
 /* ---- main ----------------------------------------------------------- */
 
+/* 1 when argv[2] is a DESTINATION instead of an interface name — the
+ * user omitted the ifname and expects the default-route interface,
+ * like the ICSP/chat tools do. Covers :port / bare port / addresses
+ * (parse_looks_like_addr) plus .bait URLs ("bite://", a '/', or a
+ * ".bait" anywhere — with or without :port/path), which no interface
+ * name can look like. */
+static int dst_not_ifname(const char *s)
+{
+    if (!s || !*s)
+        return 0;
+    if (!strncmp(s, "bite://", 7))
+        return 1;
+    if (strchr(s, '/'))
+        return 1;
+    if (strstr(s, ".bait"))
+        return 1;
+    return parse_looks_like_addr(s);
+}
+
 static void usage(void)
 {
     fprintf(stderr,
@@ -609,8 +628,11 @@ static void usage(void)
         "\n"
         "BITE over bTLS over ICSP (docs/bait-names-spec.md).\n"
         "URL: name.bait[/path] (name = the site .bait label) or\n"
-        "addr[:port][/path]. Default port 8080. If [ifname] is an\n"
-        "address/URL it is omitted and 'auto' is used.\n");
+        "addr[:port][/path]. Default port 8080.\n"
+        "\n"
+        "[ifname] is OPTIONAL: omit it (or write 'auto') to use the\n"
+        "default-route interface, like the ICSP tools — 'bite fetch\n"
+        "name.bait/x' and 'bite server :8080' need no interface.\n");
 }
 
 int main(int argc, char **argv)
@@ -626,7 +648,7 @@ int main(int argc, char **argv)
     argc = parse_strip_keyfile(argc, argv, 1);
     /* ifname omitted (`bite fetch name.bait/x`, `bite server :8080`):
        insert "auto" so the endpoint resolves the default-route iface */
-    if (argc >= 3 && argc < 30 && parse_looks_like_addr(argv[2])) {
+    if (argc >= 3 && argc < 30 && dst_not_ifname(argv[2])) {
         char *na[32];
         int nargc = parse_insert_auto_ifname(argc, argv, na);
         return main(nargc, na);     /* re-dispatch normalized */
