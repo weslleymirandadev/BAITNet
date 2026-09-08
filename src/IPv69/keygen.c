@@ -187,49 +187,71 @@ int cmd_keygen(int argc, char **argv)
     /* file mode: <key> + <key>.pub. No -f: the default keyring
        (~/.hosts69/key, IPV69_KEYFILE env honored). Bare names (no '/')
        resolve inside the keyring dir, like ssh-keygen -f id_rsa; a
-       leading ~/ expands; anything else is a path as given. */
-    char key[1024], pub[1024], dir[1024];
+       leading ~/ expands; anything else is a path as given.
+       Resolution loops: when the destination exists and the user
+       refuses the overwrite, a NEW file name is asked and the
+       resolution restarts with it — the keygen never aborts on "n"
+       while a human is at the keyboard. */
+    char key[1024], pub[1024], dir[1024], newname[512];
     const char *home = getenv("HOME");
     if (!home)
         home = "/root";
-    if (!fpath) {
-        char kdir[256], kpub[512];
-        keyring_paths(kdir, sizeof(kdir), key, sizeof(key), kpub,
-                      sizeof(kpub));
-    } else if (fpath[0] == '~' && fpath[1] == '/') {
-        snprintf(key, sizeof(key), "%s%s", home, fpath + 1);
-    } else if (strchr(fpath, '/')) {
-        snprintf(key, sizeof(key), "%s", fpath);
-    } else {
-        snprintf(key, sizeof(key), "%s/.hosts69/%s", home, fpath);
-    }
-    snprintf(pub, sizeof(pub), "%s.pub", key);
-    snprintf(dir, sizeof(dir), "%s", key);
-    char *slash = strrchr(dir, '/');
-    if (slash && slash != dir) {
-        *slash = 0;
-        if (*dir)
-#ifdef _WIN32
-            _mkdir(dir);
-#else
-            mkdir(dir, 0700);
-#endif
-    }
-    /* never clobber an existing key without explicit approval
-       (ssh-keygen style: prompt y/N). */
-    if (access(key, F_OK) == 0) {
-        fprintf(stderr, "keygen: %s already exists\n", key);
-        if (!force) {
-            fprintf(stderr, "overwrite? (y/N) ");
-            fflush(stderr);
-            char ans[8] = { 0 };
-            if (!fgets(ans, sizeof(ans), stdin))
-                return 1;
-            if (ans[0] != 'y' && ans[0] != 'Y') {
-                fprintf(stderr, "keygen: aborted (nothing was changed)\n");
-                return 1;
-            }
+    for (;;) {
+        if (!fpath) {
+            char kdir[256], kpub[512];
+            keyring_paths(kdir, sizeof(kdir), key, sizeof(key), kpub,
+                          sizeof(kpub));
+        } else if (fpath[0] == '~' && fpath[1] == '/') {
+            snprintf(key, sizeof(key), "%s%s", home, fpath + 1);
+        } else if (strchr(fpath, '/')) {
+            snprintf(key, sizeof(key), "%s", fpath);
+        } else {
+            snprintf(key, sizeof(key), "%s/.hosts69/%s", home, fpath);
         }
+        snprintf(pub, sizeof(pub), "%s.pub", key);
+        snprintf(dir, sizeof(dir), "%s", key);
+        char *slash = strrchr(dir, '/');
+        if (slash && slash != dir) {
+            *slash = 0;
+            if (*dir)
+#ifdef _WIN32
+                _mkdir(dir);
+#else
+                mkdir(dir, 0700);
+#endif
+        }
+        /* never clobber an existing key without explicit approval
+           (ssh-keygen style: prompt y/N). */
+        if (access(key, F_OK) != 0)
+            break;                      /* free destination */
+        fprintf(stderr, "keygen: %s already exists\n", key);
+        if (force)
+            break;                      /* --force: silent overwrite */
+        fprintf(stderr, "overwrite? (y/N) ");
+        fflush(stderr);
+        char ans[8] = { 0 };
+        if (!fgets(ans, sizeof(ans), stdin)) {
+            fprintf(stderr, "keygen: aborted (nothing was changed)\n");
+            return 1;                   /* EOF: give up */
+        }
+        if (ans[0] == 'y' || ans[0] == 'Y')
+            break;                      /* overwrite approved */
+        if (!stdin_is_tty()) {
+            fprintf(stderr, "keygen: aborted (nothing was changed)\n");
+            return 1;                   /* no human to ask a new name */
+        }
+        fprintf(stderr, "Enter a new file in which to save the key: ");
+        fflush(stderr);
+        if (!fgets(newname, sizeof(newname), stdin)) {
+            fprintf(stderr, "keygen: aborted (nothing was changed)\n");
+            return 1;
+        }
+        newname[strcspn(newname, "\r\n")] = 0;
+        if (!newname[0]) {
+            fprintf(stderr, "keygen: aborted (nothing was changed)\n");
+            return 1;
+        }
+        fpath = newname;                /* resolve again with this name */
     }
     if (vanity) {
         /* grind until the .bait label starts with the prefix, then
