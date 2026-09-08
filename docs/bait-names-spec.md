@@ -181,8 +181,8 @@ any frame is sent.
 
 ## 4. Security: bTLS
 
-BITE's security is its own TLS-flavored layer, **bTLS/1.0** (full wire
-layout in `docs/btls-spec.md`, written with the implementation). It
+BITE's security is its own TLS-flavored layer, **bTLS/1.0** (wire
+layout: `docs/btls-spec.md`). It
 sits between BITE and the reliable transport so the same BITE code is
 secure over ICSP today and over any future plaintext carrier (a TCP
 bridge, a PPPoE69 session) tomorrow — encryption is a property of
@@ -448,9 +448,11 @@ its session.
 
 ### 6.7 Size caps
 
-v1 enforces a maximum message size on both directions (default 16 MiB,
-server configurable, advertised by rejecting with `413`). Streaming
-transfers (large bodies in many messages) are future work (section 9).
+v1 carries one bTLS record per carrier message; over ICSP that caps a
+BITE message at 1400 B (the ICSP DATA limit), of which ≤ 1360 B is
+payload (`BTLS_MAX_PAYLOAD`). Larger bodies (the 16 MiB target) need
+multi-record request/response framing — future work (section 9).
+Oversized requests are rejected by the server with `413`.
 
 ## 7. Example flows
 
@@ -486,7 +488,7 @@ implementation.
 |---|---|---|
 | M0 — codec | `src/BITE/baitname.c`: label⇄pub, label→addr40, validity | ✅ done |
 | M1 — vanity | `keygen --vanity PREFIX` (grind + save + progress), `addr --bait` | ✅ done |
-| M2 — bTLS | `src/BITE/btls.c` + `include/BITE/btls.h`: handshake (ECDHE + cert + name check), record AEAD, key schedule; test pair over veth; `docs/btls-spec.md` | pending |
+| M2 — bTLS | `src/BITE/btls.c` + `include/BITE/btls.h`: handshake (ECDHE + cert + name check), record AEAD, key schedule; `ipv69 btls` test pair over ICSP (`tests/btls_test.c`); `docs/btls-spec.md` | ✅ done |
 | M3 — BITE over bTLS | `examples/bite.c` (`make bite`): server (multi-association accept, static files) + `fetch` client; `.bait` destinations; 404/HEAD/concurrency | pending |
 | M4 — mesh | site and client on two islands through a gateway seed; P2P and relay; wrong-endpoint spoof test fails the bTLS handshake | pending |
 
