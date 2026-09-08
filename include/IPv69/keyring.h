@@ -19,6 +19,9 @@
  * to $HOME/.hosts69/<name>, a path is used as-is ('~' expands), and the
  * public key is always <file>.pub (the --key-file flag of the tools sets
  * this env var). */
+/* home of the real user (SUDO_USER under sudo; $HOME otherwise;
+ * %USERPROFILE% on Windows) — shared by keyring_paths and keygen */
+const char *keyring_home(void);
 void keyring_paths(char *dir, size_t dirsz, char *key, size_t keysz,
                    char *pub, size_t pubsz);
 
