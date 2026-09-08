@@ -321,7 +321,18 @@ static int run_server(int argc, char **argv, struct icsp_assoc *a,
         else if (argv[i][0] != '-')
             port = (uint16_t)atoi(argv[i]);
     }
-    printf("bite: server on port %u (root: %s)\n", port, root);
+    /* announce the BITE address being served: the .bait name (derived
+       from the identity pubkey, like `addr --bait`) and the class-C
+       addr:port clients dial. */
+    uint8_t pub[32], derived[5];
+    char blabel[BAIT_LABEL_LEN + 1];
+    memcpy(pub, sk + 32, 32);
+    ipv69_addr_derive(derived, pub, 'C');
+    bait_label_from_pub(blabel, pub);
+    printf("bite: serving %s.bait at %02x.%02x.%02x.%02x.%02x:%u\n",
+           blabel, derived[0], derived[1], derived[2], derived[3],
+           derived[4], port);
+    printf("bite: root dir: %s\n", root);
 
     if (a->tunnel) {
         a->announce_s = 2;
