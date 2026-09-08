@@ -30,6 +30,9 @@ static void usage_general(void)
         "  btls        bTLS secure channel: handshake + AEAD records\n"
         "  pppoe       PPPoE69 access sessions (ac | host)\n"
         "\n"
+        "Global: --key-file PATH (or IPV69_KEYFILE) selects the identity\n"
+        "key — before or after the subcommand (path, ~/ or a bare name\n"
+        "inside ~/.hosts69).\n"
         "Ports are DECIMAL and glued to the address (addr:16 = port 16).\n"
         "The keepalive daemon (net up/tun/lease/status) is Linux only.\n");
 }
