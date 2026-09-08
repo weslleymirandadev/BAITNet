@@ -28,8 +28,7 @@ IPV69_SRC := src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c \
 	src/IPv69/keygen.c src/IPv69/keyring.c src/IPv69/l2.c \
 	src/IPv69/mac1.c src/IPv69/ratelimit.c src/IPv69/gwfile.c \
 	src/IPv69/pppoe69.c src/IPv69/help.c \
-	src/BITE/baitname.c \
-	src/BITE/btls.c \
+	src/BITE/baitname.c src/BITE/btls.c \
 	tests/af69_raw.c \
 	tests/icsp_test.c src/ICSP/icsp.c src/ICSP/icsp_handshake.c \
 	src/ICSP/icsp_data.c src/ICSP/icsp_life.c src/ICSP/icsp_session.c \
@@ -57,7 +56,7 @@ HUB_SRC := examples/icsp_hub.c src/IPv69/keyring.c src/IPv69/parse.c \
 	src/IPv69/l2.c src/IPv69/mac1.c src/IPv69/ratelimit.c \
 	src/IPv69/gwfile.c $(ICSP_SRC) $(ED25519)
 
-.PHONY: all ipv69 chat hub win lib libwin libdemo
+.PHONY: all ipv69 chat hub bite win lib libwin libdemo
 
 all: ipv69 chat
 
@@ -70,6 +69,20 @@ hub: $(BUILD)/icsp_hub
 
 $(BUILD)/icsp_hub: $(HUB_SRC) include/ICSP/icsp.h include/IPv69/keyring.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(HUB_SRC)
+
+# BITE web tool (examples/bite.c): the HTTP-shaped protocol over bTLS
+# over ICSP — server (static files) + fetch client. Standalone example
+# like the chat; docs/bait-names-spec.md.
+BITE_SRC := examples/bite.c src/IPv69/keyring.c src/IPv69/parse.c \
+	src/IPv69/l2.c src/IPv69/mac1.c src/IPv69/ratelimit.c \
+	src/IPv69/gwfile.c src/BITE/baitname.c src/BITE/btls.c \
+	$(ICSP_SRC) $(ED25519)
+
+bite: $(BUILD)/bite
+
+$(BUILD)/bite: $(BITE_SRC) include/ICSP/icsp.h include/IPv69/keyring.h \
+	include/BITE/baitname.h include/BITE/btls.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $(BITE_SRC)
 
 # --- Windows build (MinGW + Npcap): full ipv69.exe + chat, raw L2 via
 # libpcap. Linux-only commands (tun/lease/status) are excluded and
