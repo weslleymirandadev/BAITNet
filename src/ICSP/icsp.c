@@ -58,31 +58,72 @@ uint8_t *icsp_chunk_put(uint8_t *buf, uint8_t type, size_t datalen)
  * association's endpoint. dst_mac = peer when known, else broadcast
  * (handshake starts broadcast; every reply after the first frame goes
  * unicast). */
+/* --- build the ICSP packet (header 12B + chunks) into `out`.
+ * CRC32c covers the WHOLE payload with the CRC FIELD ZEROED: the field is
+ * part of the buffer being summed, so it must be zero while summing or the
+ * result depends on whatever was in the buffer (the original code summed
+ * the two CRC bytes before writing them — undefined stack data). The
+ * original also started at byte 2, leaving src_port unprotected, while the
+ * header documents "CRC32c of the whole ICSP payload".
+ * Pure: no socket, no association state beyond the ports/assoc_id. */
+size_t icsp_build_pkt(const struct icsp_assoc *a, const uint8_t *chunk,
+                      size_t chunklen, uint8_t *out, size_t outlen)
+{
+    size_t off = 0;
+    uint32_t crc;
+
+    if (outlen < ICSP_HEADER_LEN + chunklen)
+        return 0;
+    out[off++] = (uint8_t)(a->src_port >> 8);
+    out[off++] = (uint8_t)a->src_port;
+    out[off++] = (uint8_t)(a->dst_port >> 8);
+    out[off++] = (uint8_t)a->dst_port;
+    out[off++] = ICSP_VERSION;
+    out[off++] = 0;
+    out[off++] = (uint8_t)(a->assoc_id >> 24);
+    out[off++] = (uint8_t)(a->assoc_id >> 16);
+    out[off++] = (uint8_t)(a->assoc_id >> 8);
+    out[off++] = (uint8_t)a->assoc_id;
+    out[off++] = 0;                     /* crc high, zero while summing */
+    out[off++] = 0;                     /* crc low  */
+    memcpy(out + off, chunk, chunklen);
+    off += chunklen;
+    crc = (uint16_t)icsp_crc32c(out, off);           /* whole payload */
+    out[10] = (uint8_t)(crc >> 8);
+    out[11] = (uint8_t)crc;
+    return off;
+}
+
+/* --- verify a received packet: 0 = ok, -1 = bad/too short. Recomputed
+ * with the CRC field zeroed, exactly like the builder. */
+int icsp_check_pkt(const uint8_t *pkt, size_t len)
+{
+    uint16_t stored, got;
+    uint8_t buf[ICSP_MAX_PAYLOAD];
+
+    if (len < ICSP_HEADER_LEN || len > sizeof(buf))
+        return -1;
+    memcpy(buf, pkt, len);
+    stored = (uint16_t)((buf[10] << 8) | buf[11]);
+    buf[10] = 0;
+    buf[11] = 0;
+    got = (uint16_t)icsp_crc32c(buf, len);
+    return stored == got ? 0 : -1;
+}
+
+/* --- one ICSP packet = header(12) + chunk(s). Build and send on the
+ * association's endpoint. dst_mac = peer when known, else broadcast
+ * (handshake starts broadcast; every reply after the first frame goes
+ * unicast). */
 int icsp_send_pkt(struct icsp_assoc *a, const uint8_t *chunk,
                   size_t chunklen)
 {
     const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
     uint8_t pkt[ICSP_MAX_PAYLOAD];
-    size_t off = 0;
-    uint16_t crc;
+    size_t off = icsp_build_pkt(a, chunk, chunklen, pkt, sizeof(pkt));
 
-    pkt[off++] = (uint8_t)(a->src_port >> 8);
-    pkt[off++] = (uint8_t)a->src_port;
-    pkt[off++] = (uint8_t)(a->dst_port >> 8);
-    pkt[off++] = (uint8_t)a->dst_port;
-    pkt[off++] = ICSP_VERSION;
-    pkt[off++] = 0;
-    pkt[off++] = (uint8_t)(a->assoc_id >> 24);
-    pkt[off++] = (uint8_t)(a->assoc_id >> 16);
-    pkt[off++] = (uint8_t)(a->assoc_id >> 8);
-    pkt[off++] = (uint8_t)a->assoc_id;
-    /* crc placeholder at off..off+1, filled after the body */
-    off += 2;
-    memcpy(pkt + off, chunk, chunklen);
-    off += chunklen;
-    crc = (uint16_t)icsp_crc32c(pkt + 2, off - 2);  /* over ports..end */
-    pkt[10] = (uint8_t)(crc >> 8);
-    pkt[11] = (uint8_t)crc;
+    if (off == 0)
+        return -1;
 
     uint8_t frame[1600];
     size_t len = build_frame(frame,
