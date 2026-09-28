@@ -189,6 +189,13 @@ int icsp_handle_frame(struct icsp_assoc *a, const uint8_t *frame, ssize_t n,
     const uint8_t *payload = frame + 14 + IPV69_HEADER_LEN;
     size_t plen = (size_t)(n - 14 - IPV69_HEADER_LEN);
 
+    /* Every received frame passes through here: the CRC is checked once, with the
+       CRC field zeroed — same rule as the builder. The original transmitter summed
+       the two CRC bytes before writing them (undefined stack data) and no receiver
+       ever looked at the field. */
+    if (icsp_check_pkt(payload, plen) != 0)
+        return 0;
+
     memcpy(a->peer_mac, frame + 6, 6);
     a->has_peer_mac = 1;
     a->last_rx = time(NULL);
