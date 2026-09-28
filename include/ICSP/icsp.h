@@ -173,6 +173,13 @@ struct icsp_assoc {
 /* CRC32c (Castagnoli), SCTP-style strong checksum. */
 uint32_t icsp_crc32c(const uint8_t *data, size_t len);
 
+/* Build a packet (header + chunks) into `out`; CRC over dst_port..end with
+ * the CRC field zeroed. Returns the packet length, 0 if `out` is small.
+ * Verify a received packet against its own CRC: 0 = ok, -1 = bad. */
+size_t icsp_build_pkt(const struct icsp_assoc *a, const uint8_t *chunk,
+                      size_t chunklen, uint8_t *out, size_t outlen);
+int icsp_check_pkt(const uint8_t *pkt, size_t len);
+
 /* chunk plumbing: header [type 1][flags 1][len 2] + data */
 size_t icsp_chunk_len(const uint8_t *chunk);
 uint8_t *icsp_chunk_next(uint8_t *chunk);
