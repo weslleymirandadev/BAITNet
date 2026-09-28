@@ -219,6 +219,8 @@ static int init_check(struct icsp_assoc *a, const uint8_t *frame,
     uint8_t flags = payload[ICSP_HEADER_LEN + 1];
     size_t pre_sig = INIT_PRE_SIG(flags);
 
+    if (icsp_check_pkt(payload, plen) != 0)
+        return -1;                  /* corrupted payload: drop before any crypto */
     if (cd[0] != ICSP_VERSION || plen < ICSP_HEADER_LEN + ICSP_CHUNK_HDR + INIT_LEN(flags))
         return -1;
     /* cheap pre-auth filter (WireGuard mac1): drop garbage and
@@ -362,6 +364,8 @@ int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
         if (n < 0) { perror("icsp: INIT-ACK"); return -1; }
         if (n == 0)
             continue;           /* noise frame */
+        if (icsp_check_pkt(payload, plen) != 0)
+            continue;               /* corrupted payload */
         if (payload[4] != ICSP_VERSION ||
             payload[ICSP_HEADER_LEN] != ICSP_CHUNK_INIT_ACK)
             continue;
