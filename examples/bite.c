@@ -651,7 +651,8 @@ int main(int argc, char **argv)
     uint8_t sk[64];
     struct icsp_assoc a;
 
-    setvbuf(stdout, NULL, _IOLBF, 0);
+    /* unbuffered: MSVCRT treats _IOLBF as full buffering */
+    setvbuf(stdout, NULL, _IONBF, 0);
     if (argc < 2) {
         usage();
         return 1;
