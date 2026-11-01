@@ -546,14 +546,20 @@ int cmd_raw(int argc, char **argv)
             printf("bait:  %s.bait\n", blabel);
         }
         if (do_dad) {
-            if (argc < 3) {
-                fprintf(stderr, "addr --dad: requires <ifname>\n");
-                return 1;
+            /* DAD: ND request for our own address; a reply = collision.
+               The ifname is the first non-flag argument — omitting it (or
+               writing 'auto') resolves the default-route interface. */
+            const char *dad_if = "auto";
+            for (int i = 2; i < argc; i++) {
+                if (!strcmp(argv[i], "--dad") || !strcmp(argv[i], "--bait"))
+                    continue;
+                if (!strcmp(argv[i], "--class")) { i++; continue; }
+                dad_if = argv[i];
+                break;
             }
-            /* DAD: ND request for our own address; reply = collision */
             uint8_t req[1 + 5] = { IPV69_CTRL_ND_REQUEST };
             memcpy(req + 1, derived, 5);
-            if (tun_open(argv[2], &ifindex, src_mac) < 0)
+            if (tun_open(dad_if, &ifindex, src_mac) < 0)
                 return 1;
             size_t len = build_frame(frame, bcast, src_mac, 0, 0xFFFFFFFFFFULL,
                                      IPV69_NEXT_CONTROL, 64, 0, 0, req, sizeof(req));
@@ -713,6 +719,32 @@ int cmd_raw(int argc, char **argv)
                 if (my_port && h->next_header == IPV69_NEXT_DGRAM &&
                     rd_be16(&h->dst_port) != my_port)
                     continue;
+            }
+            /* echo responder (ICMP-like): a bound receiver answers
+               ECHO_REQUEST unicast to the asker, so `ipv69 ping` works
+               host-to-host without a separate daemon */
+            if (my_addr && h->next_header == IPV69_NEXT_CONTROL &&
+                (size_t)n > 14 + IPV69_HEADER_LEN) {
+                const uint8_t *payload = frame + 14 + IPV69_HEADER_LEN;
+                size_t plen = (size_t)n - 14 - IPV69_HEADER_LEN;
+                if (payload[0] == IPV69_CTRL_ECHO_REQUEST &&
+                    get_addr40(h->dest) == my_addr) {
+                    uint8_t rep[512], out[600];
+                    size_t rl = plen < sizeof(rep) ? plen : sizeof(rep);
+                    uint64_t asker = get_addr40(h->source);
+
+                    memcpy(rep, payload, rl);
+                    rep[0] = IPV69_CTRL_ECHO_REPLY;
+                    size_t ol = build_frame(out, frame + 6, src_mac, my_addr,
+                                            asker, IPV69_NEXT_CONTROL,
+                                            64, 0, 0, rep, rl);
+                    if (tun_send(frame + 6, out, ol) >= 0) {
+                        printf("recv: echo reply -> %016llx\n",
+                               (unsigned long long)asker);
+                        fflush(stdout);
+                    }
+                    continue;
+                }
             }
             /* P5a: the gateway introduced us (hole punching): someone
                asked where we are — probe the caller's endpoint directly
@@ -899,10 +931,35 @@ int cmd_raw(int argc, char **argv)
         }
         const char *data = argc > 4 ? argv[4] : "ping";
         size_t dlen = strlen(data);
+        if (dlen > sizeof(req) - 1)
+            dlen = sizeof(req) - 1;
+        /* src is automatic here too (anti-spoofing): the reply must be
+           routable back to a real address, never to the reserved .01 */
+        uint64_t src = 0;
+        if (g_ngw > 0) {
+            uint8_t derived[5];
+            if (load_auto_key(sk) == 0) {
+                ipv69_addr_derive(derived, sk + 32, 'C');
+                src = get_addr40(derived);
+            }
+            has_sk = 1;
+        } else {
+            if (!has_sk && load_auto_key(sk) < 0)
+                return 1;
+            has_sk = 1;
+            if (dhcp_discover(src_mac, sk, has_sk, server_pub, has_server_pub,
+                              &src) < 0) {
+                fprintf(stderr, "ping: no DHCP server on the local network; "
+                        "run a dhcpd or use --remote\n");
+                return 1;
+            }
+            printf("ping: src = lease %016llx (auto)\n",
+                   (unsigned long long)src);
+        }
         req[0] = IPV69_CTRL_ECHO_REQUEST;
         memcpy(req + 1, data, dlen);
-        size_t len = build_frame(frame, bcast, src_mac, 1, dst, IPV69_NEXT_CONTROL,
-                                 64, 0, 0, req, 1 + dlen);
+        size_t len = build_frame(frame, bcast, src_mac, src, dst,
+                                 IPV69_NEXT_CONTROL, 64, 0, 0, req, 1 + dlen);
         if (tun_send(bcast, frame, len) < 0) { perror_sock("sendto"); return 1; }
         printf("ping sent to %016llx, waiting for reply...\n",
                (unsigned long long)dst);
