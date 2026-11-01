@@ -93,7 +93,8 @@ int main(int argc, char **argv)
     int n_peers = 0;
     struct icsp_assoc a;
 
-    setvbuf(stdout, NULL, _IOLBF, 0);
+    /* unbuffered: MSVCRT treats _IOLBF as full buffering */
+    setvbuf(stdout, NULL, _IONBF, 0);
     if (plat_sock_init() < 0) {
         fprintf(stderr, "chat: winsock init failed\n");
         return 1;
