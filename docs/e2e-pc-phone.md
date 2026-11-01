@@ -91,6 +91,42 @@ WSLENV=HOME HOME='C:/Users/user/ipv69bench/pca' ./ipv69.exe addr | grep '^addr:'
 `pc.sh` / `phone.sh` in this directory wrap the two invocations
 (`pc.sh <home> <tool> [args]`, `phone.sh <home> <tool> [args]`).
 
+## Same host (one PC only): use the local UDP gateway
+
+Two processes on the SAME machine and the SAME NIC cannot talk over raw L2:
+a frame injected by one `AF_PACKET` socket is not delivered to another socket
+of the same interface (the same class of limitation as the veth TX path), so
+the receiver never sees the INIT. The supported way to test a client and a
+server on one host is the UDP carrier with a local gateway — no root needed,
+because a `gw` without `--iface` is pure UDP:
+
+```bash
+# 1) local gateway (user space, no root)
+./build/ipv69 gw --port 16969 &
+
+# 2) ONE IDENTITY PER SIDE — with a single ~/.hosts69/key both processes
+#    derive the SAME address and the gateway cannot tell them apart (the
+#    client overwrites the server's route and the INIT is relayed back to
+#    the client). Create the keys once:
+./build/ipv69 keygen --key-file srv -N srvpass
+./build/ipv69 keygen --key-file cli -N clipass
+#    -> the server's .bait label is printed by keygen (and by bite server)
+
+# 3) server (label printed at boot: dk2kgnnj...bait in this run)
+IPV69_PASSPHRASE=srvpass ./build/bite server eth0 :18080 --root ./www \
+    --remote 127.0.0.1:16969 --key-file srv
+
+# 4) client — the .bait name plus the port, since :18080 is not the default
+IPV69_PASSPHRASE=clipass ./build/bite fetch eth0 \
+    dk2kgnnjdivpdwogdhxu6ed6rofnlywp.bait:18080/index.html \
+    --remote 127.0.0.1:16969 --key-file cli
+```
+
+Validated output (2026-11-01): `INIT-ACK ok` -> `association established` ->
+`bite: certificate matches ...bait` -> `status 200` + the file body, and on the
+server `BITE /index.html -> 200 (21 bytes)`. The same works for `ipv69 icsp
+server|client` by swapping the tool; only the identity rule stays.
+
 ## Known limits of this topology
 
 - Broadcast **wired -> wireless** is not delivered reliably by the access
