@@ -131,6 +131,33 @@ static ssize_t icsp_rx(struct icsp_assoc *a, uint8_t *frame,
     return l2_recv(a->fd, frame, maxlen, timeout_ms);
 }
 
+/* A frame whose eth src is our own MAC is either our own TX (Npcap loops
+ * injected frames back to the same handle; AF_PACKET on a real NIC also
+ * delivers TX frames to other packet sockets) or a peer running on the SAME
+ * host, which necessarily uses the same NIC and therefore the same MAC.
+ * Handshake chunks and DATA are safe in both cases: each state machine filters
+ * on the chunk type, and a DATA frame we sent ourselves fails the recv_key and
+ * is dropped. Control chunks (SACK/heartbeat/SHUTDOWN/stream-reset) are ours
+ * only — processing our own would corrupt the association state. */
+static int own_tx_control(const struct icsp_assoc *a, const uint8_t *frame,
+                          size_t n)
+{
+    if (n < 14 + IPV69_HEADER_LEN + ICSP_HEADER_LEN + ICSP_CHUNK_HDR)
+        return 1;                       /* too short: ignore */
+    if (memcmp(frame + 6, a->src_mac, 6))
+        return 0;                       /* different MAC: not our own TX */
+    switch (frame[14 + IPV69_HEADER_LEN + ICSP_HEADER_LEN]) {
+    case ICSP_CHUNK_INIT:
+    case ICSP_CHUNK_INIT_ACK:
+    case ICSP_CHUNK_COOKIE_ECHO:
+    case ICSP_CHUNK_COOKIE_ACK:
+    case ICSP_CHUNK_DATA:
+        return 0;
+    default:
+        return 1;
+    }
+}
+
 ssize_t icsp_recv_frame(struct icsp_assoc *a, uint8_t *frame,
                         const uint8_t **payload, size_t *plen,
                         uint64_t *src_addr)
@@ -145,12 +172,7 @@ ssize_t icsp_recv_frame(struct icsp_assoc *a, uint8_t *frame,
         return -1;
     if (n < 14 + IPV69_HEADER_LEN + ICSP_HEADER_LEN)
         return 0;               /* noise: not ours */
-    /* Npcap (Windows) delivers locally-injected frames back to the
-       same handle: a frame we sent ourselves must never be processed
-       as received — its DATA is encrypted with our send key and would
-       fail the MAC check, killing the association. AF_PACKET (Linux)
-       never loops TX back, so this is a no-op there. */
-    if (!memcmp(frame + 6, a->src_mac, 6))
+    if (own_tx_control(a, frame, (size_t)n))
         return 0;
     const struct ipv69_header *h =
         (const struct ipv69_header *)(frame + 14);
@@ -175,12 +197,7 @@ int icsp_handle_frame(struct icsp_assoc *a, const uint8_t *frame, ssize_t n,
 {
     if (n < 14 + IPV69_HEADER_LEN + ICSP_HEADER_LEN)
         return 0;
-    /* Npcap (Windows) loops locally-injected frames back to the same
-       handle: a frame we sent ourselves must never be processed as
-       received — its DATA is encrypted with our send key and would
-       fail the MAC check, killing the association. AF_PACKET (Linux)
-       never loops TX back, so this is a no-op there. */
-    if (!memcmp(frame + 6, a->src_mac, 6))
+    if (own_tx_control(a, frame, (size_t)n))
         return 0;
     const struct ipv69_header *h =
         (const struct ipv69_header *)(frame + 14);
