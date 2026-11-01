@@ -93,11 +93,68 @@ WSLENV=HOME HOME='C:/Users/user/ipv69bench/pca' ./ipv69.exe addr | grep '^addr:'
 
 ## Known limits of this topology
 
-- Broadcast **wired -> wireless** may be filtered by the access point; every
-  unicast reply works. That is why the server roles are normally taken by the
-  PC and the phone dials in (B2/B10 test the other direction on purpose).
+- Broadcast **wired -> wireless** is not delivered reliably by the access
+  point (and is dropped entirely while the phone dozes): every unicast reply
+  works. That is why the server roles are normally taken by the PC and the
+  phone dials in — case B2/B10 below measures the other direction and it is
+  flaky by construction, because the first ICSP INIT goes to broadcast.
 - Android `wlan0` in managed mode only hands the driver unicast to its own MAC
   (and some broadcast), so the phone is not a reliable frame *sniffer*: use
   the protocol's own `recv` as the sensor, not tcpdump.
 - No forwarding/mesh/federation case lives here: they need a third host or a
   public seed (`docs/network-architecture.md`, USAGE section 7).
+
+## Run log 2026-11-01 (Windows PC "Realtek" / 192.168.100.6 <-> Moto G22 wlan0 / .43)
+
+Two parallel tracks, disjoint ports and identities, no tunnel.
+
+| case | result | evidence |
+|---|---|---|
+| A1 DHCP69 open | PASS | PC: `DISCOVER 00:08:22:9c:03:fc -> OFFER 000000000000009e` / `REQUEST ... -> ACK`; phone: `dhcp: ACK 000000000000009e — configured!` |
+| A2 DHCP69 closed (`--peer-file`) | PASS | PC: `peer-file peers_a.txt: 1 pubkey(s)`, `peers=1 ... learn=no`, same OFFER/ACK |
+| A3 unknown identity rejected | PASS | PC: `pub 8e9b2839... not in allowlist -> ignored` (3x), phone never ACKed |
+| A4 dgram phone->PC | PASS | PC: `... nh=1 ports=50306/18001 payload(8)=hello-a4` |
+| A5 dgram PC->phone | PASS | phone dump showed the payload; PC printed `src = lease 0000000000000070 (auto)` |
+| A6 ping/echo | PASS (after fix) | phone: `ping: src = lease 000000000000009e (auto)` + `reply from 0000000000000070: hi-a6c`; PC: `recv: echo reply -> 000000000000009e` |
+| A7 DAD | PASS (after fix) | `l2: auto interface = wlan0`, `dad: address free` |
+| A8 PPPoE69 AC + host | PASS | AC: `PADI ... -> PADO`, `PADR ... -> session 1`; host: `PADS sid=1`, `session 1 up via ip69p0` |
+| B0 CRC unit test | PASS | `make crc` -> 8/8 OK |
+| B1 ICSP handshake + data | PASS | both sides `session_key=3e5225a1...d5f9`; server `received 8 bytes (stream 1): "hello-b1"`; client `sack=1` |
+| B2 ICSP phone as server | PASS (transient) | phone: `INIT ok -> INIT-ACK`, `association established!`; repeats later timed out (see limits) |
+| B3 allowlist rejection | PASS | unauthorized `INIT-ACK: Connection timed out`; authorized client then established |
+| B4 rekey | PASS | server: `rekey ok! new session_key=35dab83c...` / `9c40ba94...` |
+| B5 lossy SACK | PASS | `--loss 30`: `retransmitted DATA`, client still `sack=1` |
+| B6 chat relay | PASS | server log: `hello-b6` delivered over stream 1 |
+| B7 BITE GET by label | PASS | `bite: certificate matches hsl4...bait`, body `marker-b7-ok`, `status 200` |
+| B8 BITE negatives | PASS | `/nope` -> `status 404`; `/../etc/passwd` -> `status 400` (traversal blocked) |
+| B9 BITE `--head` | PASS | `BITE/1.0 200 OK` + `Content-Length: 87`, no body |
+| B10 BITE phone as server | FAIL | PC `INIT sent` then `INIT-ACK: timed out`; the phone server never logged an INIT. Same result with a plain `icsp server` on any port — the INIT is broadcast from the wire and the AP/driver does not hand it to the phone (verified `mWakefulness=Dozing` drops it entirely; a fresh wake sometimes delivers it) |
+
+Defects found and fixed during the run:
+
+1. `src/IPv69/pppoe69.c` — the ND_REPLY MAC was written at `+7` instead of
+   `+6` (1-byte stack overflow and a malformed reply) in all three sites.
+2. `tests/af69_raw.c` — nothing in the tree answered ECHO_REQUEST, so `ping`
+   could never work; a bound `recv` now replies unicast, and `ping` no longer
+   sends the reserved `00.00.00.00.01` as src (lease / identity instead).
+3. `tests/af69_raw.c` — `addr --dad` used `argv[2]` as the ifname, so
+   `ipv69 addr --dad` tried to open an interface called "--dad"; the ifname is
+   now the first non-flag argument (omitted = auto).
+4. `tests/icsp_test.c`, `tests/btls_test.c`, `examples/{icsp_chat,bite,icsp_hub}.c`
+   — `setvbuf(_IOLBF)` is full buffering under MSVCRT, so redirected server
+   logs stayed empty on Windows; switched to `_IONBF`.
+5. `src/IPv69/l2.c` — `auto` resolved from `/proc/net/route`, which on Android
+   only carries the connected route (the default lives in a policy table), so
+   every `auto` command failed with "no default-route interface found"; it now
+   falls back to the first UP non-loopback interface.
+
+Open gaps (measured, not implemented):
+
+- No ND responder outside the PPPoE AC, so `addr --dad` always reports
+  "address free" on a plain L2 — collision detection is not effective there.
+- The first ICSP INIT is sent to broadcast. Making the client resolve the
+  peer MAC by ND first (unicast INIT) would make any host a reliable server
+  over Wi-Fi; today a phone behind an AP is only reachable when the broadcast
+  happens to be delivered.
+- BITE's 405 (unknown verb) is implemented server-side but the CLI client only
+  issues GET/BITE/HEAD, so it is not exercised end-to-end.
