@@ -107,10 +107,15 @@ because a `gw` without `--iface` is pure UDP:
 # 2) ONE IDENTITY PER SIDE — with a single ~/.hosts69/key both processes
 #    derive the SAME address and the gateway cannot tell them apart (the
 #    client overwrites the server's route and the INIT is relayed back to
-#    the client). Create the keys once:
-./build/ipv69 keygen --key-file srv -N srvpass
-./build/ipv69 keygen --key-file cli -N clipass
-#    -> the server's .bait label is printed by keygen (and by bite server)
+#    the client). `keygen` refuses to overwrite, so the test keeps the same
+#    identity across runs — but if a key IS regenerated its .bait label
+#    changes with it, and an old label resolves to an address nobody owns
+#    (the server still answers and bTLS then rejects the certificate:
+#    "the certificate does not match <label>.bait").
+[ -f ~/.hosts69/srv ] || ./build/ipv69 keygen --key-file srv -N srvpass
+[ -f ~/.hosts69/cli ] || ./build/ipv69 keygen --key-file cli -N clipass
+#    always take the label from the CURRENT key / the server banner:
+IPV69_PASSPHRASE=srvpass ./build/ipv69 addr --bait --key-file srv
 
 # 3) server (label printed at boot: dk2kgnnj...bait in this run)
 IPV69_PASSPHRASE=srvpass ./build/bite server eth0 :18080 --root ./www \
