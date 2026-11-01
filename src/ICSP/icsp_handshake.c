@@ -343,7 +343,14 @@ int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
     printf("icsp: client -> %016llx:%u\n",
            (unsigned long long)dst_addr, dst_port);
 
-    /* INIT */
+    /* INIT — retransmitted on timeout: the first frame of the handshake is the
+     * one most often lost (gateway relay cold path, Wi-Fi power save, NAT), and
+     * a single attempt made connections fail intermittently. */
+    int init_tries = 0;
+    uint8_t ck[ICSP_CHUNK_HDR + COOKIE_LEN + 64];
+    size_t cklen = 0;
+
+resend_init:
     {
         uint8_t chunk[ICSP_CHUNK_HDR + INIT_LEN(ICSP_INIT_FLAG_IDBOX)];
         size_t clen = init_build(a, sk, server_pub, chunk);
@@ -361,7 +368,14 @@ int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
     /* wait INIT-ACK [ver][streams][eph 32][id 32][sig 64][cookie] */
     for (;;) {
         ssize_t n = icsp_recv_frame(a, frame, &payload, &plen, &from);
-        if (n < 0) { perror("icsp: INIT-ACK"); return -1; }
+        if (n < 0) {
+            if (++init_tries < 5) {
+                printf("icsp: no INIT-ACK — retry %d/5\n", init_tries);
+                goto resend_init;
+            }
+            perror("icsp: INIT-ACK");
+            return -1;
+        }
         if (n == 0)
             continue;           /* noise frame */
         if (icsp_check_pkt(payload, plen) != 0)
@@ -393,12 +407,12 @@ int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
         if (icsp_derive_key(a, a->eph_priv) != 0)
             return -1;
         /* COOKIE-ECHO [cookie 48][sig 64] */
-        uint8_t ck[ICSP_CHUNK_HDR + COOKIE_LEN + 64];
         uint8_t *ckd = icsp_chunk_put(ck, ICSP_CHUNK_COOKIE_ECHO,
                                       COOKIE_LEN + 64);
         memcpy(ckd, cd + 69 + 64, COOKIE_LEN);
         ed25519_sign(ckd + COOKIE_LEN, ckd, COOKIE_LEN, sk);
-        if (icsp_send_pkt(a, ck, sizeof(ck)) < 0) {
+        cklen = sizeof(ck);
+        if (icsp_send_pkt(a, ck, cklen) < 0) {
             perror("icsp: send COOKIE-ECHO");
             return -1;
         }
@@ -406,10 +420,24 @@ int icsp_client_handshake(struct icsp_assoc *a, uint64_t dst_addr,
         break;
     }
 
-    /* wait COOKIE-ACK */
+    /* wait COOKIE-ACK — the COOKIE-ECHO is retransmitted as well, otherwise a
+       single lost frame (or a server that already went back to accept) would
+       abort the connection */
+    int ck_tries = 0;
     for (;;) {
         ssize_t n = icsp_recv_frame(a, frame, &payload, &plen, &from);
-        if (n < 0) { perror("icsp: COOKIE-ACK"); return -1; }
+        if (n < 0) {
+            if (++ck_tries < 5) {
+                printf("icsp: no COOKIE-ACK — retry %d/5\n", ck_tries);
+                if (icsp_send_pkt(a, ck, cklen) < 0) {
+                    perror("icsp: send COOKIE-ECHO");
+                    return -1;
+                }
+                continue;
+            }
+            perror("icsp: COOKIE-ACK");
+            return -1;
+        }
         if (n == 0)
             continue;
         if (payload[ICSP_HEADER_LEN] != ICSP_CHUNK_COOKIE_ACK)
