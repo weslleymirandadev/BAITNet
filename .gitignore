@@ -1,6 +1,6 @@
 build/
 .vscode
-
+www
 # modulo kernel: artefatos de build
 *.ko
 *.o
@@ -10,3 +10,9 @@ build/
 Module.symvers
 modules.order
 .tmp_versions/
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
