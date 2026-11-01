@@ -227,3 +227,33 @@ Open gaps (measured, not implemented):
   happens to be delivered.
 - BITE's 405 (unknown verb) is implemented server-side but the CLI client only
   issues GET/BITE/HEAD, so it is not exercised end-to-end.
+
+## Defeitos medidos na camada bTLS/BITE (2026-11)
+
+Encontrados ao servir arquivos maiores que um datagrama curto:
+
+1. **Overflow de pilha no ICSP** — `icsp_data_send` declarava
+   `uint8_t box[ICSP_MAX_PAYLOAD + 32]`, mas o blob tem `8 + len + 32`
+   bytes (o cabeçalho claro de 8 B também é cifrado). No limite, 8 bytes
+   passavam do buffer e o processo morria com `*** stack smashing
+   detected ***` depois de responder `200`. Corrigido com
+   `ICSP_MAX_PAYLOAD + 8 + 32`.
+
+2. **`BTLS_MAX_PAYLOAD` maior que o carrier** — 1360 B de payload geram um
+   record de 1397 B, que não cabe num DATA do ICSP
+   (`1400 - 12 - 4 - 8 - 32 = 1344`). O servidor então falhava ao enviar
+   (ou estourava o buffer acima). Reduzido para 1290 B; o invariante agora
+   tem teste no Python (`tests/test_record_size_invariant.py`).
+
+3. **ABERTO: respostas acima de ~980 B não chegam ao cliente** (modo
+   `--remote`, same-host). Medido com `bite fetch` de arquivos aleatórios:
+
+   ```
+   880 bytes -> status 200      900 bytes -> timeout
+   ```
+
+   O ICSP sozinho entrega 1000 B sem problema (`ipv69 icsp client` com
+   mensagem de 1000 bytes, servidor recebe inteiro), então a perda está
+   acima do ICSP — no caminho de record/entrega do bTLS ou no callback
+   `bite_data_cb` (que aceita um record por vez em `pend[BTLS_MAX_REC]`).
+   Reprodução: servir `www/` em `--remote` e pedir um arquivo de 900 B.
