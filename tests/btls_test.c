@@ -325,7 +325,8 @@ int cmd_btls(int argc, char **argv)
     uint8_t sk[64];
     struct icsp_assoc a;
 
-    setvbuf(stdout, NULL, _IOLBF, 0);
+    /* unbuffered: MSVCRT treats _IOLBF as full buffering */
+    setvbuf(stdout, NULL, _IONBF, 0);
 
     /* ifname omitted (`btls server :6969` / `btls client <dst:port>`):
        insert "auto" so the endpoint resolves the default-route iface */
