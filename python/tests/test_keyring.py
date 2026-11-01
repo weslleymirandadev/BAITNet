@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from baitnet.crypto import open_ as box_open, seal as box_seal, seed_to_pub
-from baitnet.keyring import (derive_key, load_keyfile, load_or_create,
+from baitnet.lib.crypto import open_ as box_open, seal as box_seal, seed_to_pub
+from baitnet.core.keyring import (derive_key, load_keyfile, load_or_create,
                           read_pub, save_keyfile)
 
 FIXTURES = Path(__file__).parent / "fixtures"

@@ -6,9 +6,9 @@ keyring: pub 3198c3c0… -> 83.81.0b.be.6c and label ioaqxptm….
 
 import pytest
 
-from baitnet.addr import (Addr, addr_class, derive_addr, format_addr,
+from baitnet.core.addr import (Addr, addr_class, derive_addr, format_addr,
                         parse_addr, parse_addr_port)
-from baitnet.bait import (is_bait_name, label_from_pub, label_to_addr,
+from baitnet.bite.names import (is_bait_name, label_from_pub, label_to_addr,
                         label_valid, name_to_addr)
 
 PUB = bytes.fromhex(
