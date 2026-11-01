@@ -147,6 +147,18 @@ Defects found and fixed during the run:
    only carries the connected route (the default lives in a policy table), so
    every `auto` command failed with "no default-route interface found"; it now
    falls back to the first UP non-loopback interface.
+6. `examples/bite.c` — `bite fetch <name>.bait` **segfaulted**: the auto-ifname
+   guard (`dst_not_ifname`) accepts a `.bait` name or a URL, but
+   `parse_insert_auto_ifname` only inserts when the argument parses as an
+   address, so the argv came back unchanged and `main()` re-dispatched itself
+   until the stack ran out. bite now inserts `auto` itself for URL/.bait
+   destinations.
+7. `examples/bite.c` + `src/ICSP/icsp_handshake.c` — the server died after 30s
+   of silence (`icsp: INIT: Connection timed out`): the accept window was
+   finite and a failed accept returned from the serve loop. The accept is now
+   blocking (`timeout_s = 0`) and a failed accept re-enters the loop; the two
+   handshake waits also treat `EAGAIN`/`EWOULDBLOCK`/`EINTR` as "no frame
+   yet" instead of a fatal socket error.
 
 Open gaps (measured, not implemented):
 
