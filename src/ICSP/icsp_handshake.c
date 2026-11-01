@@ -456,6 +456,9 @@ retry_handshake:
             a->rcv_timeout_ms = timeout_s > 0 ? timeout_s * 1000 : 0;
         }
         ssize_t n = icsp_recv_frame(a, frame, &payload, &plen, &from);
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK ||
+                      errno == EINTR))
+            continue;           /* transient: keep accepting */
         if (n < 0 && a->tunnel && a->announce_s > 0 &&
             errno == ETIMEDOUT)
             continue;           /* announce tick expired: re-announce */
@@ -488,6 +491,8 @@ retry_handshake:
     for (;;) {
         ssize_t n = icsp_recv_frame(a, frame, &payload, &plen, &from);
         if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+                continue;       /* transient: keep waiting */
             if (a->tunnel && a->announce_s > 0 && errno == ETIMEDOUT) {
                 icsp_announce_send(a);
                 goto retry_handshake;
