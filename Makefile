@@ -56,7 +56,16 @@ HUB_SRC := examples/icsp_hub.c src/IPv69/keyring.c src/IPv69/parse.c \
 	src/IPv69/l2.c src/IPv69/mac1.c src/IPv69/ratelimit.c \
 	src/IPv69/gwfile.c $(ICSP_SRC) $(ED25519)
 
-.PHONY: all ipv69 chat hub bite win lib libwin libdemo
+.PHONY: all ipv69 chat hub bite win lib libwin libdemo crc
+
+# ICSP CRC integrity unit test: build + run, no device, no root.
+crc: $(BUILD)/icsp_crc_test
+	$(BUILD)/icsp_crc_test
+
+$(BUILD)/icsp_crc_test: tests/icsp_crc_test.c src/ICSP/icsp.c src/IPv69/l2.c \
+	$(ED25519) include/ICSP/icsp.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ tests/icsp_crc_test.c src/ICSP/icsp.c \
+	src/IPv69/l2.c $(ED25519)
 
 all: ipv69 chat
 
@@ -114,7 +123,17 @@ IPV69_WIN_SRC := src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c \
 	src/BITE/btls.c \
 	tests/af69_raw.c tests/icsp_test.c tests/btls_test.c $(ICSP_SRC) $(ED25519)
 
-win: $(BUILD)/ipv69.exe $(BUILD)/icsp_chat.exe
+win: $(BUILD)/ipv69.exe $(BUILD)/icsp_chat.exe $(BUILD)/bite.exe
+
+WIN_BITE_SRC := examples/bite.c src/IPv69/keyring.c src/IPv69/parse.c \
+	src/IPv69/l2_win.c src/IPv69/mac1.c src/IPv69/ratelimit.c \
+	src/IPv69/gwfile.c src/BITE/baitname.c src/BITE/btls.c \
+	$(ICSP_SRC) $(ED25519)
+
+$(BUILD)/bite.exe: $(WIN_BITE_SRC) include/ICSP/icsp.h include/IPv69/keyring.h \
+	include/BITE/baitname.h include/BITE/btls.h | $(BUILD)
+	$(WIN_CC) $(WIN_CFLAGS) -o $@ $(WIN_BITE_SRC) $(WIN_LIBS)
+	chmod +x $@
 
 $(BUILD)/ipv69.exe: $(IPV69_WIN_SRC) include/IPv69/plat.h include/IPv69/af69.h | $(BUILD)
 	$(WIN_CC) $(WIN_CFLAGS) -o $@ $(IPV69_WIN_SRC) $(WIN_LIBS)
