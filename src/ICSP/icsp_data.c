@@ -216,7 +216,7 @@ int icsp_data_handle(struct icsp_assoc *a, const uint8_t *payload,
                 goto next;
             if (ed25519_secretbox_open(clear, cd + 8, boxlen - 32, nonce,
                                        a->recv_key) != 0)
-                return -1;          /* bad MAC: drop association */
+                goto next;      /* not for us (our own TX, forged): skip */
             /* validate the plaintext matches the header (anti-replay) */
             uint32_t t2 = ((uint32_t)clear[0] << 24) |
                           ((uint32_t)clear[1] << 16) |
