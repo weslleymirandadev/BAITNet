@@ -146,6 +146,15 @@ static int own_tx_control(const struct icsp_assoc *a, const uint8_t *frame,
         return 1;                       /* too short: ignore */
     if (memcmp(frame + 6, a->src_mac, 6))
         return 0;                       /* different MAC: not our own TX */
+    /* Same MAC but a different ICSP source port means a peer running on the
+     * same host (one NIC, one MAC): its control chunks are legitimate. */
+    {
+        const uint8_t *ic = frame + 14 + IPV69_HEADER_LEN;
+        if (n < 14 + IPV69_HEADER_LEN + ICSP_HEADER_LEN)
+            return 1;
+        if (((uint16_t)((ic[0] << 8) | ic[1])) != a->src_port)
+            return 0;
+    }
     switch (frame[14 + IPV69_HEADER_LEN + ICSP_HEADER_LEN]) {
     case ICSP_CHUNK_INIT:
     case ICSP_CHUNK_INIT_ACK:
