@@ -135,7 +135,8 @@ int main(int argc, char **argv)
     uint16_t port = 6969;
     int use_stdin = 1;
 
-    setvbuf(stdout, NULL, _IOLBF, 0);
+    /* unbuffered: MSVCRT treats _IOLBF as full buffering */
+    setvbuf(stdout, NULL, _IONBF, 0);
     if (plat_sock_init() < 0) {
         fprintf(stderr, "hub: winsock init failed\n");
         return 1;
