@@ -70,8 +70,9 @@ It depends on nothing from IPv69 — reusable in any project (your future
   - identity-derived: `ipv69 addr [--class A|B|C]` (default C = public, first octet 80–bf)
 - Ports: **decimal**, glued to the address as `addr:port`
   (e.g. `00.00.00.00.10:16` = address `.10`, port 16; no leading zeros)
-- `next_header`: `0` control (DHCP/ND/echo), `1` dgram, `2` stream (reserved),
-  `3` PPPoE69 session (encapsulated frame)
+- `next_header`: `0` control (DHCP/ND/echo), `1` dgram, `2` stream
+  (ICSP sessions — `docs/icsp-spec.md`), `3` PPPoE69 session
+  (encapsulated frame)
 
 ---
 
@@ -589,13 +590,30 @@ the roadmap: `docs/pppoe69-spec.md`.
 ```bash
 make ipv69                                   # single binary (all subcommands)
 make chat                                    # ICSP chat example (standalone)
+make hub                                     # group-chat hub (POSIX only)
+make bite                                    # BITE web tool (server + fetch)
 make win                                     # Windows: ipv69.exe + chat (MinGW+Npcap)
-# arm64 (phone):
+```
+
+There is **no arm64 target in the Makefile** (`make ipv69.arm64` silently
+does nothing) — mirror the source lists above with a cross compiler:
+
+```bash
+# arm64 (phone / Kali NetHunter chroot) — full binary:
 aarch64-linux-gnu-gcc -O2 -static -Iinclude -Ilib/ed25519/include \
-    -o ipv69_arm64 src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c \
-    src/IPv69/ipv69gw.c src/IPv69/ip69d.c src/IPv69/ip69.c src/IPv69/keygen.c \
-    src/IPv69/keyring.c tests/af69_raw.c \
+    -o ipv69_arm64 \
+    src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c src/IPv69/ipv69gw.c \
+    src/IPv69/ip69d.c src/IPv69/ip69.c src/IPv69/keygen.c src/IPv69/keyring.c \
+    src/IPv69/l2.c src/IPv69/mac1.c src/IPv69/ratelimit.c src/IPv69/gwfile.c \
+    src/IPv69/pppoe69.c src/IPv69/help.c \
+    src/BITE/baitname.c src/BITE/btls.c \
+    tests/af69_raw.c tests/icsp_test.c tests/btls_test.c \
+    src/ICSP/icsp.c src/ICSP/icsp_handshake.c src/ICSP/icsp_data.c \
+    src/ICSP/icsp_life.c src/ICSP/icsp_session.c \
     lib/ed25519/src/ed25519.c lib/ed25519/src/tweetnacl.c lib/ed25519/src/randombytes.c
+
+# examples (chat/hub/bite) = example .c + keyring/parse/l2/mac1/ratelimit/
+# gwfile + ICSP + ed25519; point the SAME line at the example's source.
 ```
 
 ---
