@@ -18,17 +18,16 @@ import os
 import sys
 import time
 
-from . import mac1  # noqa: F401  (kept for the handshake helpers upstream)
-from .addr import format_addr, parse_addr, parse_addr_port
-from .bait import label_from_pub
-from .constants import (
+from .core.addr import format_addr, parse_addr, parse_addr_port
+from .bite.names import label_from_pub
+from .core.constants import (
     BCAST_ADDR, CTRL_ECHO_REPLY, CTRL_ECHO_REQUEST, NEXT_CONTROL, NEXT_DGRAM,
 )
-from .crypto import seed_to_pub  # noqa: F401
-from .dhcp import configure
-from .frame import BCAST_MAC, build_frame, parse_frame
-from .keyring import key_paths, load_or_create
-from .l2 import L2
+from .core.dhcp import configure
+from .core.frame import BCAST_MAC, build_frame, parse_frame
+from .core.keyring import key_paths, load_or_create
+from .core.l2 import L2
+from .core.transport import L2Transport
 
 
 def _identity(args) -> tuple[bytes, bytes]:
@@ -43,7 +42,7 @@ def _identity(args) -> tuple[bytes, bytes]:
 # --- commands -----------------------------------------------------------
 def cmd_addr(args) -> int:
     seed, pub = _identity(args)
-    from .addr import derive_addr
+    from .core.addr import derive_addr
     value = derive_addr(pub, args.cls)
     print(f"addr: {format_addr(value)} (derived from identity, class {args.cls})")
     print(f"pubkey: {pub.hex()}")
@@ -61,7 +60,7 @@ def cmd_keygen(args) -> int:
               file=sys.stderr)
         return 1
     seed = os.urandom(32)
-    from .keyring import save_keyfile
+    from .core.keyring import save_keyfile
     pub = save_keyfile(key, seed, args.passphrase, args.comment)
     print(f"Your identification has been saved in {key}")
     print(f"PUBKEY (register on the server): {pub.hex()} {args.comment}".rstrip())
@@ -71,8 +70,8 @@ def cmd_keygen(args) -> int:
 
 def cmd_selftest(_args) -> int:
     """Wire vectors that do not need a NIC — the same ones pytest asserts."""
-    from .crc import crc32c
-    from .icsp import build_pkt, check_pkt, chunk_put
+    from .core.crc import crc32c
+    from .icsp.framing import build_pkt, check_pkt, chunk_put
     checks: list[tuple[str, bool]] = []
 
     checks.append(("crc32c('abc') == 0x364b3fb7", crc32c(b"abc") == 0x364B3FB7))
@@ -86,8 +85,8 @@ def cmd_selftest(_args) -> int:
                    not check_pkt(pkt[:10] + bytes([pkt[10] ^ 1]) + pkt[11:])))
 
     # keyring passphrase round-trip in memory
-    from .crypto import open_ as box_open, seal as box_seal
-    from .keyring import derive_key
+    from .lib.crypto import open_ as box_open, seal as box_seal
+    from .core.keyring import derive_key
     import os as _os
     seed = _os.urandom(32)
     salt, nonce = _os.urandom(16), _os.urandom(24)
@@ -150,6 +149,41 @@ def cmd_send(args) -> int:
     return 0
 
 
+def cmd_bite(args) -> int:
+    """Serve or fetch BITE documents over ICSP + bTLS (needs root)."""
+    from .bite.bite import BiteClient, BiteServer, resolve_name
+    from .bite.names import label_from_pub
+    from .core.addr import derive_addr
+    from .icsp.session import Assoc
+
+    seed, pub = _identity(args)
+    label = label_from_pub(pub)
+    my_addr = derive_addr(pub, "C")
+    with L2(args.ifname) as l2:
+        assoc = Assoc(transport=L2Transport(l2), seed=seed, src_addr=my_addr)
+        if args.mode == "serve":
+            assoc.src_port = args.port
+            peers = [bytes.fromhex(p.replace(":", "")) for p in (args.peer or [])]
+            print(f"baitnet: serving {label}.bait at {format_addr(my_addr)}:{args.port}")
+            print(f"baitnet: root {args.root}")
+            server = BiteServer(assoc, args.root)
+            server.listen(args.port, peers, serve_forever=True)
+            return 0
+        host, _, rest = args.url.partition("/")
+        target = "/" + rest if rest else "/"
+        dst, port = resolve_name(host, args.port)
+        expect = host[:-5] if host.endswith(".bait") else None
+        if args.no_check:
+            expect = None
+        assoc.dst_addr, assoc.dst_port = dst, port
+        print(f"baitnet: fetch bait://{host}{target} -> {format_addr(dst)}:{port}")
+        status, headers, body = BiteClient(assoc, expect).fetch(target, args.method)
+        print(f"baitnet: status {status} {headers.get('content-type', '')}".rstrip())
+        sys.stdout.buffer.write(body)
+        sys.stdout.buffer.flush()
+        return 0 if status == 200 else 1
+
+
 def cmd_recv(args) -> int:
     addr, port = parse_addr_port(args.target, 0)
     with L2(args.ifname) as l2:
@@ -209,6 +243,20 @@ def build_parser() -> argparse.ArgumentParser:
         else:
             sp.add_argument("--timeout", type=float, default=10.0)
         sp.set_defaults(func=func)
+
+    b = sub.add_parser("bite", help="serve or fetch BITE documents (needs root)")
+    b.add_argument("mode", choices=["serve", "fetch"])
+    b.add_argument("url", nargs="?", default=None, help="fetch: name.bait[/path]")
+    b.add_argument("--ifname", default="auto")
+    b.add_argument("--root", default=".")
+    b.add_argument("--port", type=int, default=8080)
+    b.add_argument("--method", default="BITE")
+    b.add_argument("--peer", action="append", default=[],
+                   help="serve: allowlist a peer public key (hex)")
+    b.add_argument("--no-check", action="store_true",
+                   help="fetch: skip the .bait certificate check")
+    b.set_defaults(func=cmd_bite)
+
     return p
 
 
