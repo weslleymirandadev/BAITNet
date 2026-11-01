@@ -182,7 +182,7 @@ relay still works — the network degrades gracefully instead of dying.
 | `af69d` (DHCP69) | **None** — still runs on L2; still optional |
 | `af69_raw` / `ip69d` (client) | `--remote gw1,gw2:port` → UDP tunnel backend; `addr` command for identity-derived addresses; DAD |
 | `ipv69gw` (new) | UDP listener + addr/mac↔endpoint tables + forwarding + QUERY + relay |
-| `lib/ed25519` | Exposes SHA-512 for address derivation |
+| `c/lib/ed25519` | Exposes SHA-512 for address derivation |
 | Kernel module, wire format, DHCP, binding | **Nothing changes** |
 
 ## 6. Deployment modes

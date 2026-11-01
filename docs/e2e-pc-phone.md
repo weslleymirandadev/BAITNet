@@ -7,7 +7,7 @@ exercises the protocol itself, not the UDP carrier.
 ```
   Windows PC  (AF_PACKET equivalent: Npcap)        Android phone (AF_PACKET)
   adapter "Realtek" / 192.168.100.6     ── LAN ──  wlan0 / 192.168.100.43
-  build/ipv69.exe icsp_chat.exe bite.exe           /data/local/tmp/ipv69bench/
+  c/build/ipv69.exe icsp_chat.exe bite.exe           /data/local/tmp/ipv69bench/
 ```
 
 ## Environment (fixed for every case)
@@ -189,28 +189,28 @@ Two parallel tracks, disjoint ports and identities, no tunnel.
 
 Defects found and fixed during the run:
 
-1. `src/IPv69/pppoe69.c` — the ND_REPLY MAC was written at `+7` instead of
+1. `c/src/IPv69/pppoe69.c` — the ND_REPLY MAC was written at `+7` instead of
    `+6` (1-byte stack overflow and a malformed reply) in all three sites.
-2. `tests/af69_raw.c` — nothing in the tree answered ECHO_REQUEST, so `ping`
+2. `c/tests/af69_raw.c` — nothing in the tree answered ECHO_REQUEST, so `ping`
    could never work; a bound `recv` now replies unicast, and `ping` no longer
    sends the reserved `00.00.00.00.01` as src (lease / identity instead).
-3. `tests/af69_raw.c` — `addr --dad` used `argv[2]` as the ifname, so
+3. `c/tests/af69_raw.c` — `addr --dad` used `argv[2]` as the ifname, so
    `ipv69 addr --dad` tried to open an interface called "--dad"; the ifname is
    now the first non-flag argument (omitted = auto).
-4. `tests/icsp_test.c`, `tests/btls_test.c`, `examples/{icsp_chat,bite,icsp_hub}.c`
+4. `c/tests/icsp_test.c`, `c/tests/btls_test.c`, `c/examples/{icsp_chat,bite,icsp_hub}.c`
    — `setvbuf(_IOLBF)` is full buffering under MSVCRT, so redirected server
    logs stayed empty on Windows; switched to `_IONBF`.
-5. `src/IPv69/l2.c` — `auto` resolved from `/proc/net/route`, which on Android
+5. `c/src/IPv69/l2.c` — `auto` resolved from `/proc/net/route`, which on Android
    only carries the connected route (the default lives in a policy table), so
    every `auto` command failed with "no default-route interface found"; it now
    falls back to the first UP non-loopback interface.
-6. `examples/bite.c` — `bite fetch <name>.bait` **segfaulted**: the auto-ifname
+6. `c/examples/bite.c` — `bite fetch <name>.bait` **segfaulted**: the auto-ifname
    guard (`dst_not_ifname`) accepts a `.bait` name or a URL, but
    `parse_insert_auto_ifname` only inserts when the argument parses as an
    address, so the argv came back unchanged and `main()` re-dispatched itself
    until the stack ran out. bite now inserts `auto` itself for URL/.bait
    destinations.
-7. `examples/bite.c` + `src/ICSP/icsp_handshake.c` — the server died after 30s
+7. `c/examples/bite.c` + `c/src/ICSP/icsp_handshake.c` — the server died after 30s
    of silence (`icsp: INIT: Connection timed out`): the accept window was
    finite and a failed accept returned from the serve loop. The accept is now
    blocking (`timeout_s = 0`) and a failed accept re-enters the loop; the two

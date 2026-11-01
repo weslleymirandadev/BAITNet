@@ -49,13 +49,13 @@ breakdown that was implemented.
 
 | # | Location | Problem | Cost |
 |---|----------|---------|------|
-| B1 | `src/ICSP/icsp_handshake.c` server path | Every INIT runs `ed25519_verify` (peer signature) + X25519 + `ed25519_sign` BEFORE any cheap filter. Forged INITs (random key+sig) burn full crypto per packet. | ~1.7 ms CPU per INIT (x64), unbounded |
-| B2 | `src/IPv69/af69d.c` `check_msg` | Same for DHCP: every DISCOVER/REQUEST gets an Ed25519 verify before accept/reject. No rate limit, no cheap pre-filter. | ~1.7 ms per packet |
-| B3 | `src/IPv69/ipv69gw.c` | Broadcast frames are replicated to ALL peers (up to 256): an authenticated malicious peer amplifies 1→256. No rate limit, no split horizon (tunnel→tunnel replication). | amplification |
-| B4 | `src/IPv69/ipv69gw.c` `peer_learn` | Peers are learned from ANY data frame with a class-valid src — unauthenticated. A spoofed src floods the table (256 slots, 300 s) and evicts real peers. | state DoS |
-| B5 | `tests/af69_raw.c` dgram path | Datagrams carry NO authentication. With the kernel binding gone (module removed), any node can claim any src address on L2. | spoofing |
-| B6 | `src/ICSP/icsp.c` + session | Session key derived once, used forever (no rekey), single key for both directions, SHA-512 label instead of HKDF; no handshake replay protection. | PFS decay, replay |
-| B7 | `src/IPv69/af69d.c` | DHCP pool default 0x10–0xfe = 239 addresses. The 40-bit space is unused; the pool is the network size. | scale |
+| B1 | `c/src/ICSP/icsp_handshake.c` server path | Every INIT runs `ed25519_verify` (peer signature) + X25519 + `ed25519_sign` BEFORE any cheap filter. Forged INITs (random key+sig) burn full crypto per packet. | ~1.7 ms CPU per INIT (x64), unbounded |
+| B2 | `c/src/IPv69/af69d.c` `check_msg` | Same for DHCP: every DISCOVER/REQUEST gets an Ed25519 verify before accept/reject. No rate limit, no cheap pre-filter. | ~1.7 ms per packet |
+| B3 | `c/src/IPv69/ipv69gw.c` | Broadcast frames are replicated to ALL peers (up to 256): an authenticated malicious peer amplifies 1→256. No rate limit, no split horizon (tunnel→tunnel replication). | amplification |
+| B4 | `c/src/IPv69/ipv69gw.c` `peer_learn` | Peers are learned from ANY data frame with a class-valid src — unauthenticated. A spoofed src floods the table (256 slots, 300 s) and evicts real peers. | state DoS |
+| B5 | `c/tests/af69_raw.c` dgram path | Datagrams carry NO authentication. With the kernel binding gone (module removed), any node can claim any src address on L2. | spoofing |
+| B6 | `c/src/ICSP/icsp.c` + session | Session key derived once, used forever (no rekey), single key for both directions, SHA-512 label instead of HKDF; no handshake replay protection. | PFS decay, replay |
+| B7 | `c/src/IPv69/af69d.c` | DHCP pool default 0x10–0xfe = 239 addresses. The 40-bit space is unused; the pool is the network size. | scale |
 | B8 | CLI/UX | Bring-up is manual: keygen → dhcp → tun/raw, with single-shot DISCOVER (3 s, no retry/backoff). WG is "bring the device up, everything else automatic". | UX |
 
 ## 2. WireGuard ideas, mapped to IPv69

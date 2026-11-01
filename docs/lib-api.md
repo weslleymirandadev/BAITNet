@@ -6,18 +6,18 @@ the library — the library is the reusable protocol core: identity,
 raw L2 transport, gateway tunnels, and the ICSP stream session layer.
 
 ```
-make lib      # POSIX (AF_PACKET)  -> build/libipv69.a
-make libwin   # MinGW  (Npcap)     -> build/libipv69_win.a
+make lib      # POSIX (AF_PACKET)  -> c/build/libipv69.a
+make libwin   # MinGW  (Npcap)     -> c/build/libipv69_win.a
 ```
 
 Link a program against it:
 
 ```bash
-cc myapp.c build/libipv69.a -Iinclude -Ilib/ed25519/include
+cc myapp.c c/build/libipv69.a -Iinclude -Ilib/ed25519/include
 ```
 
 One `#include <ipv69.h>` pulls in the whole API. Each module also has
-its own header under `include/IPv69/` and `include/ICSP/` when you
+its own header under `c/include/IPv69/` and `c/include/ICSP/` when you
 want a smaller surface.
 
 ---
@@ -38,7 +38,7 @@ want a smaller surface.
 | `IPv69/gwfile.h` | `~/.hosts69/gateways` file + built-in DNS resolution |
 | `ICSP/icsp.h` | ICSP session layer — the chat/netcat building block |
 
-The `ed25519` crypto (`lib/ed25519/include/ed25519.h`) is a standalone
+The `ed25519` crypto (`c/lib/ed25519/include/ed25519.h`) is a standalone
 library with its own include path; `keyring.h` and `ICSP/icsp.h` use it
 internally, so most programs never include it directly.
 

@@ -18,6 +18,10 @@ L2 backend (AF_PACKET on Linux, Npcap on Windows).
 
 ## What is what
 
+**Two implementations, one wire.** The C tree lives in `c/` (single binary,
+`make ipv69` builds it), the Python package in `python/` (`ipv69py`, see
+`docs/python-port.md` for what is ported). Both speak the same frames.
+
 **One binary, git-style subcommands.** `ipv69` dispatches by the first
 argument (no legacy aliases):
 
@@ -50,8 +54,8 @@ Besides the binaries, the project has a **separate crypto library**:
 
 | Path | What it is |
 |---|---|
-| `lib/ed25519/include/ed25519.h` | Public API (keypair, sign, verify, keyfile) |
-| `lib/ed25519/src/` | Implementation (`ed25519.c` + `tweetnacl.c` + `randombytes.c`) |
+| `c/lib/ed25519/include/ed25519.h` | Public API (keypair, sign, verify, keyfile) |
+| `c/lib/ed25519/src/` | Implementation (`ed25519.c` + `tweetnacl.c` + `randombytes.c`) |
 
 It depends on nothing from IPv69 — reusable in any project (your future
 "own HTTPS", for example). Details in section 8.
@@ -602,15 +606,15 @@ does nothing) — mirror the source lists above with a cross compiler:
 # arm64 (phone / Kali NetHunter chroot) — full binary:
 aarch64-linux-gnu-gcc -O2 -static -Iinclude -Ilib/ed25519/include \
     -o ipv69_arm64 \
-    src/IPv69/main.c src/IPv69/parse.c src/IPv69/af69d.c src/IPv69/ipv69gw.c \
-    src/IPv69/ip69d.c src/IPv69/ip69.c src/IPv69/keygen.c src/IPv69/keyring.c \
-    src/IPv69/l2.c src/IPv69/mac1.c src/IPv69/ratelimit.c src/IPv69/gwfile.c \
-    src/IPv69/pppoe69.c src/IPv69/help.c \
-    src/BITE/baitname.c src/BITE/btls.c \
-    tests/af69_raw.c tests/icsp_test.c tests/btls_test.c \
-    src/ICSP/icsp.c src/ICSP/icsp_handshake.c src/ICSP/icsp_data.c \
-    src/ICSP/icsp_life.c src/ICSP/icsp_session.c \
-    lib/ed25519/src/ed25519.c lib/ed25519/src/tweetnacl.c lib/ed25519/src/randombytes.c
+    c/src/IPv69/main.c c/src/IPv69/parse.c c/src/IPv69/af69d.c c/src/IPv69/ipv69gw.c \
+    c/src/IPv69/ip69d.c c/src/IPv69/ip69.c c/src/IPv69/keygen.c c/src/IPv69/keyring.c \
+    c/src/IPv69/l2.c c/src/IPv69/mac1.c c/src/IPv69/ratelimit.c c/src/IPv69/gwfile.c \
+    c/src/IPv69/pppoe69.c c/src/IPv69/help.c \
+    c/src/BITE/baitname.c c/src/BITE/btls.c \
+    c/tests/af69_raw.c c/tests/icsp_test.c c/tests/btls_test.c \
+    c/src/ICSP/icsp.c c/src/ICSP/icsp_handshake.c c/src/ICSP/icsp_data.c \
+    c/src/ICSP/icsp_life.c c/src/ICSP/icsp_session.c \
+    c/lib/ed25519/src/ed25519.c c/lib/ed25519/src/tweetnacl.c c/lib/ed25519/src/randombytes.c
 
 # examples (chat/hub/bite) = example .c + keyring/parse/l2/mac1/ratelimit/
 # gwfile + ICSP + ed25519; point the SAME line at the example's source.
@@ -620,7 +624,7 @@ aarch64-linux-gnu-gcc -O2 -static -Iinclude -Ilib/ed25519/include \
 
 ## 9. The `ed25519` library (for other projects)
 
-The crypto lives in `lib/ed25519/` **separate from the protocol** —
+The crypto lives in `c/lib/ed25519/` **separate from the protocol** —
 IPv69 consumes the same API you would use in your "own HTTPS". Nothing
 there depends on the IPv69 headers or the kernel.
 
@@ -645,7 +649,7 @@ Compile against the library (without the project Makefile):
 
 ```bash
 gcc -O2 -Ilib/ed25519/include -o my_app my_app.c \
-    lib/ed25519/src/ed25519.c lib/ed25519/src/tweetnacl.c lib/ed25519/src/randombytes.c
+    c/lib/ed25519/src/ed25519.c c/lib/ed25519/src/tweetnacl.c c/lib/ed25519/src/randombytes.c
 ```
 
 Notes:
@@ -659,13 +663,13 @@ Notes:
 
 ## 10. Example tool: ICSP chat (`make chat`)
 
-`build/icsp_chat` is a **standalone example** (NOT part of the `ipv69`
+`c/build/icsp_chat` is a **standalone example** (NOT part of the `ipv69`
 binary) showing how to build a tool on the ICSP API — authenticated
 handshake, encrypted messages, multi-stream, heartbeat, graceful
 close. Port syntax is `addr:port` (decimal), like send/recv:
 
 ```bash
-make chat        # builds build/icsp_chat separately
+make chat        # builds c/build/icsp_chat separately
 
 # server (address-less; :port or plain port):
 ./build/icsp_chat server eth0 :6969 --peer <client_pub_hex>
@@ -682,11 +686,11 @@ make chat        # builds build/icsp_chat separately
 ```
 
 The example links only the ICSP core + keyring + ed25519 + l2.c —
-read `examples/icsp_chat.c` as the template for your own ICSP tool.
+read `c/examples/icsp_chat.c` as the template for your own ICSP tool.
 
 ### Group chat hub (`make hub`)
 
-`build/icsp_hub` is a second standalone example: a **multi-association
+`c/build/icsp_hub` is a second standalone example: a **multi-association
 group-chat server**. ICSP associations are 1:1, so a plain chat server
 can only talk to one client at a time. The hub opens **one association
 per L2 interface** (slot), accepts a client on each, and relays every
@@ -696,7 +700,7 @@ Wi-Fi phone and a host-only Windows NIC) and you want them to see each
 other through the hub:
 
 ```bash
-make hub          # builds build/icsp_hub separately (POSIX only)
+make hub          # builds c/build/icsp_hub separately (POSIX only)
 
 # hub: <iface>[:name] ... [port]  (name prefixes relayed lines)
 ./build/icsp_hub eth0:phone eth1:windows 6969
@@ -712,7 +716,7 @@ multiplexes the per-slot raw fds with `poll()`.
 
 ### Web server (`make bite`)
 
-`build/bite` is the BITE web tool: the project's own HTTP-shaped
+`c/build/bite` is the BITE web tool: the project's own HTTP-shaped
 protocol (BITE) over its own TLS (bTLS) over ICSP — static-file
 server + fetch client. The server's certificate IS its keyring key,
 so a client dialing `name.bait` verifies the name against the
@@ -720,7 +724,7 @@ certificate (no CA); every byte after the handshake is encrypted.
 Docs: `docs/bait-names-spec.md` + `docs/btls-spec.md`.
 
 ```bash
-make bite         # builds build/bite (server + fetch in one binary)
+make bite         # builds c/build/bite (server + fetch in one binary)
 
 # site: serve ./www over bTLS on port 8080 (the .bait default):
 ./build/bite server eth0 --root ./www
@@ -747,9 +751,9 @@ the read verbs (`HEAD` for headers only).
 The **full `ipv69.exe`** (all subcommands) plus the ICSP chat build
 natively on Windows with **MinGW + Npcap**. Architecture:
 
-- `include/IPv69/plat.h` — socket layer: `sock_t`, `plat_sock_init()`
+- `c/include/IPv69/plat.h` — socket layer: `sock_t`, `plat_sock_init()`
   (WSAStartup, called from main), `plat_poll` (WSAPoll), `perror_sock`.
-- `src/IPv69/l2_win.c` — libpcap backend for the portable `l2_*` API
+- `c/src/IPv69/l2_win.c` — libpcap backend for the portable `l2_*` API
   (the same one the Linux build uses on AF_PACKET).
 - `addr`, `keygen`, `dhcpd`, `dhcp`, `send`, `recv`, `ping`, `gw`,
   `icsp` work. `tun`, `lease/renew/status` report
@@ -760,7 +764,7 @@ natively on Windows with **MinGW + Npcap**. Architecture:
 ```bash
 # requirements: MinGW gcc on PATH, Npcap installed, Npcap SDK unpacked
 #   to C:/Users/<you>/npcap-sdk (https://npcap.com/dist/npcap-sdk-1.13.zip)
-make win        # -> build/ipv69.exe + build/icsp_chat.exe
+make win        # -> c/build/ipv69.exe + c/build/icsp_chat.exe
 
 # run from WSL: pass HOME (WSL interop does NOT forward it) and the
 # adapter is matched by substring of the friendly name:

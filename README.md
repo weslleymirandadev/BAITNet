@@ -17,6 +17,25 @@ C with static libc — the focus remains working directly with memory, bytes,
 sockets and network interfaces, with no high-level abstractions beyond
 libc. The C implementation is portable to future phases (embedded, ESP32).
 
+## Repository layout
+
+```
+c/        the C implementation: single static binary, examples and libs
+  src/      IPv69 core, ICSP, BITE (baitname + btls)
+  include/  public headers (IPv69, ICSP, BITE, the ipv69.h umbrella)
+  examples/ standalone tools: icsp_chat, icsp_hub, bite, chat_lib
+  tests/    the ipv69 test subcommand, the CRC unit test, the PC<->phone battery
+  lib/      ed25519 + TweetNaCl (standalone crypto, no IPv69 deps)
+python/   the Python implementation: `ipv69` package + pytest vectors
+docs/     specs (icsp, dhcp69, pppoe69, btls, bait names, architecture, security)
+www/      fixture served by the BITE examples
+```
+
+`make ipv69` (top level) forwards to `c/`. The Python package is installed
+with `pip install -e 'python[dev]'` and exposes the `ipv69py` command; both
+implementations speak the same wire formats and the Python tests assert
+vectors produced by the C tools (`python/README.md`, `docs/python-port.md`).
+
 ## How the network fits together
 
 IPv69 is a link-layer protocol with its own addressing and security, so
@@ -66,7 +85,7 @@ means more entry points to the mesh, never a bigger middlebox.
 - [x] Create `BE16`, `BE32` and `BE64` macros
 - [x] Finalize the header spec (v0.2)
 - [ ] Define extension headers
-- [x] Define parsing rules (basic validation in `src/IPv69/parse.c`)
+- [x] Define parsing rules (basic validation in `c/src/IPv69/parse.c`)
 
 ### Phase 2 — Packet I/O
 - [x] Create detector

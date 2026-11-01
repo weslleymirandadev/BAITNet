@@ -3,7 +3,7 @@
 BITE is the IPv69 application layer: a web protocol that runs over its
 own security layer (**bTLS**) on top of ICSP, plus a self-authenticating
 name space (`.bait`) derived from Ed25519 public keys. It is the "own
-HTTPS" the project always pointed to — the `lib/ed25519` section of
+HTTPS" the project always pointed to — the `c/lib/ed25519` section of
 USAGE.md ("your future own HTTPS") and the stated goal of
 `docs/icsp-spec.md` ("reliable, ordered, multi-stream and encrypted by
 default transport, ready for services built on IPv69").
@@ -84,7 +84,7 @@ fqdn  = label + ".bait"
 ```
 
 Same digest, same code path as the address (`ipv69_addr_derive` in
-`src/IPv69/parse.c`): the first 5 bytes of `d` already produce the
+`c/src/IPv69/parse.c`): the first 5 bytes of `d` already produce the
 40-bit identity address with a class mask on byte 0. The label shares
 `d[0..19]`, so the 40-bit address is **computable from the name alone**
 (section 3.1) — the name and the address are two views of one digest.
@@ -99,9 +99,9 @@ label          = hwko5je4lafo7aljgv3cxycjkwow2fca  (32 chars)
 fqdn           = hwko5je4lafo7aljgv3cxycjkwow2fca.bait
 ```
 
-Implemented in `src/BITE/baitname.c` (`bait_label_from_pub`,
+Implemented in `c/src/BITE/baitname.c` (`bait_label_from_pub`,
 `bait_label_to_addr`, `bait_label_valid`), kept in its own tree like
-ICSP, depending only on lib/ed25519.
+ICSP, depending only on c/lib/ed25519.
 
 ### 2.2 Syntax and canonical form
 
@@ -479,18 +479,18 @@ crossed.
 
 ## 8. Implementation status and plan
 
-The BITE stack lives in its own tree, like ICSP: `src/BITE/`,
-`include/BITE/` (codec) — the `.bait` name codec is already linked into
+The BITE stack lives in its own tree, like ICSP: `c/src/BITE/`,
+`c/include/BITE/` (codec) — the `.bait` name codec is already linked into
 the single binary, the Windows build and the static lib
 (`make lib`). Docs: this spec; `docs/btls-spec.md` comes with the bTLS
 implementation.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| M0 — codec | `src/BITE/baitname.c`: label⇄pub, label→addr40, validity | ✅ done |
+| M0 — codec | `c/src/BITE/baitname.c`: label⇄pub, label→addr40, validity | ✅ done |
 | M1 — vanity | `keygen --vanity PREFIX` (grind + save + progress), `addr --bait` | ✅ done |
-| M2 — bTLS | `src/BITE/btls.c` + `include/BITE/btls.h`: handshake (ECDHE + cert + name check), record AEAD, key schedule; `ipv69 btls` test pair over ICSP (`tests/btls_test.c`); `docs/btls-spec.md` | ✅ done |
-| M3 — BITE over bTLS | `examples/bite.c` (`make bite`): server (per-association accept loop, static files from `--root`) + `fetch` client (`.bait` and numeric destinations, `--head`); 200/400/404/405/500, path traversal blocked | ✅ done |
+| M2 — bTLS | `c/src/BITE/btls.c` + `c/include/BITE/btls.h`: handshake (ECDHE + cert + name check), record AEAD, key schedule; `ipv69 btls` test pair over ICSP (`c/tests/btls_test.c`); `docs/btls-spec.md` | ✅ done |
+| M3 — BITE over bTLS | `c/examples/bite.c` (`make bite`): server (per-association accept loop, static files from `--root`) + `fetch` client (`.bait` and numeric destinations, `--head`); 200/400/404/405/500, path traversal blocked | ✅ done |
 | M4 — mesh | site and client on two islands through a gateway seed; P2P and relay; wrong-endpoint spoof test fails the bTLS handshake | pending |
 
 Commit convention applies (one commit per file, English, push).

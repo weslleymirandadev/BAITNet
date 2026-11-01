@@ -20,7 +20,7 @@ Pool is configurable on the server (start/end), default
 ## Control types (next_header 0)
 
 Payload layout: `[type 1B][fields...]` — same control channel as ND/echo
-(`IPV69_CTRL_*` in `include/IPv69/af69.h`).
+(`IPV69_CTRL_*` in `c/include/IPv69/af69.h`).
 
 | type | name      | payload                                  |
 |------|-----------|------------------------------------------|
@@ -65,18 +65,18 @@ client (unconfigured, src=0)          server (src=00.00.00.00.01)
 
 ## Implementation plan
 
-- `src/IPv69/af69d.c` — server daemon (`ipv69 dhcpd`):
+- `c/src/IPv69/af69d.c` — server daemon (`ipv69 dhcpd`):
   - raw L2 backend (AF_PACKET on Linux, Npcap on Windows)
   - bind src `00.00.00.00.01`, port filter 0 (control has no ports)
   - CLI: `ipv69 dhcpd <ifname|ifindex> [pool_start] [pool_end] [lease_sec]`
   - state: lease table `mac -> {addr, expiry}`; log offers/acks
-- `tests/af69_raw.c` — client mode (`ipv69 dhcp <ifname>`):
+- `c/tests/af69_raw.c` — client mode (`ipv69 dhcp <ifname>`):
   - send DISCOVER, wait OFFER (filter by own MAC), send REQUEST,
     wait ACK, bind(src=addr), print assigned address
 - no kernel changes required: the L2 receive path already accepts
   next_header 0 (control); new types flow to userspace sockets
   untouched.
-- shared constants go to `include/IPv69/af69.h`
+- shared constants go to `c/include/IPv69/af69.h`
   (`IPV69_CTRL_DHCP_DISCOVER` etc.) so every backend agrees.
 
 ## Test (after implementation)

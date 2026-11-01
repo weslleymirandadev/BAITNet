@@ -150,13 +150,13 @@ dhcp: OFFER invalid signature
 
 ## Files touched
 
-- `lib/ed25519/` — TweetNaCl (public domain), Ed25519/SHA-512 and the
+- `c/lib/ed25519/` — TweetNaCl (public domain), Ed25519/SHA-512 and the
   standalone public API (`ed25519.h`)
-- `src/IPv69/keygen.c` / `src/IPv69/keyring.c` — keypair generator and
+- `c/src/IPv69/keygen.c` / `c/src/IPv69/keyring.c` — keypair generator and
   the `~/.hosts69` keyring (`ipv69 keygen`)
-- `src/IPv69/af69d.c` — `ipv69 dhcpd`: `--peer` (pubkey allowlist),
+- `c/src/IPv69/af69d.c` — `ipv69 dhcpd`: `--peer` (pubkey allowlist),
   `--key` (server signing), `--learn` (auto-register)
-- `tests/af69_raw.c` — `ipv69 dhcp/send/recv/ping`: `--key`,
+- `c/tests/af69_raw.c` — `ipv69 dhcp/send/recv/ping`: `--key`,
   `--server-pub`, identity-derived `src` on `--remote`
-- `include/IPv69/af69.h` — control types and DHCP69 constants
+- `c/include/IPv69/af69.h` — control types and DHCP69 constants
   (`IPV69_CTRL_DHCP_*`, `IPV69_SERVER_ADDR`, pool range)

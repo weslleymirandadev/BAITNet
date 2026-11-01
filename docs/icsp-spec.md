@@ -99,14 +99,14 @@ authenticate the peer (same pubkey allowlist as DHCP).
 ## 6. Folder structure
 
 ```
-include/ICSP/icsp.h          — public API + wire constants (transport + session)
-src/ICSP/icsp.c              — core: CRC32c, chunk plumbing, shared packet send
-src/ICSP/icsp_handshake.c    — INIT/cookie/key derivation
-src/ICSP/icsp_data.c         — streams, TSN, SACK, retransmission
-src/ICSP/icsp_life.c         — heartbeat, SHUTDOWN, STREAM-RESET
-src/ICSP/icsp_session.c      — session layer: endpoint, recv, poll (netcat-friendly)
-tests/icsp_test.c            — test server/client pair (ipv69 icsp)
-examples/icsp_chat.c         — standalone chat example (make chat)
+c/include/ICSP/icsp.h          — public API + wire constants (transport + session)
+c/src/ICSP/icsp.c              — core: CRC32c, chunk plumbing, shared packet send
+c/src/ICSP/icsp_handshake.c    — INIT/cookie/key derivation
+c/src/ICSP/icsp_data.c         — streams, TSN, SACK, retransmission
+c/src/ICSP/icsp_life.c         — heartbeat, SHUTDOWN, STREAM-RESET
+c/src/ICSP/icsp_session.c      — session layer: endpoint, recv, poll (netcat-friendly)
+c/tests/icsp_test.c            — test server/client pair (ipv69 icsp)
+c/examples/icsp_chat.c         — standalone chat example (make chat)
 docs/icsp-spec.md            — this document
 ```
 
@@ -142,7 +142,7 @@ All senders take only the association: `icsp_data_send(&a, stream, data, len)`,
 (peer SHUTDOWN), `ICSP_POLL_EOF` (relay: Ctrl-D on a tty), `ICSP_POLL_ERR`.
 `icsp_relay` survives non-tty stdin EOF (pipes/daemons keep receiving).
 
-The `lib/ed25519` library gains exposed wrappers: `nacl_scalarmult`
+The `c/lib/ed25519` library gains exposed wrappers: `nacl_scalarmult`
 (X25519) and `nacl_secretbox_*` (AEAD) — already in tweetnacl.c, just
 exposed with a clean API.
 
@@ -167,7 +167,7 @@ exposed with a clean API.
 
 None new. Everything ICSP needs already exists in the repo:
 
-- `lib/ed25519` (TweetNaCl + wrapper): sign/verify for the handshake,
+- `c/lib/ed25519` (TweetNaCl + wrapper): sign/verify for the handshake,
   scalarmult for ECDH, secretbox for AEAD (to be exposed).
 - IPv69 L2: frame delivery with 40-bit addressing and binding.
 - auto-key `~/.ipv69/key`: device identity, same as DHCP.

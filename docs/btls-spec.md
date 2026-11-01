@@ -4,7 +4,7 @@ bTLS is the project's own TLS-flavored secure channel, the layer BITE
 sits on (docs/bait-names-spec.md §4). It is TLS 1.3 in spirit — hello
 messages, a certificate proving key possession, Finished MACs, AEAD
 records with per-direction sequence numbers — implemented with the
-primitives the repo already has (`lib/ed25519`): X25519 ECDHE,
+primitives the repo already has (`c/lib/ed25519`): X25519 ECDHE,
 Ed25519 identities, HMAC-SHA512 key schedule, XSalsa20-Poly1305
 secretbox. No X.509, no CA, no PKI: the server's certificate is its
 raw Ed25519 public key, and the client validates it against the .bait
@@ -184,7 +184,7 @@ the layer's).
 
 ## 6. Testing (`ipv69 btls`)
 
-The test pair (`tests/btls_test.c`, `cmd_btls`) runs the handshake
+The test pair (`c/tests/btls_test.c`, `cmd_btls`) runs the handshake
 over an ICSP association on stream 1:
 
 ```
@@ -207,8 +207,8 @@ before any application data.
 ## 7. Status
 
 Implemented (M2 + M3 of the BITE plan, 09/2026):
-`include/BITE/btls.h` + `src/BITE/btls.c` (transport-agnostic layer,
-no I/O, no ICSP includes) + `tests/btls_test.c` (`ipv69 btls
-server|client`, also in the Windows build) + `examples/bite.c`
+`c/include/BITE/btls.h` + `c/src/BITE/btls.c` (transport-agnostic layer,
+no I/O, no ICSP includes) + `c/tests/btls_test.c` (`ipv69 btls
+server|client`, also in the Windows build) + `c/examples/bite.c`
 (`make bite` — the BITE web tool: static-file server + fetch client
 over bTLS/ICSP).
