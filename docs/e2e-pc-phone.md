@@ -129,8 +129,24 @@ IPV69_PASSPHRASE=clipass ./build/bite fetch eth0 \
 
 Validated output (2026-11-01): `INIT-ACK ok` -> `association established` ->
 `bite: certificate matches ...bait` -> `status 200` + the file body, and on the
-server `BITE /index.html -> 200 (21 bytes)`. The same works for `ipv69 icsp
-server|client` by swapping the tool; only the identity rule stays.
+server `BITE /index.html -> 200 (21 bytes)`. Eight consecutive fetches against
+one server gave 8x `status 200` and 8x `BITE /index.html -> 200`. The same
+works for `ipv69 icsp server|client` by swapping the tool; only the identity
+rule stays.
+
+Notes from that run:
+
+- The handshake retransmits: `icsp: no INIT-ACK — retry N/5` and
+  `icsp: no COOKIE-ACK — retry N/5`. Without it a single lost first frame
+  aborted the connection (~1 in 3 runs on the same-host gateway path).
+- Start a **fresh** `ipv69 gw` for a test session. A gateway that has been
+  running for a long time accumulates peers from previous runs and was
+  observed not relaying to a still-announcing server (fresh gw: 8/8 fetches,
+  stale gw: 1/3). Treat that as a gateway route-table bug still open.
+- Consecutive fetches against the same `bite server` are fine (the serve loop
+  re-accepts after SHUTDOWN), but the server handles one association at a
+  time: a second client waits until the current association's idle window
+  expires.
 
 ## Known limits of this topology
 
