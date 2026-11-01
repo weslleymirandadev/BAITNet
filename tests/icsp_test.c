@@ -212,7 +212,9 @@ int cmd_icsp(int argc, char **argv)
     uint8_t sk[64];
     struct icsp_assoc a;
 
-    setvbuf(stdout, NULL, _IOLBF, 0);
+    /* unbuffered: MSVCRT treats _IOLBF as full buffering, so a redirected
+     * server log would stay empty on Windows */
+    setvbuf(stdout, NULL, _IONBF, 0);
 
     /* ifname omitted (`icsp server :1684` / `icsp client <dst:port>`):
        insert "auto" so the endpoint resolves the default-route iface */
