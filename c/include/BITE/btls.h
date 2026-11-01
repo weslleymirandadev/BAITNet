@@ -43,7 +43,11 @@ enum {
 /* one record fits one ICSP DATA message (1400B); the inner plaintext
  * of an application record is record - header(3) - box(32) - type(1) */
 #define BTLS_MAX_REC    1400
-#define BTLS_MAX_PAYLOAD 1360
+/* one record must fit ONE ICSP DATA message: the carrier allows
+ * 1400 - 12 (ICSP hdr) - 4 (chunk hdr) - 8 (clear hdr) - 32 (box)
+ * = 1344 B of record, i.e. 1344 - 3 (rec hdr) - 2 (type+flags) of
+ * payload. 1360 overflowed the carrier and crashed the sender. */
+#define BTLS_MAX_PAYLOAD 1290
 
 /* Application payloads are MESSAGES, not single records: a message up
  * to BTLS_MAX_MSG is fragmented into BTLS_MAX_PAYLOAD-sized AEAD
