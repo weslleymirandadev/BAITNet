@@ -361,7 +361,7 @@ static void ac_nd_reply(struct ac_ctx *c, uint64_t target,
     uint8_t frame[512];
 
     put_addr40(p + 1, target);
-    memcpy(p + 7, owner_mac, 6);
+    memcpy(p + 6, owner_mac, 6);
     size_t l = build_frame(frame, eth_dst, owner_mac, target,
                            IPV69_BCAST_ADDR, IPV69_NEXT_CONTROL,
                            64, 0, 0, p, sizeof(p));
@@ -434,7 +434,7 @@ static void ac_inner(struct ac_ctx *c, struct pppoe_session *s,
             uint8_t pp[1 + 5 + 6] = { IPV69_CTRL_ND_REPLY };
             mac_str(s->cmac, ms);
             put_addr40(pp + 1, target);
-            memcpy(pp + 7, owner->wmac, 6);
+            memcpy(pp + 6, owner->wmac, 6);
             size_t rl = build_frame(rep, g_bcast, owner->wmac, target,
                                     IPV69_BCAST_ADDR, IPV69_NEXT_CONTROL,
                                     64, 0, 0, pp, sizeof(pp));
@@ -448,7 +448,7 @@ static void ac_inner(struct ac_ctx *c, struct pppoe_session *s,
             uint8_t rep[512];
             uint8_t pp[1 + 5 + 6] = { IPV69_CTRL_ND_REPLY };
             put_addr40(pp + 1, target);
-            memcpy(pp + 7, c->mac, 6);
+            memcpy(pp + 6, c->mac, 6);
             size_t rl = build_frame(rep, g_bcast, c->mac, target,
                                     IPV69_BCAST_ADDR, IPV69_NEXT_CONTROL,
                                     64, 0, 0, pp, sizeof(pp));
