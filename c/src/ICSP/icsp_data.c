@@ -61,7 +61,7 @@ int icsp_data_send(struct icsp_assoc *a, uint16_t stream_id,
 {
     struct icsp_stream *s;
     uint8_t clear[4 + 2 + 2 + ICSP_MAX_PAYLOAD];
-    uint8_t box[ICSP_MAX_PAYLOAD + 32];
+    uint8_t box[ICSP_MAX_PAYLOAD + 8 + 32];
     uint8_t nonce[24];
     uint8_t chunk[ICSP_CHUNK_HDR + 4 + 2 + 2 + ICSP_MAX_PAYLOAD + 32];
     uint32_t tsn;
@@ -131,7 +131,7 @@ int icsp_data_retransmit(struct icsp_assoc *a, int timeout_s)
             continue;
         /* re-send the same DATA with the same TSN/seq */
         uint8_t clear[4 + 2 + 2 + ICSP_MAX_PAYLOAD];
-        uint8_t box[ICSP_MAX_PAYLOAD + 32];
+        uint8_t box[ICSP_MAX_PAYLOAD + 8 + 32];
         uint8_t nonce[24];
         uint8_t chunk[ICSP_CHUNK_HDR + 4 + 2 + 2 + ICSP_MAX_PAYLOAD + 32];
         uint32_t tsn = a->sendq[i].tsn;

@@ -11,6 +11,7 @@ handled: the C wrapper keeps 16 zero bytes in front of the box, so
 
 from __future__ import annotations
 
+import hmac
 import hashlib
 
 from nacl import bindings as _nb
@@ -88,3 +89,26 @@ def poly1305(msg: bytes, key: bytes) -> bytes:
         block = msg[i:i + 16]
         acc = ((acc + int.from_bytes(block + b"\x01", "little")) * r) % _P1305
     return ((acc + s) % (1 << 128)).to_bytes(16, "little")
+
+
+# --- X25519 (ephemeral ECDH used by ICSP and bTLS) -----------------------
+def x25519_base(priv: bytes) -> bytes:
+    """Public key of a 32-byte X25519 scalar (clamped by libsodium)."""
+    if len(priv) != 32:
+        raise ValueError("x25519 private key is 32 bytes")
+    return _nb.crypto_scalarmult_base(priv)
+
+
+def x25519(priv: bytes, peer_pub: bytes) -> bytes:
+    if len(priv) != 32 or len(peer_pub) != 32:
+        raise ValueError("x25519 keys are 32 bytes")
+    return _nb.crypto_scalarmult(priv, peer_pub)
+
+
+def hmac_sha512(key: bytes, msg: bytes) -> bytes:
+    return hmac.new(key, msg, hashlib.sha512).digest()
+
+
+def kdf(prk: bytes, label: bytes, extra: bytes = b"") -> bytes:
+    """The repo's one-shot "HKDF expand": HMAC(prk, label || extra || 0x01)."""
+    return hmac_sha512(prk, label + extra + b"\x01")[:32]
