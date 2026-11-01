@@ -170,6 +170,7 @@ int l2_default_ifname(char *out, size_t sz)
 {
     FILE *f = fopen("/proc/net/route", "r");
     char line[256];
+    char fallback[IFNAMSIZ] = "";
     int found = -1;
     if (!f)
         return -1;
@@ -181,12 +182,24 @@ int l2_default_ifname(char *out, size_t sz)
         char iface[IFNAMSIZ];
         unsigned int dest, flags;
         if (sscanf(line, "%15s %x %*s %x", iface, &dest, &flags) == 3 &&
-            dest == 0 && (flags & 0x1)) {   /* RTF_UP */
-            snprintf(out, sz, "%s", iface);
-            found = 0;
-            break;
+            (flags & 0x1)) {                /* RTF_UP */
+            if (dest == 0) {                /* default route */
+                snprintf(out, sz, "%s", iface);
+                found = 0;
+                break;
+            }
+            /* Android keeps the default route in a policy-routing table,
+               so /proc/net/route only lists the connected route: remember
+               the first UP interface and use it when no default shows up
+               (the wireless/wired interface is the one carrying traffic) */
+            if (!fallback[0] && strcmp(iface, "lo"))
+                snprintf(fallback, sizeof(fallback), "%s", iface);
         }
     }
     fclose(f);
+    if (found < 0 && fallback[0]) {
+        snprintf(out, sz, "%s", fallback);
+        found = 0;
+    }
     return found;
 }
