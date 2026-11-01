@@ -345,11 +345,9 @@ static int run_server(int argc, char **argv, struct icsp_assoc *a,
         memset(&c, 0, sizeof(c));
         c.root = root;
         btls_init(&c.btls, BTLS_SERVER, sk, NULL);
-        /* blocking accept: with a finite window the server used to die
-           after 30s of silence ("icsp: INIT: Connection timed out").
-           In tunnel mode the internal recv timeout is the announce
-           interval, so blocking here still keeps the route alive. */
-        if (icsp_server_accept(a, port, sk, NULL, 0, 0) < 0) {
+        /* finite accept window: a timeout or a lost COOKIE-ECHO re-enters the
+           loop instead of killing the server (was `return 1`) */
+        if (icsp_server_accept(a, port, sk, NULL, 0, 30) < 0) {
             perror("bite: accept");
             continue;           /* never leave the serve loop */
         }
