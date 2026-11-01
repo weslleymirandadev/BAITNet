@@ -192,6 +192,8 @@ static struct peer *peer_learn_auth(uint64_t addr, const uint8_t *mac,
 /* cryptokey routing: validate an ICSP INIT (nh=2, id in clear) and learn
  * the sender's range. Cost: one Ed25519 verify per handshake (rate
  * limited), then hash lookups forever. Returns 1 when learned. */
+static void gw_log_peer(uint64_t addr, const uint8_t *pub);
+
 static int gw_learn_init(const uint8_t *buf, ssize_t n,
                          const struct endpoint *ep)
 {
@@ -222,13 +224,41 @@ static int gw_learn_init(const uint8_t *buf, ssize_t n,
         if (!auth_allowed(pub, src))
             return 0;
         if (peer_learn_auth(src, eth->src_mac, ep, pub, 40)) {
-            printf("ipv69gw: peer authenticated %016llx (%02x%02x..)\n",
-                   (unsigned long long)src, pub[0], pub[1]);
-            fflush(stdout);
+            gw_log_peer(src, pub);
             return 1;
         }
     }
     return 0;
+}
+
+/* peers re-announce every couple of seconds; printing each one floods the
+ * log, so each address is reported at most once a minute. */
+static void gw_log_peer(uint64_t addr, const uint8_t *pub)
+{
+    enum { LOG_SLOTS = 8 };
+    static uint64_t seen_addr[LOG_SLOTS];
+    static time_t seen_t[LOG_SLOTS];
+    time_t now = time(NULL);
+    int slot = -1, free_slot = -1;
+    int oldest = 0;
+
+    for (int i = 0; i < LOG_SLOTS; i++) {
+        if (seen_addr[i] == addr && now - seen_t[i] < 60)
+            return;                     /* already reported */
+        if (seen_addr[i] == addr)
+            slot = i;                   /* stale entry: reuse */
+        if (!seen_addr[i] && free_slot < 0)
+            free_slot = i;
+        if (seen_t[i] < seen_t[oldest])
+            oldest = i;
+    }
+    if (slot < 0)
+        slot = free_slot >= 0 ? free_slot : oldest;
+    seen_addr[slot] = addr;
+    seen_t[slot] = now;
+    printf("ipv69gw: peer authenticated %016llx (%02x%02x..)\n",
+           (unsigned long long)addr, pub[0], pub[1]);
+    fflush(stdout);
 }
 
 /* cryptokey routing: validate a signed ND announce — dgram clients
@@ -260,9 +290,7 @@ static int gw_learn_announce(const uint8_t *buf, ssize_t n,
         if (!auth_allowed(pub, addr))
             return 0;
         if (peer_learn_auth(addr, eth->src_mac, ep, pub, 40)) {
-            printf("ipv69gw: peer authenticated %016llx (%02x%02x..)\n",
-                   (unsigned long long)addr, pub[0], pub[1]);
-            fflush(stdout);
+            gw_log_peer(addr, pub);
             return 1;
         }
     }
