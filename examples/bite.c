@@ -345,8 +345,14 @@ static int run_server(int argc, char **argv, struct icsp_assoc *a,
         memset(&c, 0, sizeof(c));
         c.root = root;
         btls_init(&c.btls, BTLS_SERVER, sk, NULL);
-        if (icsp_server_accept(a, port, sk, NULL, 0, 30) < 0)
-            return 1;
+        /* blocking accept: with a finite window the server used to die
+           after 30s of silence ("icsp: INIT: Connection timed out").
+           In tunnel mode the internal recv timeout is the announce
+           interval, so blocking here still keeps the route alive. */
+        if (icsp_server_accept(a, port, sk, NULL, 0, 0) < 0) {
+            perror("bite: accept");
+            continue;           /* never leave the serve loop */
+        }
         printf("bite: association accepted — bTLS handshake...\n");
 
         while (time(NULL) < idle) {
@@ -662,7 +668,23 @@ int main(int argc, char **argv)
        insert "auto" so the endpoint resolves the default-route iface */
     if (argc >= 3 && argc < 30 && dst_not_ifname(argv[2])) {
         char *na[32];
-        int nargc = parse_insert_auto_ifname(argc, argv, na);
+        int nargc;
+
+        /* the generic helper only recognises bare addresses; a URL or a
+           .bait name is a destination too, so insert "auto" here — without
+           this the argv is unchanged and the re-dispatch below recursed
+           forever (stack overflow) */
+        if (parse_looks_like_addr(argv[2])) {
+            nargc = parse_insert_auto_ifname(argc, argv, na);
+        } else {
+            na[0] = argv[0];
+            na[1] = argv[1];
+            na[2] = (char *)"auto";
+            for (int i = 2; i < argc && i + 1 < 31; i++)
+                na[i + 1] = argv[i];
+            na[argc + 1] = NULL;
+            nargc = argc + 1;
+        }
         return main(nargc, na);     /* re-dispatch normalized */
     }
     if (argc < 3) {
