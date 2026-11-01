@@ -1,7 +1,7 @@
 /* btls.h - bTLS: the BITE security layer (docs/bait-names-spec.md §4).
  *
  * TLS 1.3-flavored handshake + AEAD record layer, built only on
- * lib/ed25519: X25519 ECDHE (PFS), Ed25519 identities, HMAC-SHA512
+ * c/lib/ed25519: X25519 ECDHE (PFS), Ed25519 identities, HMAC-SHA512
  * key schedule, XSalsa20-Poly1305 secretbox. The server's
  * "certificate" is its raw Ed25519 public key — a client that dialed
  * name.bait checks base32(SHA-512(cert)[0..19]) == the label, so the

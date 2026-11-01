@@ -1,5 +1,5 @@
 /* gwfile.c - the ~/.hosts69/gateways file + built-in DNS resolution.
- * See include/IPv69/gwfile.h. The keyring dir comes from keyring_paths.
+ * See c/include/IPv69/gwfile.h. The keyring dir comes from keyring_paths.
  */
 #include <stdio.h>
 #include <stdlib.h>

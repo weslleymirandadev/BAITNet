@@ -1,7 +1,7 @@
 /* baitname.c - .bait names: labels derived from Ed25519 keys.
  *
  * See baitname.h and docs/bait-names-spec.md. Lives in its own tree
- * (src/BITE) like ICSP; only depends on lib/ed25519 (SHA-512 +
+ * (c/src/BITE) like ICSP; only depends on c/lib/ed25519 (SHA-512 +
  * keypair), so it is reusable from the static lib and from BITE tools
  * without the rest of the IPv69 CLI.
  */

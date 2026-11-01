@@ -3,7 +3,7 @@
  * gets identity + L2/tunnel + ICSP session in a few calls.
  *
  * Build:  make lib && make libdemo
- *         (libdemo: cc examples/chat_lib.c build/libipv69.a -Iinclude
+ *         (libdemo: cc c/examples/chat_lib.c c/build/libipv69.a -Iinclude
  *                   -Ilib/ed25519/include)
  *
  * Usage:

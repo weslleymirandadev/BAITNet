@@ -4,7 +4,7 @@
  * The library is plain C11, no dependencies beyond libc (and Npcap on
  * Windows). Every module keeps its own header so you can include just
  * what you need; this one is the "give me the whole API" convenience.
- * Module map (all under include/, include path -Iinclude):
+ * Module map (all under c/include/, include path -Iinclude):
  *
  *   IPv69/endian.h    big-endian wire accessors (be16/32/64, addr40)
  *   IPv69/header.h    Ethernet + IPv69 header structs (32B), constants
@@ -20,12 +20,12 @@
  *                     association, handshake, DATA/SACK, lifecycle,
  *                     poll/relay — the netcat/chat building block
  *
- * ed25519 (lib/ed25519, include path -Ilib/ed25519/include) is a
+ * ed25519 (c/lib/ed25519, include path -Ilib/ed25519/include) is a
  * separate standalone crypto library: ed25519.h (sign/verify/derive)
  * and tweetnacl secretbox; the keyring and ICSP already use it.
  *
- * Build: make lib (POSIX) / make libwin (MinGW) -> build/libipv69.a.
- * Link:  $(CC) app.c build/libipv69.a -Iinclude -Ilib/ed25519/include
+ * Build: make lib (POSIX) / make libwin (MinGW) -> c/build/libipv69.a.
+ * Link:  $(CC) app.c c/build/libipv69.a -Iinclude -Ilib/ed25519/include
  * The CLI tools (cmd_*) are intentionally NOT in the library — they
  * live in the ipv69 single binary; the library is the reusable core.
  */

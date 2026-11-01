@@ -68,7 +68,7 @@ static inline void ipv69_addr_put(void *p, uint64_t v)
     b[4] = (uint8_t)v;
 }
 
-/* short legacy aliases (still used by tests/kernel-facing code) */
+/* short legacy aliases (still used by c/tests/kernel-facing code) */
 #define rd_be16 ipv69_get_be16
 #define rd_be32 ipv69_get_be32
 #define rd_be64 ipv69_get_be64

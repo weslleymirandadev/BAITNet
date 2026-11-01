@@ -1,4 +1,4 @@
-/* ICSP CRC integrity test — unit test for the checksum fixed in src/ICSP/icsp.c.
+/* ICSP CRC integrity test — unit test for the checksum fixed in c/src/ICSP/icsp.c.
  *
  *   make crc          (build + run; no interface, no root, no device)
  *

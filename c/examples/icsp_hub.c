@@ -11,7 +11,7 @@
  * struct icsp_assoc (one per endpoint), one poll() over all their fds
  * + stdin, icsp_server_accept on a slot when its fd turns ready, and
  * icsp_handle_frame on established slots. 1:1 chat stays in
- * examples/icsp_chat.c (make chat).
+ * c/examples/icsp_chat.c (make chat).
  *
  * Usage:
  *   ./icsp_hub <iface[:name]> [<iface[:name]> ...] [port|:port]

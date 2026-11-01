@@ -1,7 +1,7 @@
 /* baitname.h - .bait names: labels derived from Ed25519 keys.
  *
  * Part of the BITE web stack (docs/bait-names-spec.md), kept in its
- * own tree (src/BITE, include/BITE) like ICSP: it is the
+ * own tree (c/src/BITE, c/include/BITE) like ICSP: it is the
  * self-authenticating identity of a BITE site, the onion-service
  * model over IPv69. The label is the first 160 bits of SHA-512(pub),
  * base32 (RFC 4648, lowercase, no padding) = exactly 32 chars; the

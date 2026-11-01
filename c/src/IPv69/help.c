@@ -296,7 +296,7 @@ static void usage_icsp(void)
         "                  ~/.hosts69/gateways file, port 6969; domain or\n"
         "                  IP:port, built-in DNS when it is a domain)\n"
         "\n"
-        "A real chat example lives in examples/icsp_chat.c (make chat).\n");
+        "A real chat example lives in c/examples/icsp_chat.c (make chat).\n");
 }
 
 static void usage_btls(void)
