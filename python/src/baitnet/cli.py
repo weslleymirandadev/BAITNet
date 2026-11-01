@@ -1,11 +1,11 @@
 """Command line: the Python counterpart of `ipv69` (subset).
 
-    ipv69py addr [--class A|B|C] [--bait] [--key-file NAME]
-    ipv69py keygen [-f NAME] [-N PASS] [-C COMMENT]
-    ipv69py selftest                      # wire vectors, no root, no NIC
-    ipv69py ping [ifname] <addr> [payload]
-    ipv69py send [ifname] <addr[:port]> <payload>
-    ipv69py recv [ifname] <addr[:port]>
+    baitnet addr [--class A|B|C] [--bait] [--key-file NAME]
+    baitnet keygen [-f NAME] [-N PASS] [-C COMMENT]
+    baitnet selftest                      # wire vectors, no root, no NIC
+    baitnet ping [ifname] <addr> [payload]
+    baitnet send [ifname] <addr[:port]> <payload>
+    baitnet recv [ifname] <addr[:port]>
 
 Only the parts that are already ported are exposed; see
 docs/python-port.md for the rest (gateway, ICSP session, BITE).
@@ -174,7 +174,7 @@ def cmd_recv(args) -> int:
 
 # --- parser -------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="ipv69py", description="IPv69 (Python)")
+    p = argparse.ArgumentParser(prog="baitnet", description="IPv69 (Python)")
     p.add_argument("--key-file", default=None, help="identity file (name or path)")
     p.add_argument("-N", "--passphrase", default=None, help="key passphrase")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -219,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except (RuntimeError, ValueError, OSError) as exc:
-        print(f"ipv69py: {exc}", file=sys.stderr)
+        print(f"baitnet: {exc}", file=sys.stderr)
         return 1
 
 

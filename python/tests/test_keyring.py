@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from ipv69.crypto import open_ as box_open, seal as box_seal, seed_to_pub
-from ipv69.keyring import (derive_key, load_keyfile, load_or_create,
+from baitnet.crypto import open_ as box_open, seal as box_seal, seed_to_pub
+from baitnet.keyring import (derive_key, load_keyfile, load_or_create,
                           read_pub, save_keyfile)
 
 FIXTURES = Path(__file__).parent / "fixtures"

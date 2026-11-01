@@ -1,8 +1,8 @@
 """Wire constants and checksums must match the C implementation exactly."""
 
-from ipv69.crc import crc32c
-from ipv69.icsp import IcspHeader, build_pkt, check_pkt, chunk_put, iter_chunks
-from ipv69.constants import CHUNK, ICSP_HEADER_LEN
+from baitnet.crc import crc32c
+from baitnet.icsp import IcspHeader, build_pkt, check_pkt, chunk_put, iter_chunks
+from baitnet.constants import CHUNK, ICSP_HEADER_LEN
 
 
 def test_crc32c_known_value():

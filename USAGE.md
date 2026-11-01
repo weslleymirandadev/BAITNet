@@ -19,7 +19,8 @@ L2 backend (AF_PACKET on Linux, Npcap on Windows).
 ## What is what
 
 **Two implementations, one wire.** The C tree lives in `c/` (single binary,
-`make ipv69` builds it), the Python package in `python/` (`ipv69py`, see
+`make ipv69` builds it), the Python package is `baitnet` in `python/`
+(`pip install -e 'python[dev]'`, command `baitnet`; see
 `docs/python-port.md` for what is ported). Both speak the same frames.
 
 **One binary, git-style subcommands.** `ipv69` dispatches by the first

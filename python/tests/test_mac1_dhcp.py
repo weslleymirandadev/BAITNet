@@ -1,18 +1,18 @@
 """mac1 and the DHCP69 message framing (no socket involved)."""
 
-from ipv69 import mac1
-from ipv69.constants import BCAST_ADDR, CTRL_DHCP_DISCOVER, CTRL_DHCP_OFFER
-from ipv69.crypto import seed_to_pub
-from ipv69.dhcp import _frame, _msg, _parse_reply
-from ipv69.frame import parse_frame
-from ipv69.keyring import derive_key  # noqa: F401  (documents the KDF source)
+from baitnet import mac1
+from baitnet.constants import BCAST_ADDR, CTRL_DHCP_DISCOVER, CTRL_DHCP_OFFER
+from baitnet.crypto import seed_to_pub
+from baitnet.dhcp import _frame, _msg, _parse_reply
+from baitnet.frame import parse_frame
+from baitnet.keyring import derive_key  # noqa: F401  (documents the KDF source)
 
 MAC = bytes.fromhex("94de80f5483b")
 
 
 def test_poly1305_rfc8439_vector():
     """The published Poly1305 test vector, so the primitive itself is pinned."""
-    from ipv69.crypto import poly1305
+    from baitnet.crypto import poly1305
     key = bytes.fromhex(
         "85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b")
     msg = b"Cryptographic Forum Research Group"
@@ -46,7 +46,7 @@ def test_discover_message_is_tagged():
 
 
 def test_signed_discover_embeds_pub_and_signature():
-    from ipv69.crypto import verify
+    from baitnet.crypto import verify
     seed = bytes(range(32))
     msg = _msg(CTRL_DHCP_DISCOVER, MAC, seed)
     body = len(msg) - 16 - 96

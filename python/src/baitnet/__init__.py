@@ -1,11 +1,11 @@
-"""IPv69 in Python.
+"""BaitNet — the Python implementation of the IPv69 protocol.
 
 Same wire formats as the C implementation (``c/``): EtherType ``0x6969``,
 32-byte header, 40-bit addresses, identity-derived addresses, ``.bait``
 labels, ICSP chunk framing with the CRC32c of the whole payload, the
 ``H69E1`` keyring and the mac1 pre-auth filter.
 
-Layout (``src/ipv69``):
+Layout (``src/baitnet``):
 
     constants.py  wire constants (next_header, control codes, chunk types)
     addr.py       40-bit address, classes, derivation from a public key
@@ -18,7 +18,7 @@ Layout (``src/ipv69``):
     mac1.py       WireGuard-style pre-auth tag
     icsp.py       ICSP header + chunk framing + CRC
     dhcp.py       DHCP69 client (DISCOVER/REQUEST over L2)
-    cli.py        the `ipv69py` command
+    cli.py        the `baitnet` command
 
 Not ported yet (the C tree is the reference for them): the UDP tunnel
 gateway, gateway federation/mesh, PPPoE69, bTLS/BITE sessions and the

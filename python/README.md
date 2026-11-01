@@ -1,4 +1,4 @@
-# IPv69 — Python implementation
+# BaitNet — Python implementation of the IPv69 protocol
 
 The same protocol as the C tree (`c/`), in Python: EtherType `0x6969`,
 32-byte header, 40-bit addresses, identity-derived addressing, `.bait`
@@ -10,18 +10,18 @@ cd python
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'          # pynacl + pytest
 
-ipv69py selftest                 # wire vectors, no root, no NIC
-ipv69py addr --bait              # identity address + .bait label
+baitnet selftest                 # wire vectors, no root, no NIC
+baitnet addr --bait              # identity address + .bait label
 pytest -q                        # 30+ tests, all vectors from the C side
 ```
 
-`ipv69py send/recv/ping` speak raw L2 and therefore need root (or
+`baitnet send/recv/ping` speak raw L2 and therefore need root (or
 `CAP_NET_RAW`), exactly like `c/build/ipv69`.
 
 ## Layout
 
 ```
-src/ipv69/
+src/baitnet/
   constants.py   wire constants (next_header, control codes, chunk types)
   addr.py        40-bit address: parse/format, classes, derive from a key
   header.py      IPv69 header (32B) pack/unpack
@@ -33,7 +33,7 @@ src/ipv69/
   mac1.py        Poly1305 pre-auth tag keyed by the destination address
   icsp.py        ICSP header + chunk framing + CRC32c
   dhcp.py        DHCP69 client (DISCOVER/REQUEST + mac1)
-  cli.py         the `ipv69py` command
+  cli.py         the `baitnet` command
 tests/           wire vectors shared with the C implementation
 ```
 

@@ -1,7 +1,7 @@
 # Python port — status
 
 The C tree (`c/`) is the reference implementation. The Python package
-(`python/src/ipv69`) is a second implementation of the same wire formats,
+(`python/src/baitnet`) is a second implementation of the same wire formats,
 kept honest by tests that assert values produced by the C tools.
 
 ## Done

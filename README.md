@@ -31,10 +31,11 @@ docs/     specs (icsp, dhcp69, pppoe69, btls, bait names, architecture, security
 www/      fixture served by the BITE examples
 ```
 
-`make ipv69` (top level) forwards to `c/`. The Python package is installed
-with `pip install -e 'python[dev]'` and exposes the `ipv69py` command; both
-implementations speak the same wire formats and the Python tests assert
-vectors produced by the C tools (`python/README.md`, `docs/python-port.md`).
+`make ipv69` (top level) forwards to `c/`. The Python package **baitnet**
+(`python/`, protocol IPv69) is installed with `pip install -e 'python[dev]'`
+and exposes the `baitnet` command; both implementations speak the same wire
+formats and the Python tests assert vectors produced by the C tools
+(`python/README.md`, `docs/python-port.md`).
 
 ## How the network fits together
 

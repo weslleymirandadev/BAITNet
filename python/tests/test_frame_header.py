@@ -1,10 +1,10 @@
 """Frame/header packing: the C wire layout, byte for byte."""
 
-from ipv69.addr import format_addr
-from ipv69.constants import (ETHERTYPE_IPV69, FLAG_NOFRAG, HEADER_LEN,
+from baitnet.addr import format_addr
+from baitnet.constants import (ETHERTYPE_IPV69, FLAG_NOFRAG, HEADER_LEN,
                              NEXT_DGRAM, NEXT_STREAM)
-from ipv69.frame import BCAST_MAC, build_frame, parse_frame
-from ipv69.header import IpV69Header
+from baitnet.frame import BCAST_MAC, build_frame, parse_frame
+from baitnet.header import IpV69Header
 
 SRC = 0x83_81_0B_BE_6C
 DST = 0x00_00_00_00_10
